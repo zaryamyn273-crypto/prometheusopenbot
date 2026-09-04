@@ -1,3 +1,6 @@
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 """Heavy stress test: EVERY registered tool gets executed.
 Public tools: called with realistic args (admin-gated ones use ADMIN_ID).
 Internal bot_*: called directly (system-only path, as bot would).

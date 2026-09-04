@@ -20,7 +20,7 @@ import traceback
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, '/home/dsh/workspace/prometheuspro')
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.core import database, config
 from src.core.config import ADMIN_ID

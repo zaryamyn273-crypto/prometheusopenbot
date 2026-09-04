@@ -7,7 +7,7 @@ import json
 import traceback
 from PIL import Image
 
-sys.path.insert(0, '/home/dsh/workspace/prometheuspro')
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.tools.media import (
     download_music_track,
