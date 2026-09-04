@@ -1,0 +1,9 @@
+[variables]
+NIXPACKS_PYTHON_VERSION = "3.12"
+PYTHONUNBUFFERED = "1"
+
+[phases.setup]
+nixPkgs = ["...", "ffmpeg"]
+
+[start]
+cmd = "python bot.py"

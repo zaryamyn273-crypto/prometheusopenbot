@@ -1,0 +1,192 @@
+{
+  "generate_qr_code_tool": [
+    {
+      "case": "URL",
+      "input_len": 29,
+      "status": "PASS",
+      "summary": "Success. Generated markdown link with valid encoded URL. Length: 233"
+    },
+    {
+      "case": "Long text",
+      "input_len": 545,
+      "status": "PASS",
+      "summary": "Success. Generated markdown link with valid encoded URL. Length: 1430"
+    },
+    {
+      "case": "Persian text",
+      "input_len": 66,
+      "status": "PASS",
+      "summary": "Success. Generated markdown link with valid encoded URL. Length: 594"
+    }
+  ],
+  "read_document_file": [
+    {
+      "case": "Local file (README.md)",
+      "status": "PASS",
+      "summary": "Read OK, preview: 📄 *محتوای استخراج‌شده از سند (README.md)*:\n\n# ⚡ Prometheus Super-Agent Pro v5.0 "
+    },
+    {
+      "case": "Non-existent file",
+      "status": "PASS",
+      "summary": "Handled correctly: فایل در مسیر '/tmp/this_file_definitely_does_not_exist_9876.txt' یافت نشد."
+    },
+    {
+      "case": "Read local .txt",
+      "status": "PASS",
+      "summary": "Extracted: 📄 *محتوای استخراج‌شده از سند (tmpewheq1sq.txt)*:\n\nتست متن فارسی در فایل txt"
+    }
+  ],
+  "optimize_image_for_vision": [
+    {
+      "case": "Mock RGB (800x600)",
+      "status": "PASS",
+      "summary": "Optimized successfully. Output mime=image/jpeg, base64_len=4184"
+    },
+    {
+      "case": "Mock RGBA (1000x1000, alpha transparency)",
+      "status": "PASS",
+      "summary": "Composited over white & converted to JPEG. mime=image/jpeg, base64_len=8324"
+    },
+    {
+      "case": "Large High-Res (2400x1800)",
+      "status": "PASS",
+      "summary": "Scaled down with Lanczos anti-aliasing to max 1600px, mime=image/jpeg, base64_len=15384"
+    },
+    {
+      "case": "Corrupted bytes",
+      "status": "PASS",
+      "summary": "Fallback triggered gracefully. No unhandled exception, returned raw base64 (Tk9UX0FOX0lNQUdFX1JBTkRPTV9DT1JSVVBUX0JZVEVTX1hZWl8xMjM0NQ==)"
+    }
+  ],
+  "create_and_upload_file": [
+    {
+      "case": "TXT generation",
+      "filename": "document.txt",
+      "status": "PASS",
+      "summary": "Success. Generated document.txt (92 bytes), caption: 'Test TXT generation'",
+      "size_bytes": 92
+    },
+    {
+      "case": "PDF generation",
+      "filename": "report.pdf",
+      "status": "PASS",
+      "summary": "Success. Generated report.pdf (15679 bytes), caption: 'Test PDF generation'",
+      "size_bytes": 15679
+    },
+    {
+      "case": "Excel generation",
+      "filename": "financial_data.xlsx",
+      "status": "PASS",
+      "summary": "Success. Generated financial_data.xlsx (5011 bytes), caption: 'Test Excel generation'",
+      "size_bytes": 5011
+    },
+    {
+      "case": "Docx generation",
+      "filename": "analysis.docx",
+      "status": "PASS",
+      "summary": "Success. Generated analysis.docx (36792 bytes), caption: 'Test Docx generation'",
+      "size_bytes": 36792
+    }
+  ],
+  "publish_telegraph_article": [
+    {
+      "case": "Short title",
+      "title": "گزارش آزمایشی پرومته",
+      "status": "PASS",
+      "summary": "Published successfully. Result preview: 📝 *مقاله با موفقیت در تلگراف منتشر شد*:\n\n• *عنوان*: *گزارش آزمایشی پرومته*\n• *پیوند نمایش فوری (Inst"
+    },
+    {
+      "case": "Long markdown body",
+      "title": "راهنمای جامع هوش مصنوعی",
+      "status": "PASS",
+      "summary": "Published successfully. Result preview: 📝 *مقاله با موفقیت در تلگراف منتشر شد*:\n\n• *عنوان*: *راهنمای جامع هوش مصنوعی*\n• *پیوند نمایش فوری (I"
+    },
+    {
+      "case": "HTML tags",
+      "title": "تست تگ‌های HTML",
+      "status": "PASS",
+      "summary": "Published successfully. Result preview: 📝 *مقاله با موفقیت در تلگراف منتشر شد*:\n\n• *عنوان*: *تست تگ‌های HTML*\n• *پیوند نمایش فوری (Instant V"
+    }
+  ],
+  "get_song_lyrics": [
+    {
+      "case": "Popular song",
+      "query": "Adele - Hello",
+      "format": "text",
+      "status": "PASS",
+      "summary": "str(len=2099, preview=📜 *متن دقیق ترانه (hello   adele — adele)*:\n⏱ _(فایل لیریکس تایم‌دار این قطعه نی...)"
+    },
+    {
+      "case": "Popular song (LRC format)",
+      "query": "Queen Bohemian Rhapsody",
+      "format": "lrc",
+      "status": "PASS",
+      "summary": "dict(type=document, filename=Bohemian Rhapsody - Queen - Bohemian Rhapsody - Queen.lrc, bytes_len=2605)"
+    },
+    {
+      "case": "Persian lyrics",
+      "query": "متن آهنگ بهت قول میدم محسن یگانه",
+      "format": "text",
+      "status": "PASS",
+      "summary": "str(len=3364, preview=📜 *متن دقیق ترانه «متن بهت قول میدم محسن یگانه»:*\n\nاین سایت در ستاد ساماندهی ثبت...)"
+    },
+    {
+      "case": "Obscure query",
+      "query": "xyzqwe1234987randomnonexistentsongtitle999",
+      "format": "text",
+      "status": "PASS",
+      "summary": "str(len=210, preview=📜 *متن دقیق ترانه «xyzqwe1234987randomnonexistentsongtitle999»:*\n\nGet Apps\nPremi...)"
+    }
+  ],
+  "transcribe_audio_tool": [
+    {
+      "case": "Empty input",
+      "input": "",
+      "status": "PASS",
+      "summary": "Handled gracefully: آدرس فایل صوتی خالی است."
+    },
+    {
+      "case": "Invalid URL",
+      "input": "https://invalid-non-existent-domain-12345.org/audio.mp3",
+      "status": "PASS",
+      "summary": "Handled gracefully: خطا در پردازش صوت: [Errno -2] Name or service not known"
+    },
+    {
+      "case": "Non-existent local file",
+      "input": "/tmp/non_existent_audio.mp3",
+      "status": "PASS",
+      "summary": "Handled gracefully: خطا در پردازش صوت: [Errno 2] No such file or directory: '/tmp/non_existent_audio.mp3'"
+    },
+    {
+      "case": "Audio file bytes (silent WAV)",
+      "status": "PASS",
+      "summary": "API call result: تبدیل صوت با مدل ویسپر در دسترس نیست یا فرمت صوتی پشتیبانی نمی‌شود."
+    }
+  ],
+  "download_music_track": [
+    {
+      "case": "Persian song",
+      "query": "شروین حاجی پور برای",
+      "status": "PASS",
+      "summary": "type=audio_bytes, title='Baraye - Shervin Hajipour - Official Music + Video | برای - شروین حاجی‌پور', performer='Sadra Sarmad', bytes_len=5285411, has_url=False"
+    },
+    {
+      "case": "English song",
+      "query": "Adele Hello",
+      "status": "PASS",
+      "summary": "type=audio_bytes, title='Hello', performer='Adele', bytes_len=11823243, has_url=False"
+    },
+    {
+      "case": "Special chars",
+      "query": "AC/DC - Back in Black #rock!",
+      "status": "PASS",
+      "summary": "type=audio_bytes, title='Back In Black', performer='AC/DC', bytes_len=10222467, has_url=False"
+    },
+    {
+      "case": "Artist + Title",
+      "query": "Mohsen Yeganeh Behet Ghol Midam",
+      "status": "PASS",
+      "summary": "type=audio_bytes, title='Behet Ghol Midam (Live Version) - Single', performer='Mohsen Yeganeh', bytes_len=11395924, has_url=False"
+    }
+  ]
+}

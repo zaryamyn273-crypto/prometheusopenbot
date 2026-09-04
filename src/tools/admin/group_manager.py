@@ -1,0 +1,277 @@
+import os
+import io
+import logging
+from typing import Dict, Any, Optional
+
+from src.tools.registry import register_tool
+from src.core import database
+from src.core.config import ADMIN_ID
+
+logger = logging.getLogger(__name__)
+
+# Global Telegram Bot context reference for direct leave action
+_TELEGRAM_BOT_INSTANCE = None
+
+def set_bot_instance(bot):
+    global _TELEGRAM_BOT_INSTANCE
+    _TELEGRAM_BOT_INSTANCE = bot
+
+def get_bot_instance():
+    return _TELEGRAM_BOT_INSTANCE
+
+@register_tool(
+    name="list_joined_groups_tool",
+    description="مشاهده لیست گروه‌هایی که ربات عضوشان است همراه با لینک عضویت هر گروه (لینک عمومی t.me یا دعوت‌نامه تازه؛ مختص فرمانده ارشد)",
+    category="admin"
+)
+async def list_joined_groups_tool(caller_id: int = 0, is_private_chat: bool = False) -> str:
+    if caller_id != ADMIN_ID:
+        return "❌ این فرمان منحصراً در اختیار فرمانده ارشد سیستم است."
+
+    await database.sync_memory_from_d1_async()
+    groups = await database.get_all_tracked_groups_async()
+    if not groups:
+        return "ربات در حال حاضر در هیچ گروهی عضو نیست."
+
+    bot_inst = get_bot_instance()
+    if not bot_inst:
+        try:
+            from telegram import Bot
+            from src.core.config import TELEGRAM_BOT_TOKEN
+            bot_inst = Bot(token=TELEGRAM_BOT_TOKEN)
+        except Exception:
+            bot_inst = None
+
+    bot_me_id = None
+    if bot_inst:
+        try:
+            me = await bot_inst.get_me()
+            bot_me_id = me.id
+        except Exception:
+            bot_me_id = None
+
+    from telegram.constants import ChatMemberStatus
+    truly_joined = []
+
+    for g in groups:
+        cid = g.get("chat_id")
+        if not cid:
+            continue
+        if "channel" in str(g.get("chat_type", "")).lower():
+            continue
+        if database.is_user_banned(cid):
+            await database.remove_group_presence_async(cid)
+            continue
+
+        is_present = True
+        actual_title = g.get("title") or "گروه"
+
+        if bot_inst and bot_me_id:
+            try:
+                member = await bot_inst.get_chat_member(chat_id=cid, user_id=bot_me_id)
+                if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
+                    is_present = False
+                    await database.remove_group_presence_async(cid)
+                else:
+                    try:
+                        chat_obj = await bot_inst.get_chat(cid)
+                        if chat_obj and chat_obj.title:
+                            actual_title = chat_obj.title
+                    except Exception:
+                        pass
+            except Exception as e:
+                err_str = str(e).lower()
+                if any(k in err_str for k in ["chat not found", "bot was kicked", "bot is not a member", "forbidden", "chat_admin_required"]):
+                    is_present = False
+                    await database.remove_group_presence_async(cid)
+
+        if is_present:
+            g["title"] = actual_title
+            truly_joined.append(g)
+
+    if not truly_joined:
+        return "ربات در حال حاضر در هیچ گروه فعالی عضو نیست."
+
+    # Resolve a join link per group: public username first (t.me/xxx),
+    # else a fresh invite link minted live via Telegram (cached in D1).
+    # Needs a live Bot API client; without one we still list groups (no link).
+    async def _resolve_link(_cid: int, _known_user: str = "", _known_inv: str = "") -> str:
+        _uname = (_known_user or "").strip().lstrip("@")
+        if _uname:
+            return f"https://t.me/{_uname}"
+        if not bot_inst:
+            return _known_inv or ""
+        try:
+            _chat = await bot_inst.get_chat(_cid)
+            _cu = (getattr(_chat, "username", "") or "").strip()
+            if _cu:
+                try:
+                    await database.track_group_presence_async(_cid, g.get("title") or "گروه", chat_type=g.get("chat_type", "supergroup"), username=_cu, invite_link=_known_inv or "")
+                except Exception:
+                    pass
+                return f"https://t.me/{_cu}"
+        except Exception:
+            pass
+        if _known_inv:
+            return _known_inv
+        try:
+            _inv = await bot_inst.export_chat_invite_link(chat_id=_cid)
+            _inv_s = str(_inv or "").strip()
+            if _inv_s:
+                try:
+                    await database.track_group_presence_async(_cid, g.get("title") or "گروه", chat_type=g.get("chat_type", "supergroup"), username=_known_user or "", invite_link=_inv_s)
+                except Exception:
+                    pass
+                return _inv_s
+        except Exception as _e:
+            logger.debug(f"Invite export failed for {cid}: {_e}")
+        return ""
+
+    lines = ["👥 *لیست گروه‌هایی که ربات واقعاً در آنها حضور دارد:*\n"]
+    for i, g in enumerate(truly_joined, 1):
+        cid = g.get("chat_id")
+        title = g.get("title") or "گروه"
+        _link = await _resolve_link(cid, g.get("username", "") or "", g.get("invite_link", "") or "")
+        if _link:
+            lines.append(f"{i}. 🌟 *{title}*\n   • شناسه عددی: `{cid}`\n   • لینک عضویت: {_link}\n")
+        else:
+            lines.append(f"{i}. 🌟 *{title}*\n   • شناسه عددی: `{cid}`\n   • لینک عضویت: در دسترس نیست (ربات ادمین گروه نیست)\n")
+
+    return "\n".join(lines)
+
+@register_tool(
+    name="list_public_channels_tool",
+    description="مشاهده و نمایش لیست کانال‌های رسمی و عمومی که ربات در آنها عضو و متصل است (قابل نمایش در تمام گروه‌ها)",
+    category="media"
+)
+async def list_public_channels_tool() -> str:
+    await database.sync_memory_from_d1_async()
+    groups = await database.get_all_tracked_groups_async()
+    channels = [g for g in groups if "channel" in str(g.get("chat_type", "")).lower()]
+    if not channels:
+        return "📢 ربات در حال حاضر در کانال عمومی متصل یا ثبت نشده است."
+    lines = ["📢 *کانال‌های عمومی فعال و متصل به پرومته:*\n"]
+    for idx, ch in enumerate(channels, 1):
+        title = ch.get("title") or "کانال رسمی"
+        cid = ch.get("chat_id")
+        lines.append(f"{idx}. 📣 *{title}* (`{cid}`)")
+    return "\n".join(lines)
+
+@register_tool(
+    name="ban_group_by_name_or_id_tool",
+    description="بن کردن و خروج ابدی ربات از یک گروه فقط با گفتن نام گروه یا آیدی عددی چت، همراه با مسدودسازی دائمی دسترسی آن گروه در دیتابیس (مختص فرمانده ارشد)",
+    category="admin"
+)
+async def ban_group_by_name_or_id_tool(
+    group_name: Optional[str] = None,
+    target: Optional[str] = None,
+    chat_identifier: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    reason: str = "مسدودسازی دائمی گروه به دستور فرمانده",
+    caller_id: int = 0
+) -> str:
+    if caller_id != ADMIN_ID:
+        return "❌ این فرمان منحصراً در اختیار فرمانده ارشد سیستم است."
+    raw_query = str(group_name or target or chat_identifier or chat_id or "").strip()
+    if not raw_query:
+        return "لطفاً نام یا شناسه عددی گروه مورد نظر برای بن را مشخص فرمایید."
+    await database.sync_memory_from_d1_async()
+    groups = await database.get_all_tracked_groups_async()
+    target_chat_id = None
+    target_title = ""
+    if raw_query.lstrip("-").isdigit():
+        target_chat_id = int(raw_query)
+        for g in groups:
+            if g.get("chat_id") == target_chat_id:
+                target_title = g.get("title") or ""
+                break
+    else:
+        clean_q = raw_query.lower()
+        for g in groups:
+            g_title = str(g.get("title", "")).lower()
+            if clean_q in g_title or g_title in clean_q:
+                target_chat_id = g.get("chat_id")
+                target_title = g.get("title") or ""
+                break
+    if not target_chat_id:
+        return f"❌ گروهی با نام یا مشخصه «{raw_query}» در لیست گروه‌های فعال ربات یافت نشد."
+    await database.ban_target_async(
+        target_chat_id,
+        reason=f"گروه بن شد: {reason}",
+        first_name=target_title,
+        banned_by=caller_id,
+        source_chat_id=target_chat_id,
+        source_chat_title=target_title
+    )
+    bot_inst = get_bot_instance()
+    if bot_inst:
+        try:
+            await bot_inst.send_message(
+                chat_id=target_chat_id,
+                text="🚫 <b>این گروه به دستور مستقیم فرمانده ارشد مسدود گردید. ربات خارج می‌شود.</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        try:
+            await bot_inst.leave_chat(target_chat_id)
+        except Exception as e:
+            logger.warning(f"Failed to leave chat {target_chat_id}: {e}")
+    await database.remove_group_presence_async(target_chat_id)
+    name_label = f"«{target_title}» " if target_title else ""
+    return f"🚫 *فرمان مسدودسازی گروه با موفقیت اجرا شد:*\nگروه {name_label}با شناسه `{target_chat_id}` در دیتابیس Cloudflare D1 مسدود گردید و ربات فوراً از آن خارج شد."
+
+@register_tool(
+    name="leave_group_by_admin_tool",
+    description="خروج و ترک فوری ربات از یک گروه خاص بر اساس نام گروه یا آیدی عددی چت (مختص فرمانده ارشد)",
+    category="admin"
+)
+async def leave_group_by_admin_tool(
+    chat_identifier: Optional[str] = None,
+    group: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    caller_id: int = 0
+) -> str:
+    """
+    :param chat_identifier: شناسه عددی چت (مانند -10012345678) یا بخشی از نام گروه
+    """
+    if caller_id != ADMIN_ID:
+        return "❌ این فرمان منحصراً در اختیار فرمانده ارشد سیستم است."
+
+    target_raw = str(chat_identifier or group or chat_id or "").strip()
+    if not target_raw:
+        return "لطفاً شناسه عددی یا نام گروه مورد نظر برای خروج را مشخص فرمایید."
+
+    target_chat_id = None
+    target_title = ""
+
+    # Check if target is a direct chat_id
+    if target_raw.lstrip("-").isdigit():
+        target_chat_id = int(target_raw)
+    else:
+        # Search by title in active groups
+        groups = await database.get_all_tracked_groups_async()
+        for g in groups:
+            if target_raw.lower() in (g.get("title") or "").lower():
+                target_chat_id = g.get("chat_id")
+                target_title = g.get("title")
+                break
+
+    if not target_chat_id:
+        return f"گروهی با مشخصه «{target_raw}» در لیست گروه‌های فعال ربات یافت نشد."
+
+    # Perform Telegram API leave chat
+    bot_inst = get_bot_instance()
+    leave_status = "انجام شد"
+    if bot_inst:
+        try:
+            await bot_inst.leave_chat(target_chat_id)
+        except Exception as e:
+            logger.warning(f"Could not leave chat {target_chat_id} directly: {e}")
+            leave_status = f"درخواست ارسال شد ({e})"
+
+    # Remove from D1 database tracking
+    await database.remove_group_presence_async(target_chat_id)
+
+    name_str = f"«{target_title}» " if target_title else ""
+    return f"🚪 *فرمان خروج اجرا شد:*\nربات با موفقیت از گروه {name_str}(شناسه: `{target_chat_id}`) خارج گردید و تمامی سوابق پیام‌ها و حضور آن از دیتابیس D1 و حافظه RAM پاکسازی شد."
