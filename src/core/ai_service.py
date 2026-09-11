@@ -683,9 +683,9 @@ async def generate_response(
                 "check_website_status", "get_ip_info", "generate_hash_digest",
                 "base64_encode_decode", "url_encode_decode", "generate_uuid",
                 "digikala_search", "reddit_search", "stackoverflow_search", "github_issues_search", "extract_user_id_tool", "ban_group_by_name_or_id_tool", "twitter_search", "cloudflare_d1_store_record", "cloudflare_d1_retrieve_record", "cloudflare_d1_delete_record", "cloudflare_d1_list_records", "cloudflare_d1_search_records", "manage_admin_memory",
-                "internal_resilient_fallback_search", "quick_http_inspect_tool", "autonomous_system_health_check",
+                "quick_http_inspect_tool",
                 "tavily_search", "web_search", "deep_search_and_read", "live_news", "fetch_webpage_content", "transcribe_audio_tool",
-                "publish_telegraph_article", "check_ssl_certificate", "get_global_forex_rates",
+                "publish_telegraph_article", "check_ssl_certificate",
                 "e2b_run_code", "e2b_run_command", "e2b_status", "execute_python_code"
             }
             called_names = [tc.get("function", {}).get("name") for tc in tool_calls]

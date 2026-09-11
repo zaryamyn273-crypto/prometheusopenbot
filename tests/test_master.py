@@ -5,7 +5,7 @@ import asyncio
 import time
 from src.core import database, ai_service, config
 from src.tools import (
-    registry, scientific, financial, web_network, system, media, github, security as darkweb, files as file_reader, database as database_tools
+    registry, scientific, financial, web_network, system, media, github, files as file_reader, database as database_tools
 )
 from src.utils import telegram_formatter
 
@@ -91,8 +91,8 @@ async def run_master_audit():
     assert 'CPU' in diag and 'RAM' in diag
     print('   ✅ Python Sandbox & Server Diagnostics: OK')
 
-    # 8. GitHub & Darkweb Tools (12 GitHub tools)
-    print('\n8. GitHub & Darkweb Tools:')
+    # 8. GitHub Tools (12 GitHub tools)
+    print('\n8. GitHub Tools:')
     gh_s = await github.github_search_repositories('telegram bot python')
     assert 'github.com' in gh_s
     gh_info = await github.github_repo_info('psf/requests')
@@ -109,9 +109,7 @@ async def run_master_audit():
     assert 'زبان' in gh_stats
     gh_trend = await github.github_trending('', 'daily')
     assert 'ترند' in gh_trend
-    dark = await darkweb.darkweb_search('bitcoin privacy')
-    assert 'پایگاه' in dark or '.onion' in dark
-    print('   ✅ GitHub x12 (search/info/readme/file/tree/user/commits/issues/releases/code/stats/trending) & Darkweb: OK')
+    print('   ✅ GitHub x12 (search/info/readme/file/tree/user/commits/issues/releases/code/stats/trending): OK')
 
     # 9. Formatter & Telegram HTML Converter
     print('\n9. Telegram HTML Safe Formatter:')

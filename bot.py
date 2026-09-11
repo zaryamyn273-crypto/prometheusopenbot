@@ -42,7 +42,6 @@ from src.tools import (
     media,
     system,
     github,
-    security,
     files,
     database as db_tools
 )
@@ -320,11 +319,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     welcome_text = (
-        f"⚡ <b>پرومته سوپر ایجنت (Prometheus v5.0 Ultimate)</b>\n\n"
-        f"درود {user.mention_html()}؛ من مغز متفکر هوش مصنوعی و دستیار خودمختار شما هستم.\n"
-        f"مجهز به بیش از ۴۰ ابزار تخصصی، حافظه ابری توزیع‌شده Cloudflare، موتور چندوجهی تحلیل تصویر و صدا.\n\n"
-        f"🔹 برای مشاهده جعبه‌ابزارها: <code>/tools_prometheus</code>\n"
-        f"🔹 برای راهنمای دستورات: <code>/help</code>"
+        f"<b>پرومته</b> — یه ربات تلگرام معمولی که سعی می‌کنه مفید باشه، {user.mention_html()}.\n\n"
+        f"به‌جای حدس زدن می‌رم سراغ ابزار: قیمت دلار و طلا و رمزارز، هواشناسی، سرچ وب، موزیک، فایل، حساب‌وکتاب. "
+        f"اگه چیزی خراب باشه یا ندونم، همون رو می‌گم؛ معجزه‌ای در کار نیست.\n\n"
+        f"<b>طرز استفاده:</b>\n"
+        f"• تو گروه فقط وقتی جواب می‌دم که صدام کنی: ریپلای روی پیامم، منشن، یا اسم «پرومته». بقیه حرف‌ها رو فقط آرشیو می‌کنم.\n"
+        f"• لیست دستورها: <code>/help</code>\n"
+        f"• پیوی فقط برای ادمین بازه."
     )
 
     await message.reply_text(
@@ -339,7 +340,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user or not message or database.is_user_banned(user.id, username=user.username or ""):
         return
     help_text = (
-        "📖 <b>راهنمای فرامین سریع پرومته</b>:\n\n"
+        "📖 <b>راهنمای دستورهای پرومته</b> (همه رو لازم نیست حفظ کنی؛ فارسی حرف بزن، خودم می‌فهمم):\n\n"
         "• <code>/tools_prometheus</code> - باز کردن جعبه ابزارهای تخصصی\n"
         "• <code>/crypto_prometheus [نماد]</code> - استعلام تابلوی رمزارزها\n"
         "• <code>/gold_prometheus</code> - نرخ زنده طلا، سکه و حباب\n"

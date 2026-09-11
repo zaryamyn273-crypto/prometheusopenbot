@@ -128,7 +128,7 @@ CATEGORY_KEYWORDS = {
         "لیریکس", "تایم دار", "lrc", "synced lyrics", "متن ترانه"
     ],
     "security": [
-        "دارک وب", "امنیت", "darkweb", "onion", "هک", "هش", "hash", "رمزنگاری", "base64", "uuid",
+        "امنیت", "هش", "hash", "رمزنگاری", "base64", "uuid",
         "شناسه یکتا", "یو یو آی دی", "انکد", "دیکد", "url encode"
     ],
     "scientific": [

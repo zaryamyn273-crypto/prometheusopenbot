@@ -6,14 +6,11 @@ query normalization, fallback orchestration and output compaction.
 """
 import logging
 import re
-import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from src.tools.registry import register_tool
 
 logger = logging.getLogger(__name__)
-
-_RATE_BUCKETS: Dict[int, Any] = {}
 
 
 @register_tool(
@@ -429,48 +426,6 @@ def bot_qr_fallback(text_or_url: str = "") -> str:
 
 
 @register_tool(
-    name="bot_d1_remember",
-    description="SYSTEM ONLY: persist key/value into D1 custom records",
-    category="internal",
-)
-async def bot_d1_remember(key: str = "", value: str = "", category: str = "general") -> str:
-    """
-    :param key: کلید یکتا برای ذخیره
-    :param value: مقدار متنی برای ذخیره ابدی
-    :param category: دسته‌بندی اختیاری
-    """
-    try:
-        from src.core import database
-        clean = (key or "").strip()
-        if not clean:
-            return "کلید داده خالی است."
-        ok = await database.store_custom_record_d1(clean, str(value or ""), category or "general")
-        return f"💾 در حافظه دائمی ذخیره شد: `{clean}`" if ok else "خطا در ذخیره‌سازی D1."
-    except Exception as e:
-        return f"خطا در ذخیره D1: {e}"
-
-
-@register_tool(
-    name="bot_d1_recall",
-    description="SYSTEM ONLY: recall key/value from D1 custom records",
-    category="internal",
-)
-async def bot_d1_recall(key: str = "") -> str:
-    """
-    :param key: کلید داده ذخیره‌شده
-    """
-    try:
-        from src.core import database
-        clean = (key or "").strip()
-        if not clean:
-            return "کلید داده خالی است."
-        val = await database.retrieve_custom_record_d1(clean)
-        return f"📦 `{clean}`:\n\n{val}" if val is not None else f"هیچ رکوردی با کلید `{clean}` یافت نشد."
-    except Exception as e:
-        return f"خطا در بازیابی D1: {e}"
-
-
-@register_tool(
     name="bot_history_recall",
     description="SYSTEM ONLY: recall group chat history from D1",
     category="internal",
@@ -494,92 +449,3 @@ async def bot_history_recall(query: str = "", chat_id: int = 0) -> str:
         return f"هیچ پیامی حاوی «{clean}» در تاریخچه یافت نشد."
     except Exception as e:
         return f"خطا در بازیابی تاریخچه: {e}"
-
-
-@register_tool(
-    name="bot_rate_guard",
-    description="SYSTEM ONLY: in-memory per-user rate guard (60s window)",
-    category="internal",
-)
-def bot_rate_guard(user_id: int = 0, limit: int = 8) -> str:
-    """
-    :param user_id: شناسه عددی کاربر
-    :param limit: سقف پیام در دقیقه
-    """
-    try:
-        now = time.time()
-        uid = int(user_id or 0)
-        lim = max(1, int(limit or 8))
-        bucket = _RATE_BUCKETS.get(uid)
-        if not bucket or now > bucket.get("reset", 0):
-            _RATE_BUCKETS[uid] = {"count": 1, "reset": now + 60.0}
-            return "ok"
-        bucket["count"] = bucket.get("count", 0) + 1
-        if bucket["count"] > lim:
-            return "limited"
-        return "ok"
-    except Exception:
-        return "ok"
-
-
-@register_tool(
-    name="bot_output_compactor",
-    description="SYSTEM ONLY: compact long tool outputs preserving head and tail",
-    category="internal",
-)
-def bot_output_compactor(text: str = "", max_chars: int = 3000) -> str:
-    """
-    :param text: متن بلند خروجی ابزار
-    :param max_chars: حداکثر طول مجاز
-    """
-    try:
-        t = str(text or "")
-        m = max(500, int(max_chars or 3000))
-        if len(t) <= m:
-            return t
-        head = m * 2 // 3
-        tail = m - head - 40
-        return t[:head] + f"\n\n… *[ادامه حذف شد: {len(t) - m} نویسه]* …\n\n" + t[-tail:]
-    except Exception as e:
-        return f"خطا در فشرده‌سازی خروجی: {e}"
-
-
-@register_tool(
-    name="bot_prompt_token_saver",
-    description="SYSTEM ONLY: squeeze whitespace to save inference tokens",
-    category="internal",
-)
-def bot_prompt_token_saver(prompt: str = "", max_chars: int = 600) -> str:
-    """
-    :param prompt: پرامپت ورودی برای فشرده‌سازی
-    :param max_chars: حداکثر طول مجاز
-    """
-    try:
-        p = re.sub(r"\s+", " ", str(prompt or "")).strip()
-        m = max(100, int(max_chars or 600))
-        return p[:m] if len(p) > m else p
-    except Exception:
-        return str(prompt or "")[:600]
-
-
-@register_tool(
-    name="bot_alias_resolver",
-    description="SYSTEM ONLY: fuzzy-match mistyped tool name to registry",
-    category="internal",
-)
-async def bot_alias_resolver(name: str = "") -> str:
-    """
-    :param name: نام ناقص یا اشتباه ابزار
-    """
-    try:
-        import difflib
-        from src.tools.registry import REGISTRY
-        clean = (name or "").strip()
-        if not clean:
-            return "نام ابزار خالی است."
-        if clean in REGISTRY:
-            return clean
-        matches = difflib.get_close_matches(clean, list(REGISTRY.keys()), n=1, cutoff=0.4)
-        return matches[0] if matches else ""
-    except Exception as e:
-        return f"خطا در تطبیق نام ابزار: {e}"

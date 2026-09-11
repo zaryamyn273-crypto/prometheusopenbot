@@ -4,7 +4,6 @@ import logging
 from src.core.http import shared_client_ctx
 import re
 from bs4 import BeautifulSoup
-from typing import Dict, Any, Optional, List
 from src.tools.registry import register_tool
 from src.core import database
 from src.core.config import GITHUB_TOKEN
@@ -290,88 +289,6 @@ async def github_issues_search(query: str, repo: str = "", state: str = "all", m
 
     return f"استعلام ایشوهای گیت‌هاب برای «{clean_q}» با اختلال مواجه شد."
 
-
-# =========================================================================
-# 5. Background Internal Diagnostics & Autonomous Resilient Fallback Engine
-# =========================================================================
-
-@register_tool(
-    name="internal_resilient_fallback_search",
-    description="ابزار داخلی و خودکار پشتیبان برای جستجوی چندمنظوره وب، اخبار، کد و دانش در صورت شکست یا خطای سایر ابزارها",
-    category="search"
-)
-async def internal_resilient_fallback_search(query: str, domain_hint: str = "") -> str:
-    """
-    :param query: عبارت یا موضوع مورد نظر جهت استخراج سریع و چندلایه
-    :param domain_hint: حوزه تمرکز (مانند news, tech, general, academic, github)
-    """
-    from src.tools.web_network import web_search, live_news
-    clean_q = (query or "").strip()
-    if not clean_q:
-        return "عبارت ورودی خالی است."
-
-    # 1. First attempt: Direct live web search
-    try:
-        if domain_hint == "news":
-            res = await live_news(clean_q)
-            if res and len(res) > 50 and "یافت نشد" not in res:
-                return f"📡 *خروجی موتور پشتیبان اخبار:*\n\n{res}"
-        res = await web_search(clean_q, max_results=6)
-        if res and len(res) > 50 and "یافت نشد" not in res:
-            return f"🌐 *خروجی موتور پشتیبان چندلایه‌ای:*\n\n{res}"
-    except Exception as e:
-        logger.debug(f"Fallback layer 1 error: {e}")
-
-    # 2. Second attempt: Re-try with clean tokenized query
-    try:
-        tokens = [t for t in clean_q.split() if len(t) > 1]
-        simplified_q = " ".join(tokens[:4])
-        res2 = await web_search(simplified_q, max_results=4)
-        if res2 and len(res2) > 30:
-            return f"🌐 *خروجی موتور جستجوی جایگزین:*\n\n{res2}"
-    except Exception as e:
-        logger.debug(f"Fallback layer 2 error: {e}")
-
-    return f"اطلاعات تکمیلی برای «{clean_q}» در دسترس قرار نگرفت."
-
-@register_tool(
-    name="autonomous_system_health_check",
-    description="ابزار بررسی پس‌زمینه و آنی سلامت کانکشن‌ها، پایگاه داده D1، کش RAM و وضعیت هوش مصنوعی بدون نیاز به کاربر",
-    category="admin"
-)
-async def autonomous_system_health_check() -> Dict[str, Any]:
-    """
-    Runs automated background sanity checks across all primary subsystems.
-    """
-    from src.core import database
-    from src.core.ai_service import get_shared_client
-    from src.core import config
-    
-    status = {
-        "timestamp": database.get_tehran_timestamps()[0],
-        "d1_database": "unknown",
-        "l1_cache_keys": len(database._L1_CACHE),
-        "ai_router_ping": "unknown",
-        "active_groups_count": len(database._ACTIVE_GROUPS),
-        "banned_users_count": len(database._BANNED_USERS),
-    }
-
-    # 1. D1 Ping
-    try:
-        d1_res = await database.execute_d1_query("SELECT 1 AS ok")
-        status["d1_database"] = "healthy" if d1_res.get("success") else "unreachable"
-    except Exception as e:
-        status["d1_database"] = f"error: {e}"
-
-    # 2. AI Router Ping
-    try:
-        client = get_shared_client()
-        r = await client.get(f"{config.ROUTER_BASE_URL}/models", timeout=3.5)
-        status["ai_router_ping"] = f"{r.status_code} OK" if r.status_code == 200 else f"HTTP {r.status_code}"
-    except Exception as e:
-        status["ai_router_ping"] = f"failed: {e}"
-
-    return status
 
 @register_tool(
     name="quick_http_inspect_tool",

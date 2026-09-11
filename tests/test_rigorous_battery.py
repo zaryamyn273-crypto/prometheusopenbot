@@ -164,11 +164,8 @@ DIFFICULT_TEST_CASES = {
     "publish_telegraph_article": [
         {"title": "گزارش تست پرومته", "content": "این یک مقاله آزمایشی برای تست پایداری تلگراف است." * 5}
     ],
-    "internal_resilient_fallback_search": [
-        {"query": "هوش مصنوعی"}
-    ],
     "transcribe_audio_tool": [
-        {"file_id_or_url": ""}  # Empty input safe check
+        {"audio_url_or_path": ""}  # Empty input safe check
     ],
     "download_music_track": [
         {"query": "Adele Skyfall"}
@@ -247,9 +244,6 @@ DIFFICULT_TEST_CASES = {
         {"code": "import os; print(os.name)", "caller_id": ADMIN_ID, "is_private_chat": True},
         {"code": "print(10/0)", "caller_id": ADMIN_ID, "is_private_chat": True}  # Error handling in sandbox
     ],
-    "autonomous_system_health_check": [
-        {}
-    ],
     "admin_system_diagnostics": [
         {}
     ],
@@ -289,9 +283,6 @@ DIFFICULT_TEST_CASES = {
     "read_document_file": [
         {"file_path": "requirements.txt"}
     ],
-    "darkweb_search": [
-        {"query": "privacy security test"}
-    ],
 
     # --- 9. Internal Intelligent Fallbacks & Daemons ---
     "bot_self_diagnose": [{}],
@@ -307,13 +298,7 @@ DIFFICULT_TEST_CASES = {
     "bot_lyrics_fallback": [{"song_title": "Adele Skyfall"}],
     "bot_file_fallback_publish": [{"title": "گزارش", "content": "متن تستی آزمون"}],
     "bot_qr_fallback": [{"text_or_url": "https://google.com"}],
-    "bot_d1_remember": [{"key": "d1_test", "value": "d1_val"}],
-    "bot_d1_recall": [{"key": "d1_test"}],
     "bot_history_recall": [{"query": "سلام", "chat_id": 0}],
-    "bot_rate_guard": [{"user_id": ADMIN_ID}],
-    "bot_output_compactor": [{"text": "خلاصه سازی " * 500}],
-    "bot_prompt_token_saver": [{"prompt": "  متن   فاصله دار  تستی  "}],
-    "bot_alias_resolver": [{"name": "websearch"}]
 }
 
 async def run_tool_test(tool_name, case, sem):

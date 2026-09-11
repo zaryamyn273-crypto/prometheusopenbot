@@ -50,13 +50,11 @@ CASES = {
     "transcribe_audio_tool": ({"audio_url_or_path": ""}, 30),
     "generate_qr_code_tool": ({"text_or_url": "https://t.me"}, 30),
     "publish_telegraph_article": ({"title": "تست استرس", "content": "متن تستی برای انتشار تلگراف. " * 10}, 60),
-    "internal_resilient_fallback_search": ({"query": "تست"}, 60),
     # --- security ---
     "generate_hash_digest": ({"text": "hello", "algorithm": "sha256"}, 20),
     "base64_encode_decode": ({"text": "hello", "mode": "encode"}, 20),
     "url_encode_decode": ({"text": "hello world", "mode": "encode"}, 20),
     "generate_uuid": ({}, 20),
-    "darkweb_search": ({"query": "test"}, 60),
     # --- scientific / math ---
     "calculate_math_expression": ({"expression": "2+3*4"}, 20),
     "statistics_summary": ({"numbers": [1, 2, 3, 4, 5]}, 20),
@@ -79,7 +77,6 @@ CASES = {
     "github_trending": ({}, 60),
     # --- dev ---
     "execute_python_code": ({"code": "print(2+2)", "caller_id": ADMIN, "is_private_chat": True}, 30),
-    "autonomous_system_health_check": ({}, 30),
     # --- e2b cloud sandbox (graceful without key: tools return Persian guide, still counts as handled) ---
     "e2b_run_code": ({"code": "print(2+2)", "language": "python", "timeout_sec": 20, "caller_id": ADMIN}, 60),
     "e2b_run_command": ({"command": "python --version", "timeout_sec": 20, "caller_id": ADMIN}, 60),
@@ -124,18 +121,12 @@ CASES = {
     "bot_lyrics_fallback": ({"song_title": "Hello Adele"}, 90),
     "bot_file_fallback_publish": ({"title": "t", "content": "متن تست"}, 60),
     "bot_qr_fallback": ({"text_or_url": "https://t.me"}, 30),
-    "bot_d1_remember": ({"key": "stress_bot", "value": "v"}, 40),
-    "bot_d1_recall": ({"key": "stress_bot"}, 40),
     "bot_history_recall": ({"query": "سلام", "chat_id": 0}, 40),
-    "bot_rate_guard": ({"user_id": 12345}, 15),
-    "bot_output_compactor": ({"text": "x" * 5000}, 15),
-    "bot_prompt_token_saver": ({"prompt": "a  b  c"}, 15),
-    "bot_alias_resolver": ({"name": "web_serch"}, 15),
 }
 
 FAILURE_HINTS = ("اختلال", "در دسترس نیست", "موجود نیست", "موفق نشد", "خطا در اجرا", "Traceback")
 # NOTE: "یافت نشد" alone is NOT failure — graceful fallbacks legitimately
-# contain it while delivering real data (e.g. darkweb clearnet fallback).
+# contain it while delivering real data.
 SOFT_OK_MARKERS = ("اما اطلاعات مرتبط", "بازیابی خودکار")
 
 

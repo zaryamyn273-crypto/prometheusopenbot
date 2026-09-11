@@ -1,5 +1,5 @@
-# ⚡ پرومته سوپر ایجنت (Prometheus Super-Agent Pro)
-> **دستیار هوشمند و عامل خودمختار (Autonomous Agent) بر بستر تلگرام؛ مبتنی بر استدلال چندمرحله‌ای (ReAct / Tool-Calling)، معماری داده ابری چندسطحی (Cloudflare D1/KV) و خط‌لوله اجرای ایزوله بیش از ۹۰ ابزار کاربردی.**
+# پرومته (Prometheus) — یه ربات تلگرام معمولی که سعی می‌کنه مفید باشه
+> یه بات تلگرام وصل به مدل زبانی، با یه مشت ابزار کاربردی (قیمت ارز و طلا و رمزارز، هواشناسی، سرچ وب، موزیک، فایل، حساب‌وکتاب). به‌جای حدس زدن می‌ره سراغ ابزار؛ اگه چیزی خراب باشه همون رو می‌گه. معجزه‌ای در کار نیست.
 
 ---
 
@@ -26,14 +26,64 @@
 
 ---
 
-## 🌟 معرفی و فلسفه طراحی (Overview & Design Philosophy)
+## معرفی (Overview)
 
-**پرومته (Prometheus Super-Agent)** یک فریم‌ورک متن‌باز و عامل خودمختار (Autonomous Agent) تحت پیام‌رسان تلگرام است. این پروژه با هدف حل معضل بنیادین توهم آماری در مدل‌های زبانی (LLM Hallucination) پیاده‌سازی شده و از طریق الگوی **استدلال و اقدام (ReAct)**، تصمیم‌گیری‌های هوش مصنوعی را مستقیماً به داده‌های واقعی و ابزارهای اجرایی متصل می‌کند.
+**پرومته** یه ربات تلگرام متن‌بازه که یه مدل زبانی رو به ابزارهای واقعی وصل می‌کنه. ایده‌ش ساده‌ست و همون رو هم درست انجام می‌ده:
 
-### اهداف کلیدی معماری:
-- **دقت مبتنی بر داده واقعی (Zero-Hallucination Pipeline):** برای تمامی نیازهای دارای داده زنده (نظیر نرخ‌های ارزی، داده‌های وب، مستندات برنامه‌نویسی و وضعیت سیستم)، فراخوانی ابزارها بر خروجی مستقیم مدل زبانی اولویت دارد.
-- **معماری ماژولار و توسعه‌پذیر:** جداسازی کامل لایه‌های پیکربندی (`core`)، مدیریت ابزارها (`tools`)، آزمون‌های خودکار (`tests`) و رابط‌های کاربری (`ui`).
-- **پایداری در مقیاس بالا:** حافظه کوتاه‌مدت کنترل‌شده با بافر توکن و لایه ذخیره‌سازی ابری پایدار روی Cloudflare D1 و Cloudflare KV بدون تحمیل بار به سرور میزبان.
+- **حدس نزن، برو ببین:** هر چیزی که داده زنده می‌خواد (قیمت، هوا، اخبار، وضعیت سایت) مستقیم از ابزار میاد، نه از حافظه مدل. اگه ابزار جواب نده، ربات می‌گه نمی‌دونم — همین.
+- **هر چیزی کلید نمی‌خواد:** فقط توکن تلگرام، آیدی ادمین و یه کلید مدل سازگار با OpenAI لازمه. بقیه (Tavily، Cloudflare، گیت‌هاب، اسپاتیفای، E2B) اختیاری‌ان و بدون اونا هم کار می‌کنه، فقط با fallback رایگان.
+- **تو گروه سرش تو کار خودش نیست:** فقط وقتی جواب می‌ده که صداش کنی (ریپلای، منشن، یا اسم «پرومته»). بقیه پیام‌ها رو ساکت آرشیو می‌کنه.
+- **کد رو لوکال اجرا نکن:** اجرای پایتون اول می‌ره تو سندباکس ابری E2B (اگه کلیدش باشه)، وگرنه تو سندباکس لوکال ایزوله. شل مخرب تحت هیچ شرایطی اجرا نمی‌شه، حتی به دستور ادمین.
+
+### 🌍 همین معرفی به زبان‌های دیگر (Other languages)
+
+<details>
+<summary><b>English</b></summary>
+
+Prometheus is an open-source Telegram bot that plugs a language model into real tools. The idea is simple, and it does just that:
+
+- **Don't guess, go look:** anything that needs live data (prices, weather, news, site status) comes straight from a tool, not from model memory. If a tool is down, the bot says it doesn't know. That's it.
+- **You don't need a key for everything:** only a Telegram token, an admin ID, and one OpenAI-compatible model key are required. Everything else (Tavily, Cloudflare, GitHub, Spotify, E2B) is optional — without them it still works, just with free fallbacks.
+- **It minds its own business in groups:** it only replies when addressed (reply, mention, or the word "Prometheus"). Everything else is silently archived.
+- **It doesn't run code locally:** Python runs in the E2B cloud sandbox first (if keyed), otherwise in an isolated local sandbox. Destructive shell never runs, not even on admin order.
+
+</details>
+
+<details>
+<summary><b>Русский</b></summary>
+
+«Прометей» — open-source Telegram-бот, который подключает языковую модель к реальным инструментам. Идея простая, и он просто её выполняет:
+
+- **Не гадай — проверь:** всё, чему нужны живые данные (цены, погода, новости, статус сайтов), берётся напрямую из инструментов, а не из памяти модели. Если инструмент недоступен, бот так и говорит. Всё.
+- **Ключ нужен не для всего:** обязательны только токен Telegram, ID админа и один OpenAI-совместимый ключ модели. Остальное (Tavily, Cloudflare, GitHub, Spotify, E2B) опционально — без них тоже работает, просто на бесплатных запасных вариантах.
+- **В группах не лезет без спроса:** отвечает только при обращении (ответ на сообщение, упоминание или слово «Прометей»). Остальное тихо архивируется.
+- **Код локально не выполняется:** Python сначала идёт в облачную песочницу E2B (если есть ключ), иначе — в изолированную локальную. Деструктивный shell не выполняется никогда, даже по приказу админа.
+
+</details>
+
+<details>
+<summary><b>Español</b></summary>
+
+Prometheus es un bot open-source de Telegram que conecta un modelo de lenguaje a herramientas reales. La idea es simple, y eso es lo que hace:
+
+- **No adivines, ve a mirar:** todo lo que necesita datos en vivo (precios, clima, noticias, estado de sitios) viene directo de una herramienta, no de la memoria del modelo. Si una herramienta falla, el bot dice que no lo sabe. Punto.
+- **No necesitas clave para todo:** solo hacen falta el token de Telegram, el ID de admin y una clave de modelo compatible con OpenAI. Lo demás (Tavily, Cloudflare, GitHub, Spotify, E2B) es opcional — sin eso sigue funcionando, con alternativas gratuitas.
+- **En grupos no se mete donde no le llaman:** solo responde cuando se le habla (respuesta, mención o la palabra «Prometheus»). Lo demás se archiva en silencio.
+- **No ejecuta código en local:** Python va primero al sandbox en la nube de E2B (si hay clave), si no a un sandbox local aislado. La shell destructiva nunca se ejecuta, ni siquiera por orden del admin.
+
+</details>
+
+<details>
+<summary><b>Français</b></summary>
+
+Prometheus est un bot Telegram open-source qui branche un modèle de langage sur des outils réels. L'idée est simple, et c'est tout ce qu'il fait :
+
+- **Ne devine pas, va vérifier :** tout ce qui demande des données en direct (prix, météo, actus, état des sites) vient directement d'un outil, pas de la mémoire du modèle. Si un outil est en panne, le bot dit qu'il ne sait pas. Point.
+- **Pas besoin de clé pour tout :** seuls le token Telegram, l'ID admin et une clé de modèle compatible OpenAI sont requis. Le reste (Tavily, Cloudflare, GitHub, Spotify, E2B) est optionnel — sans ça, ça marche quand même, avec des replis gratuits.
+- **Dans les groupes, il ne s'en mêle pas :** il ne répond que si on s'adresse à lui (réponse, mention ou le mot « Prometheus »). Le reste est archivé en silence.
+- **Pas d'exécution locale :** Python part d'abord dans le sandbox cloud E2B (si clé), sinon dans un sandbox local isolé. Le shell destructif ne s'exécute jamais, même sur ordre de l'admin.
+
+</details>
 
 ---
 
@@ -55,7 +105,7 @@ prometheusopenbot/
 │   │   ├── database.py        # لایه ذخیره‌سازی ابری چندسطحی (Cloudflare D1 & KV)
 │   │   ├── http.py            # مدیریت نشست‌های HTTP ناهمگام
 │   │   └── security.py        # اعتبارسنجی فرامین، ریت‌لیمیت و محافظت در برابر نفوذ
-│   ├── tools/                 # ماتریس ابزارهای بیش از ۹۰ گانه تخصصی
+│   ├── tools/                 # حدود ۹۰ ابزار تخصصی (هر کدوم یه کار مشخص می‌کنه، اضافه‌ها حذف شدن)
 │   │   ├── admin/             # ابزارهای حاکمیتی و مدیریت گروه‌ها
 │   │   ├── database/          # ابزارهای تعامل و کوئری ابری
 │   │   ├── dev/               # ابزارهای برنامه‌نویسی، گیت‌هاب، ردیت، استک‌اورفلو
@@ -65,8 +115,7 @@ prometheusopenbot/
 │   │   ├── internal/          # بهینه‌سازهای حافظه، فشرده‌سازی پرامپت و کشینگ
 │   │   ├── media/             # دانلود استودیویی موزیک، متادیتا، استخراج لیریکس و وویس
 │   │   ├── scientific/        # محاسبات ریاضی، آماری و تبدیل واحدها
-│   │   ├── security/          # رصد دامنه‌ها، SSL، بررسی آدرس‌ها و شبکه تاریک
-│   │   ├── system/            # تله‌متری سرور و اجرای ایمن شل تحت کنترل ادمین
+│   │   ├── system/            # تله‌متری سرور، سندباکس E2B و اجرای ایمن شل تحت کنترل ادمین
 │   │   ├── web_network/       # موتورهای جستجوی زنده (Tavily, Bing, Brave, Digikala)
 │   │   └── registry.py        # ثبت خودکار اسکیمای ابزارها و هماهنگ‌کننده اجرای ابزارها
 │   ├── ui/                    # پنل مدیریتی درون‌برنامه‌ای تلگرام (Inline Keyboards)
@@ -117,7 +166,7 @@ prometheusopenbot/
                                │ (Parallel Tool Execution)
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│               Tool Matrix (بیش از ۹۰ ابزار)                 │
+│               Tool Matrix (حدود ۹۰ ابزار)                  │
 │  • ابزارهای مالی (بایننس، نوبیتکس، طلا، سکه، تتر، فارکس)    │
 │  • وب و اخبار (Tavily AI، اسکرپر وب، دیجی‌کالا، آب‌وهوا)      │
 │  • مدیا و صوت (دانلود موزیک ۳۲۰، ویسپر STT، QR، تلگراف)    │
@@ -327,7 +376,7 @@ sudo systemctl enable --now prometheus
 
 ## 🧰 دسته‌بندی و ماتریکس ابزارها (Tools Matrix)
 
-این دستیار دارای بیش از **۹۰ ابزار ثبت‌شده** در قالب ماژول‌های مستقل است:
+این دستیار حدود **۹۰ ابزار ثبت‌شده** داره — هر کدوم یه کار مشخص. اینا حذف شدن چون یا هیچ‌جا صدا زده نمی‌شدن یا تکراری/نمایشی بودن: `darkweb_search`، `internal_resilient_fallback_search`، `autonomous_system_health_check`، `bot_rate_guard`، `bot_output_compactor`، `bot_prompt_token_saver`، `bot_alias_resolver`، `bot_d1_remember`، `bot_d1_recall`.
 
 1. **📊 ابزارهای مالی و اقتصادی (`src/tools/financial/`):**
    - استعلام زنده قیمت رمزارزها از بایننس و نوبیتکس (`get_price`, `get_crypto_overview`).
