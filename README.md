@@ -1,22 +1,18 @@
 # پرومته (Prometheus) — یه ربات تلگرام معمولی که سعی می‌کنه مفید باشه
 > یه بات تلگرام وصل به مدل زبانی، با یه مشت ابزار کاربردی (قیمت ارز و طلا و رمزارز، هواشناسی، سرچ وب، موزیک، فایل، حساب‌وکتاب). به‌جای حدس زدن می‌ره سراغ ابزار؛ اگه چیزی خراب باشه همون رو می‌گه. معجزه‌ای در کار نیست.
 
-<p align="center" id="languages">
-  <a href="#persian">🇮🇷 فارسی</a> ·
-  <a href="#english">🇬🇧 English</a> ·
-  <a href="#russian">🇷🇺 Русский</a> ·
-  <a href="#spanish">🇪🇸 Español</a> ·
-  <a href="#french">🇫🇷 Français</a>
+<p align="center">
+  <a href="README.md">🇮🇷 فارسی</a> ·
+  <a href="README.en.md">🇬🇧 English</a> ·
+  <a href="README.ru.md">🇷🇺 Русский</a> ·
+  <a href="README.es.md">🇪🇸 Español</a> ·
+  <a href="README.fr.md">🇫🇷 Français</a>
 </p>
 
 ---
 
 ## 📖 فهرست مطالب
 - [معرفی و فلسفه طراحی (Overview & Design Philosophy)](#-معرفی-و-فلسفه-طراحی-overview--design-philosophy)
-  - [🇬🇧 English](#english)
-  - [🇷🇺 Русский](#russian)
-  - [🇪🇸 Español](#spanish)
-  - [🇫🇷 Français](#french)
 - [ساختار پوشه‌بندی و ماژول‌ها (Project Structure)](#-ساختار-پوشه‌بندی-و-ماژول‌ها-project-structure)
 - [معماری و نحوه کارکرد ربات (How It Works)](#-معماری-و-نحوه-کارکرد-ربات-how-it-works)
 - [راهنمای جامع تهیه کلیدها و پیش‌نیازها (Where & How to Get Keys)](#-راهنمای-جامع-تهیه-کلیدها-و-پیش‌نیازها-where--how-to-get-keys)
@@ -28,6 +24,7 @@
   - [۶. کلید نرخ‌های زنده ارزی و طلا AllRatesToday (ALLRATESTODAY_API_KEY)](#۶-کلید-نرخ‌های-زنده-ارزی-و-طلا-allratestoday-allratestoday_api_key)
   - [۷. توکن دسترسی گیت‌هاب (GITHUB_TOKEN)](#۷-توکن-دسترسی-گیت‌هاب-github_token)
   - [۸. کلیدهای اسپاتیفای (SPOTIFY_CLIENT_ID & SPOTIFY_CLIENT_SECRET)](#۸-کلیدهای-اسپاتیفای-spotify_client_id--spotify_client_secret)
+  - [۹. سندباکس ابری E2B (E2B_API_KEY)](#۹-سندباکس-ابری-e2b-e2b_api_key)
 - [جدول متغیرهای محیطی (.env)](#-جدول-متغیرهای-محیطی-env)
 - [نصب و راه‌اندازی گام‌به‌گام (Step-by-Step Installation)](#-نصب-و-راه‌اندازی-گام‌به‌گام-step-by-step-installation)
 - [استقرار در محیط پروداکشن و کلود (Cloud Deployment)](#-استقرار-در-محیط-پروداکشن-و-کلود-cloud-deployment)
@@ -38,7 +35,6 @@
 
 ---
 
-<a id="persian"></a>
 ## 🇮🇷 معرفی (Overview)
 
 **پرومته** یه ربات تلگرام متن‌بازه که یه مدل زبانی رو به ابزارهای واقعی وصل می‌کنه. ایده‌ش ساده‌ست و همون رو هم درست انجام می‌ده:
@@ -47,54 +43,6 @@
 - **هر چیزی کلید نمی‌خواد:** فقط توکن تلگرام، آیدی ادمین و یه کلید مدل سازگار با OpenAI لازمه. بقیه (Tavily، Cloudflare، گیت‌هاب، اسپاتیفای، E2B) اختیاری‌ان و بدون اونا هم کار می‌کنه، فقط با fallback رایگان.
 - **تو گروه سرش تو کار خودش نیست:** فقط وقتی جواب می‌ده که صداش کنی (ریپلای، منشن، یا اسم «پرومته»). بقیه پیام‌ها رو ساکت آرشیو می‌کنه.
 - **کد رو لوکال اجرا نکن:** اجرای پایتون اول می‌ره تو سندباکس ابری E2B (اگه کلیدش باشه)، وگرنه تو سندباکس لوکال ایزوله. شل مخرب تحت هیچ شرایطی اجرا نمی‌شه، حتی به دستور ادمین.
-
-<a id="english"></a>
-## 🇬🇧 English
-
-Prometheus is an open-source Telegram bot that plugs a language model into real tools. The idea is simple, and it does just that:
-
-- **Don't guess, go look:** anything that needs live data (prices, weather, news, site status) comes straight from a tool, not from model memory. If a tool is down, the bot says it doesn't know. That's it.
-- **You don't need a key for everything:** only a Telegram token, an admin ID, and one OpenAI-compatible model key are required. Everything else (Tavily, Cloudflare, GitHub, Spotify, E2B) is optional — without them it still works, just with free fallbacks.
-- **It minds its own business in groups:** it only replies when addressed (reply, mention, or the word "Prometheus"). Everything else is silently archived.
-- **It doesn't run code locally:** Python runs in the E2B cloud sandbox first (if keyed), otherwise in an isolated local sandbox. Destructive shell never runs, not even on admin order.
-
-<p align="right"><a href="#languages">↑ Languages</a></p>
-
-<a id="russian"></a>
-## 🇷🇺 Русский
-
-«Прометей» — open-source Telegram-бот, который подключает языковую модель к реальным инструментам. Идея простая, и он просто её выполняет:
-
-- **Не гадай — проверь:** всё, чему нужны живые данные (цены, погода, новости, статус сайтов), берётся напрямую из инструментов, а не из памяти модели. Если инструмент недоступен, бот так и говорит. Всё.
-- **Ключ нужен не для всего:** обязательны только токен Telegram, ID админа и один OpenAI-совместимый ключ модели. Остальное (Tavily, Cloudflare, GitHub, Spotify, E2B) опционально — без них тоже работает, просто на бесплатных запасных вариантах.
-- **В группах не лезет без спроса:** отвечает только при обращении (ответ на сообщение, упоминание или слово «Прометей»). Остальное тихо архивируется.
-- **Код локально не выполняется:** Python сначала идёт в облачную песочницу E2B (если есть ключ), иначе — в изолированную локальную. Деструктивный shell не выполняется никогда, даже по приказу админа.
-
-<p align="right"><a href="#languages">↑ Языки</a></p>
-
-<a id="spanish"></a>
-## 🇪🇸 Español
-
-Prometheus es un bot open-source de Telegram que conecta un modelo de lenguaje a herramientas reales. La idea es simple, y eso es lo que hace:
-
-- **No adivines, ve a mirar:** todo lo que necesita datos en vivo (precios, clima, noticias, estado de sitios) viene directo de una herramienta, no de la memoria del modelo. Si una herramienta falla, el bot dice que no lo sabe. Punto.
-- **No necesitas clave para todo:** solo hacen falta el token de Telegram, el ID de admin y una clave de modelo compatible con OpenAI. Lo demás (Tavily, Cloudflare, GitHub, Spotify, E2B) es opcional — sin eso sigue funcionando, con alternativas gratuitas.
-- **En grupos no se mete donde no le llaman:** solo responde cuando se le habla (respuesta, mención o la palabra «Prometheus»). Lo demás se archiva en silencio.
-- **No ejecuta código en local:** Python va primero al sandbox en la nube de E2B (si hay clave), si no a un sandbox local aislado. La shell destructiva nunca se ejecuta, ni siquiera por orden del admin.
-
-<p align="right"><a href="#languages">↑ Idiomas</a></p>
-
-<a id="french"></a>
-## 🇫🇷 Français
-
-Prometheus est un bot Telegram open-source qui branche un modèle de langage sur des outils réels. L'idée est simple, et c'est tout ce qu'il fait :
-
-- **Ne devine pas, va vérifier :** tout ce qui demande des données en direct (prix, météo, actus, état des sites) vient directement d'un outil, pas de la mémoire du modèle. Si un outil est en panne, le bot dit qu'il ne sait pas. Point.
-- **Pas besoin de clé pour tout :** seuls le token Telegram, l'ID admin et une clé de modèle compatible OpenAI sont requis. Le reste (Tavily, Cloudflare, GitHub, Spotify, E2B) est optionnel — sans ça, ça marche quand même, avec des replis gratuits.
-- **Dans les groupes, il ne s'en mêle pas :** il ne répond que si on s'adresse à lui (réponse, mention ou le mot « Prometheus »). Le reste est archivé en silence.
-- **Pas d'exécution locale :** Python part d'abord dans le sandbox cloud E2B (si clé), sinon dans un sandbox local isolé. Le shell destructif ne s'exécute jamais, même sur ordre de l'admin.
-
-<p align="right"><a href="#languages">↑ Langues</a></p>
 
 ---
 
@@ -288,6 +236,13 @@ prometheusopenbot/
   2. ساخت یک برنامه ساده (Create App) و کپی کردن `Client ID` و `Client Secret`.
   *(در صورت نبود این مقادیر، ربات از موتور iTunes API و متادیتای پیش‌فرض استفاده می‌کند).*
 
+### ۹. سندباکس ابری E2B (E2B_API_KEY) — [اختیاری ⚪]
+- **کاربرد:** اجرای ایزوله کد پایتون/جاوااسکریپت و دستورات شل در کلاد، بدون مصرف رم و CPU سرور. بدون آن، ربات از سندباکس لوکال استفاده می‌کند.
+- **نحوه تهیه رایگان:**
+  1. ثبت نام در [e2b.dev](https://e2b.dev).
+  2. دریافت کلید از [داشبورد E2B](https://e2b.dev/dashboard?tab=keys) (با `e2b_` شروع می‌شود).
+  3. قرار دادن در `E2B_API_KEY`. (اختیاری: `E2B_TEMPLATE` برای تمپلیت سفارشی، `E2B_TIMEOUT_SEC` برای سقف اجرا.)
+
 ---
 
 ## ⚙️ جدول متغیرهای محیطی (.env)
@@ -310,6 +265,9 @@ prometheusopenbot/
 | `GITHUB_TOKEN` | اختیاری ⚪ | `""` | توکن پرسنال گیت‌هاب جهت رفع ریت‌لیمیت |
 | `SPOTIFY_CLIENT_ID` | اختیاری ⚪ | `""` | شناسه کلاینت اسپاتیفای |
 | `SPOTIFY_CLIENT_SECRET` | اختیاری ⚪ | `""` | سکرت کلاینت اسپاتیفای |
+| `E2B_API_KEY` | اختیاری ⚪ | `""` | سندباکس ابری E2B برای اجرای ایزوله کد (بدون آن: لوکال) |
+| `E2B_TIMEOUT_SEC` | اختیاری ⚪ | `30` | سقف اجرای E2B به ثانیه (۵ تا ۱۲۰) |
+| `ENABLE_FINANCIAL_SYNC` | اختیاری ⚪ | `1` | سینک پس‌زمینه قیمت‌ها (`0` = خاموش، برای صرفه‌جویی سهمیه KV) |
 
 ---
 
@@ -416,6 +374,7 @@ sudo systemctl enable --now prometheus
 
 5. **🛡️ ابزارهای سیستم، امنیت و مدیریت ادمین (`src/tools/admin/` & `src/tools/system/`):**
    - اجرای کدهای پایتون در محیط ایزوله و سندباکس ویژه ادمین (`execute_python_code`).
+   - اجرای ایزوله کد در سندباکس ابری E2B (`e2b_run_code`, `e2b_run_command`)؛ بدون کلید، fallback به سندباکس لوکال.
    - تله‌متری سرور، میزان مصرف رم و سلامت سیستم (`admin_system_diagnostics`).
    - مسدودسازی سراسری یا سکوت کاربران در دیتابیس D1 (`ban_user_tool`, `mute_user_tool`).
    - مدیریت گروه‌ها، گزارش اعضا و خروج اضطراری ربات (`list_joined_groups_tool`, `leave_group_by_admin_tool`).
