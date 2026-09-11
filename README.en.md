@@ -43,6 +43,7 @@
 - **You don't need a key for everything:** only a Telegram token, an admin ID, and one OpenAI-compatible model key are required. Everything else (Tavily, Cloudflare, GitHub, Spotify, E2B) is optional — without them it still works, just with free fallbacks.
 - **It minds its own business in groups:** it only replies when addressed (reply, mention, or the word "Prometheus"). Everything else is silently archived.
 - **It doesn't run code locally:** Python runs in the E2B cloud sandbox first (if keyed), otherwise in an isolated local sandbox. Destructive shell never runs, not even on admin order.
+- **Not Persian-only:** it detects each user's Telegram language and answers in it (English, Russian, Spanish, French, ...); tool outputs are translated when needed.
 
 ---
 

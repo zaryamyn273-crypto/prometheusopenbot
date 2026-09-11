@@ -170,7 +170,9 @@ async def _try_fast_market_match(prompt: str) -> Optional[str]:
 
     analysis_keywords = [
         "تحلیل", "چرا", "نظرت", "بخرم", "بفروشم", "پیشنهاد", "پیش بینی",
-        "آینده", "علت", "مقایسه", "توضیح", "کامل بگو", "بررسی کن", "چطور"
+        "آینده", "علت", "مقایسه", "توضیح", "کامل بگو", "بررسی کن", "چطور",
+        "analysis", "analyse", "analyze", "why", "should i buy", "should i sell",
+        "predict", "prediction", "compare", "comparison", "explain", "opinion",
     ]
     if any(ak in p for ak in analysis_keywords):
         return None
@@ -179,17 +181,19 @@ async def _try_fast_market_match(prompt: str) -> Optional[str]:
         "قیمت دلار", "نرخ دلار", "دلار چنده", "دلار چند است", "دلار امروز",
         "قیمت یورو", "نرخ یورو", "یورو چنده", "قیمت درهم", "نرخ درهم", "درهم چنده",
         "قیمت پوند", "قیمت لیر", "ارز آزاد", "قیمت ارز", "نرخ ارز", "تابلوی ارز",
-        "قیمت پول ها", "قیمت ارزها", "قیمت پول", "نرخ پول", "قیمت دلار چنده", "پول ها"
+        "قیمت پول ها", "قیمت ارزها", "قیمت پول", "نرخ پول", "قیمت دلار چنده", "پول ها",
+        "dollar price", "price of dollar", "dollar rate", "how much is dollar",
+        "euro price", "price of euro", "exchange rate", "fiat price", "currency price",
     ]
     # Single-currency rule: user naming ONLY one currency gets ONLY that one.
     _only_dollar = (
         ("دلار" in p or p == "usd" or "dollar" in p)
-        and not any(o in p for o in ["یورو", "درهم", "پوند", "لیر", "یوان", "ارزها", "پول ها", "پول‌ها", "ارزهای", "تابلوی ارز", "eur", "aed", "gbp", "try"])
+        and not any(o in p for o in ["یورو", "درهم", "پوند", "لیر", "یوان", "ارزها", "پول ها", "پول‌ها", "ارزهای", "تابلوی ارز", "eur", "aed", "gbp", "try", "euro", "pound", "lira", "rial"])
     )
     if _only_dollar:
         from src.tools import financial
         return await financial.get_dollar_price()
-    if p in ["دلار", "یورو", "درهم", "پوند", "لیر", "ارز", "ارزها", "پول ها", "قیمت پول"] or any(t in p for t in fiat_triggers):
+    if p in ["دلار", "یورو", "درهم", "پوند", "لیر", "ارز", "ارزها", "پول ها", "قیمت پول", "dollar", "euro", "usd"] or any(t in p for t in fiat_triggers):
         from src.tools import financial
         return await financial.get_fiat_overview()
 
@@ -197,9 +201,10 @@ async def _try_fast_market_match(prompt: str) -> Optional[str]:
         "قیمت طلا", "نرخ طلا", "طلا چنده", "طلا چند است", "طلا ۱۸", "طلا 18",
         "طلای ۱۸", "طلای 18", "قیمت سکه", "نرخ سکه", "سکه چنده", "سکه امامی",
         "سکه بهار آزادی", "نیم سکه", "ربع سکه", "مثقال طلا", "آبشده", "انس طلا",
-        "طلای ۱۸ عیار", "طلا 18 عیار", "قیمت سکه امامی"
+        "طلای ۱۸ عیار", "طلا 18 عیار", "قیمت سکه امامی",
+        "gold price", "price of gold", "how much is gold", "coin price", "gold rate",
     ]
-    if p in ["طلا", "سکه", "سکه امامی", "طلا ۱۸ عیار", "طلای ۱۸ عیار"] or any(t in p for t in gold_triggers):
+    if p in ["طلا", "سکه", "سکه امامی", "طلا ۱۸ عیار", "طلای ۱۸ عیار", "gold", "coin"] or any(t in p for t in gold_triggers):
         from src.tools import financial
         return await financial.get_gold_and_coin_price()
 
@@ -215,11 +220,16 @@ async def _try_fast_market_match(prompt: str) -> Optional[str]:
         "NOT": ["نات کوین", "ناتکوین", "not", "notcoin"],
     }
     for sym, triggers in crypto_map.items():
-        if any(f"قیمت {tr}" in p or f"نرخ {tr}" in p or f"{tr} چنده" in p or f"{tr} چند است" in p or p == tr for tr in triggers):
+        if any(
+            f"قیمت {tr}" in p or f"نرخ {tr}" in p or f"{tr} چنده" in p
+            or f"{tr} چند است" in p or p == tr
+            or f"price of {tr}" in p or f"{tr} price" in p or f"how much is {tr}" in p
+            for tr in triggers
+        ):
             from src.tools import financial
             return await financial.get_price(sym)
 
-    if any(k in p for k in ["تابلوی کریپتو", "رمزارزها", "ارز دیجیتال", "ارزهای دیجیتال", "بازار رمزارز"]):
+    if any(k in p for k in ["تابلوی کریپتو", "رمزارزها", "ارز دیجیتال", "ارزهای دیجیتال", "بازار رمزارز", "crypto market", "crypto prices", "cryptocurrency", "crypto board"]):
         from src.tools import financial
         return await financial.get_crypto_overview()
 
@@ -275,6 +285,63 @@ async def _try_fast_market_match(prompt: str) -> Optional[str]:
 
     return None
 
+async def translate_text(text: str, target_lang_name: str, source_hint: str = "Persian") -> str:
+    """Translate a tool/bot output so non-Persian users get the same functionality.
+
+    One cheap LLM call. Returns the ORIGINAL text on any failure (no key,
+    network error, empty result) — never an error string, never silence.
+    Numbers/code/links/@usernames are instructed to stay byte-identical.
+    """
+    clean = (text or "").strip()
+    if not clean:
+        return text
+    try:
+        target = (target_lang_name or "").strip()
+        if not target or target.lower().startswith(("persian", "farsi")):
+            return text
+        from src.core import config as _cfg_t
+        if not (_cfg_t.ROUTER_API_KEY or "").strip():
+            return text
+        _model = _cfg_t.ROUTER_MODEL
+        _base = (_cfg_t.ROUTER_BASE_URL or "").rstrip("/")
+    except Exception:
+        return text
+    try:
+        client = get_shared_client()
+        payload: Dict[str, Any] = {
+            "model": _model,
+            "stream": False,
+            "temperature": 0,
+            "max_tokens": 1500,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        f"Translate the following {source_hint} Telegram message into {target}. "
+                        "Keep ALL numbers, dates, code, links, @usernames and symbols EXACTLY unchanged. "
+                        "Keep Telegram Markdown (*bold*, `code`). "
+                        "Output ONLY the translation, no explanations."
+                    ),
+                },
+                {"role": "user", "content": clean[:3000]},
+            ],
+        }
+        resp = await client.post(
+            f"{_base}/chat/completions",
+            headers=_router_headers(),
+            json=payload,
+            timeout=25.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            out = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            if out:
+                return sanitize_output(out)
+    except Exception as e:
+        logger.debug(f"translate_text failed, returning original: {e}")
+    return text
+
+
 async def generate_response(
     chat_id: int,
     user_prompt: str,
@@ -284,11 +351,14 @@ async def generate_response(
     caller_name: str = "",
     caller_username: str = "",
     is_private_chat: bool = False,
-    has_reply_context: bool = False
+    has_reply_context: bool = False,
+    user_lang_code: str = "fa"
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """
     Main Autonomous Agent Loop.
     Executes multi-turn AI reasoning, parallel tool calling, and high-speed multimodal vision analysis.
+    ``user_lang_code`` is the raw Telegram language_code (e.g. 'fa', 'en', 'ru'):
+    bot chrome uses fa/en, the model is instructed to reply in the user's language.
     """
     # Pre-cached In-Memory System Directives (Refreshed in background, 0 latency on turn start)
     admin_memories = database.get_all_admin_memories()
@@ -318,6 +388,24 @@ async def generate_response(
         caller_info = f"\n\n[مشخصات کاربر]: کاربر ناشناس (آیدی عددی {caller_user_id} — ادمین نیست)" + chat_privacy_rule
     caller_info += "\n[قانون خطاب]: اگر پیام کاربر شامل (خطاب: X) بود، او را فقط با همان نام فارسی X خطاب کن. اگر چنین راهنمایی نبود، هیچ اسمی برای کاربر حدس نزن و بدون خطاب حرف بزن."
 
+    # --- Language layer: the bot serves the whole world, not just Persian users.
+    # Bot chrome stays fa/en, but the model MUST answer in the user's own language.
+    # Tool outputs are often Persian: translate their human-readable content, keep
+    # numbers/code/links/@usernames byte-identical.
+    from src.core.i18n import normalize_lang as _norm_lang, lang_name as _lang_name, t as _t
+    _ulang = _norm_lang(user_lang_code)
+    _ulang_name = _lang_name(user_lang_code)
+    if _ulang == "fa":
+        _lang_rule = "\n[زبان پاسخ]: کاربر فارسی‌زبان است؛ فارسیِ روان و صمیمی جواب بده."
+    else:
+        _lang_rule = (
+            f"\n[REPLY LANGUAGE — STRICT]: The user speaks {_ulang_name} (Telegram code '{user_lang_code}'). "
+            f"ALWAYS write your final answer in {_ulang_name}, no Persian sentences. "
+            "Tool outputs below may be in Persian: faithfully translate their human-readable content into "
+            f"{_ulang_name}, but keep ALL numbers, dates, code, links, @usernames and symbols EXACTLY unchanged. "
+            "Keep the same concise style."
+        )
+
     try:
         _today_iso, _today_hm, _today_j = database.get_tehran_timestamps()
     except Exception:
@@ -326,6 +414,7 @@ async def generate_response(
         SYSTEM_PROMPT
         + memory_section
         + caller_info
+        + _lang_rule
         + f"\n\n[تاریخ امروز: {_today_j} (شمسی) — ساعت تهران: {_today_hm} — میلادی (ISO): {_today_iso}]"
         + "\n[دستور جستجوی زنده]: برای اخبار/حوادث روز/مقایسه نسخه‌ها از ابزار جستجوی زنده استفاده کن — اگر tavily_search در دسترس بود از آن، وگرنه از web_search رایگان. هرگز از داده‌های ذهنی بدون ابزار پاسخ نده.]"
         + "\n\nدستور قطعی لحن و تمرکز: لحن کاملاً جدی، رسمی، قاطع و فوق‌العاده خلاصه باشد. بدون سلام، بدون تعارف، بدون مقدمه و حاشیه. فقط و فقط دقیقاً به همان سؤالی که مستقیماً در این پیام پرسیده شده پاسخ بده و به هیچ موضوع دیگری وارد نشو مگر اینکه صراحتاً درخواست شده باشد."
@@ -410,6 +499,11 @@ async def generate_response(
     if not image_bytes and not needs_memory:
         fast_price = await _try_fast_market_match(user_prompt)
         if fast_price:
+            if _ulang != "fa":
+                try:
+                    fast_price = await translate_text(fast_price, _ulang_name)
+                except Exception:
+                    pass
             return fast_price, None
 
     # Multimodal Vision Analysis
@@ -443,30 +537,27 @@ async def generate_response(
     headers = _router_headers()
 
     # Offline/no-key mode: still serve deterministic tools (price/time/etc.)
-    # without burning LLM calls. Everything else gets a clear Persian notice.
+    # without burning LLM calls. Everything else gets a clear notice.
     from src.core import config as _cfg_off
     if not (_cfg_off.ROUTER_API_KEY or "").strip():
         try:
             _off_fast = await _try_fast_market_match(user_prompt)
             if _off_fast:
+                if _ulang != "fa":
+                    _off_fast = await translate_text(_off_fast, _ulang_name)
                 return _off_fast, None
         except Exception:
             pass
         # Deterministic offline tools that need no key:
         _pl_off = (user_prompt or "").strip().lower()
         try:
-            if _pl_off in ("ساعت", "ساعت چنده", "time") or "ساعت" == _pl_off:
+            if _pl_off in ("ساعت", "ساعت چنده", "ساعت چند است", "ساعت الان", "تایم", "time", "what time is it", "current time"):
                 from src.core import database as _db_off
                 _iso, _hm, _j = _db_off.get_tehran_timestamps()
-                return f"⏰ *ساعت رسمی تهران:* `{_hm}`", None
+                return _t(_ulang, "time_is", hm=_hm), None
         except Exception:
             pass
-        return (
-            "⚠️ *مغز AI فعال نیست:* کلید `ROUTER_API_KEY` ست نشده.\n"
-            "ربات در حالت آفلاین فقط قیمت/طلا/ارز/ساعت/محاسبات را می‌دهد.\n"
-            "برای فعال‌سازی کامل، در Railway یک متغیر `ROUTER_API_KEY` بگذارید.",
-            None,
-        )
+        return (_t(_ulang, "ai_offline"), None)
 
     extra_action = None
     max_tool_loops = 8
@@ -561,24 +652,24 @@ async def generate_response(
                 else:
                     if last_tool_outputs:
                         return "\n\n".join(last_tool_outputs), extra_action
-                    return f"⚠️ خطای سرور پردازش هوش مصنوعی ({resp.status_code}).", None
+                    return _t(_ulang, "ai_server_error", code=resp.status_code), None
             except (httpx.TimeoutException, httpx.NetworkError):
                 if attempt < max_retries - 1:
                     await asyncio.sleep(backoff_delays[attempt])
                     continue
                 if last_tool_outputs:
                     return "\n\n".join(last_tool_outputs), extra_action
-                return "⚠️ زمان پاسخ‌دهی سرور هوش مصنوعی به پایان رسید.", None
+                return _t(_ulang, "ai_timeout"), None
             except Exception as e:
                 logger.error(f"Router request error: {e}")
                 if last_tool_outputs:
                     return "\n\n".join(last_tool_outputs), extra_action
-                return f"خطای ارتباطی: {str(e)}", None
+                return _t(_ulang, "ai_comm_error", err=str(e)), None
 
         if resp is None or resp.status_code != 200:
             if last_tool_outputs:
                 return "\n\n".join(last_tool_outputs), extra_action
-            return "⚠️ پاسخی از سرور هوش مصنوعی دریافت نشد.", None
+            return _t(_ulang, "ai_no_response"), None
 
         try:
             content, tool_calls = _parse_router_response(resp.text)
@@ -595,7 +686,7 @@ async def generate_response(
                 if not final_text and last_tool_outputs:
                     final_text = "\n\n".join(last_tool_outputs)
                 if not final_text:
-                    final_text = "درخواستی برای اجرا ثبت نشد؛ لطفاً دقیق‌تر بفرمایید."
+                    final_text = _t(_ulang, "ai_empty")
                 return sanitize_output(final_text), extra_action
             consecutive_empty_loops = 0
 

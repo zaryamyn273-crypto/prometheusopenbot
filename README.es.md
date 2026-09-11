@@ -43,6 +43,7 @@
 - **No necesitas clave para todo:** solo hacen falta el token de Telegram, el ID de admin y una clave de modelo compatible con OpenAI. Lo demás (Tavily, Cloudflare, GitHub, Spotify, E2B) es opcional — sin eso sigue funcionando, con alternativas gratuitas.
 - **En grupos no se mete donde no le llaman:** solo responde cuando se le habla (respuesta, mención o la palabra «Prometheus»). Lo demás se archiva en silencio.
 - **No ejecuta código en local:** Python va primero al sandbox en la nube de E2B (si hay clave), si no a un sandbox local aislado. La shell destructiva nunca se ejecuta, ni siquiera por orden del admin.
+- **No solo persa:** detecta el idioma de Telegram de cada usuario y responde en él (inglés, ruso, español, francés...); las salidas se traducen cuando hace falta.
 
 ---
 

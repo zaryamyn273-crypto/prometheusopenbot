@@ -33,6 +33,7 @@ from src.core.config import (
     RATE_LIMIT_ADMIN_MAX_REQUESTS
 )
 from src.core import database, ai_service, config
+from src.core.i18n import normalize_lang, lang_name, t
 from src.tools import (
     financial,
     web_network,
@@ -90,22 +91,47 @@ def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
 
-def _pingpong_reply(norm_text: str, user_display: str, user_id: int) -> str:
+def _ulang_of(update) -> tuple:
+    """(lang, lang_name) for a Telegram update: 'fa' for Persian clients, else 'en' chrome + full LLM language."""
+    try:
+        code = (getattr(update.effective_user, "language_code", "") or "fa")
+    except Exception:
+        code = "fa"
+    return normalize_lang(code), lang_name(code)
+
+
+async def _maybe_translate(update, text: str) -> str:
+    """Translate a Persian tool output for non-Persian clients.
+
+    fa clients (and any failure) get the original text untouched, so the
+    fast direct-command path stays zero-cost for the home audience.
+    """
+    try:
+        ulang, ulang_name = _ulang_of(update)
+        if ulang == "fa" or not isinstance(text, str) or not text.strip():
+            return text
+        return await ai_service.translate_text(text, ulang_name)
+    except Exception:
+        return text
+
+
+def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str = "fa") -> str:
     """Instant deterministic reply for pure social chatter (no LLM, no tools)."""
     t = (norm_text or "").strip().lower()
+    is_fa = (lang == "fa")
     if t in ("سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood"):
         if int(user_id or 0) == int(ADMIN_ID):
-            return "👑 درود فرمانده! در خدمتم — بفرمایید."
-        return "سلام! 👋 چطور کمکتون کنم؟"
-    if t in ("خوبی", "چطوری", "چه خبر", "خسته نباشی"):
-        return "ممنون، عالی‌ام! 💪 شما چطورید؟ چه کمکی از دستم برمیاد؟"
-    if t in ("ممنون", "مرسی", "دمت گرم"):
-        return "خواهش می‌کنم! 🌹 در خدمتم."
-    if t in ("باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله"):
-        return "حله! ✅"
-    if t in ("نه",):
-        return "باشه، مشکلی نیست. 👍"
-    return "جانم؟ 🙂" 
+            return "👑 درود فرمانده! در خدمتم — بفرمایید." if is_fa else "👑 Hello commander! At your service."
+        return "سلام! 👋 چطور کمکتون کنم؟" if is_fa else "Hey! 👋 How can I help?"
+    if t in ("خوبی", "چطوری", "چه خبر", "خسته نباشی", "how are you", "how are u", "whats up", "what's up"):
+        return "ممنون، عالی‌ام! 💪 شما چطورید؟ چه کمکی از دستم برمیاد؟" if is_fa else "Doing great, thanks! 💪 How about you?"
+    if t in ("ممنون", "مرسی", "دمت گرم", "thanks", "thank you", "thx", "ty"):
+        return "خواهش می‌کنم! 🌹 در خدمتم." if is_fa else "You're welcome! 🌹"
+    if t in ("باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله", "yes", "yeah", "sure", "alright"):
+        return "حله! ✅" if is_fa else "Got it! ✅"
+    if t in ("نه", "no", "nope"):
+        return "باشه، مشکلی نیست. 👍" if is_fa else "No problem. 👍"
+    return "جانم؟ 🙂" if is_fa else "Yes? 🙂"
 
 async def reply_safely(message, text: str, reply_markup=None):
     """Safely formats markdown to HTML and sends message with fallback + 4096-char chunking."""
@@ -312,24 +338,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user or not message or database.is_user_banned(user.id, username=user.username or ""):
         return
 
+    ulang, _ = _ulang_of(update)
     if chat and chat.type == ChatType.PRIVATE and not is_admin(user.id):
-        await message.reply_text("🔒 <b>دسترسی اختصاصی:</b>\nچت خصوصی (پیوی) ربات منحصراً برای فرمانده ارشد سیستم فعال است. لطفاً از امکانات ربات در گروه‌ها و سوپرگروه‌های متصل استفاده فرمایید.", parse_mode=ParseMode.HTML)
+        await reply_safely(message, t(ulang, "pv_locked"))
         return
 
-    welcome_text = (
-        f"<b>پرومته</b> — یه ربات تلگرام معمولی که سعی می‌کنه مفید باشه، {user.mention_html()}.\n\n"
-        f"به‌جای حدس زدن می‌رم سراغ ابزار: قیمت دلار و طلا و رمزارز، هواشناسی، سرچ وب، موزیک، فایل، حساب‌وکتاب. "
-        f"اگه چیزی خراب باشه یا ندونم، همون رو می‌گم؛ معجزه‌ای در کار نیست.\n\n"
-        f"<b>طرز استفاده:</b>\n"
-        f"• تو گروه فقط وقتی جواب می‌دم که صدام کنی: ریپلای روی پیامم، منشن، یا اسم «پرومته». بقیه حرف‌ها رو فقط آرشیو می‌کنم.\n"
-        f"• لیست دستورها: <code>/help</code>\n"
-        f"• پیوی فقط برای ادمین بازه."
-    )
+    welcome_text = t(ulang, "welcome", name=(user.first_name or "friend"))
 
-    await message.reply_text(
+    await reply_safely(
+        message,
         welcome_text,
         reply_markup=admin_panel.get_start_keyboard(),
-        parse_mode=ParseMode.HTML
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -337,30 +356,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if not user or not message or database.is_user_banned(user.id, username=user.username or ""):
         return
-    help_text = (
-        "📖 <b>راهنمای دستورهای پرومته</b> (همه رو لازم نیست حفظ کنی؛ فارسی حرف بزن، خودم می‌فهمم):\n\n"
-        "• <code>/tools_prometheus</code> - باز کردن جعبه ابزارهای تخصصی\n"
-        "• <code>/crypto_prometheus [نماد]</code> - استعلام تابلوی رمزارزها\n"
-        "• <code>/gold_prometheus</code> - نرخ زنده طلا، سکه و حباب\n"
-        "• <code>/weather_prometheus [شهر]</code> - هواشناسی پیشرفته\n"
-        "• <code>/music_prometheus [نام آهنگ]</code> - دانلود و ارسال فایل موزیک\n"
-        "• <code>/search_prometheus [عبارت]</code> - موتور جستجوی وب\n"
-        "• <code>/calc_prometheus [فرمول]</code> - ماشین‌حساب پیشرفته\n"
-        "• <code>/del</code> یا <code>/delete</code> - حذف پیام هدف (با ریپلای)\n"
-        "• <code>/clear_prometheus</code> - پاکسازی حافظه و شروع چت جدید\n"
-        "• <code>/groups_prometheus</code> - لیست گروه‌های ربات (ادمین)\n"
-        "• <code>/leave_prometheus [آیدی/نام گروه]</code> - خروج ربات از گروه (ادمین)\n"
-        "• <code>/net_prometheus [دامنه]</code> - وضعیت سایت و DNS"
-    )
-    await message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    ulang, _ = _ulang_of(update)
+    await reply_safely(message, t(ulang, "help_text"))
 
 async def tools_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.effective_message
     if not user or not message or database.is_user_banned(user.id, username=user.username or ""):
         return
+    ulang, _ = _ulang_of(update)
     await message.reply_text(
-        "🛠 <b>سامانه ابزارهای فعال پرومته سوپر ایجنت</b>:\n\nیکی از دسته‌بندی‌های زیر را جهت اجرای مستقیم انتخاب فرمایید:",
+        t(ulang, "toolbox_title"),
         reply_markup=admin_panel.get_tools_keyboard(),
         parse_mode=ParseMode.HTML
     )
@@ -506,11 +512,15 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     query = " ".join(context.args).strip() if context.args else ""
     if not query:
-        await reply_safely(message, "⚠️ لطفاً نام آهنگ یا خواننده را وارد نمایید:\nمثال: `/music_prometheus هایده سوغاتی`")
+        ulang, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang, "music_usage"))
         return
 
     await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_VOICE)
     res = await media.download_music_track(query)
+    if isinstance(res, dict) and res.get("caption"):
+        # Same track, user's language on the caption (audio itself is universal).
+        res["caption"] = await _maybe_translate(update, res["caption"])
     if isinstance(res, dict):
         # 1. Native MP3 bytes upload
         if res.get("type") == "audio_bytes" and res.get("bytes"):
@@ -584,36 +594,39 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     sym = " ".join(context.args).strip() if context.args else "BTC"
     res = await financial.get_price(sym)
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def gold_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     res = await financial.get_gold_and_coin_price()
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def weather_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     city = " ".join(context.args).strip() if context.args else "Tehran"
     res = await web_network.get_weather(city)
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     q = " ".join(context.args).strip() if context.args else ""
     if not q:
-        await reply_safely(message, "عبارت جستجو را وارد نمایید.")
+        ulang, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang, "search_usage"))
         return
     res = await web_network.web_search(q)
-    await reply_safely(message, f"🔍 *نتایج جستجوی وب برای «{q}»:*\n\n{res}")
+    res = await _maybe_translate(update, f"🔍 *نتایج جستجوی وب برای «{q}»:*\n\n{res}")
+    await reply_safely(message, res)
 
 async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     expr = " ".join(context.args).strip() if context.args else ""
     if not expr:
-        await reply_safely(message, "فرمول ریاضی را وارد فرمایید.")
+        ulang, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang, "calc_usage"))
         return
     res = scientific.calculate_math_expression(expr)
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from src.tools.admin import group_manager
@@ -673,11 +686,12 @@ async def net_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     target = " ".join(context.args).strip() if context.args else ""
     if not target:
-        await reply_safely(message, "\U0001F310 *ابزارهای شبکه:*\nدامنه یا IP را وارد کنید. مثال: `/net_prometheus google.com`")
+        ulang, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang, "net_usage"))
         return
     status = await web_network.check_website_status(target)
     dns = await web_network.resolve_dns(target)
-    await reply_safely(message, f"{status}\n\n{dns}")
+    await reply_safely(message, await _maybe_translate(update, f"{status}\n\n{dns}"))
 
 async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -691,7 +705,8 @@ async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not code_text and message.reply_to_message:
         code_text = message.reply_to_message.text or ""
     if not code_text:
-        await reply_safely(message, "کد پایتون را وارد نمایید:\nمثال: <code>/code print(2**32)</code>")
+        ulang, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang, "code_usage"))
         return
     caller_id = user.id if user else 0
     is_pv = (chat.type == ChatType.PRIVATE)
@@ -719,7 +734,8 @@ async def sh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not cmd_text:
-        await reply_safely(message, "💻 <b>ترمینال و شل پرومته (مختص فرمانده):</b>\nدستور ترمینال لینوکس را بنویسید:\nمثال: <code>/sh uptime</code> یا <code>/sh free -h</code>")
+        ulang, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang, "sh_usage"))
         return
 
     import asyncio.subprocess as _asp
@@ -766,7 +782,8 @@ async def e2b_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not raw and message.reply_to_message:
         raw = message.reply_to_message.text or message.reply_to_message.caption or ""
     if not raw:
-        await reply_safely(message, "☁️ <b>سندباکس ابری E2B:</b>\nمثال پایتون: <code>/e2b print(2**32)</code>\nمثال جاوااسکریپت: <code>/e2b js console.log(2**32)</code>\nوضعیت: <code>/e2bstatus</code>")
+        ulang, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang, "e2b_usage"))
         return
     lang = "python"
     low = raw.lower()
@@ -792,7 +809,8 @@ async def e2bsh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not cmd and message.reply_to_message:
         cmd = message.reply_to_message.text or ""
     if not cmd:
-        await reply_safely(message, "☁️ مثال: <code>/e2bsh pip list</code> یا <code>/e2bsh python --version</code>")
+        ulang, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang, "e2bsh_usage"))
         return
     try:
         from src.tools.system import e2b_sandbox as _e2b2
@@ -1038,7 +1056,7 @@ async def track_chat_member_updates(update: Update, context: ContextTypes.DEFAUL
         try:
             await context.bot.send_message(
                 chat_id=chat.id,
-                text=f"👋 <b>درود! ربات پرومته فعال شد.</b>\nبرای ارتباط با من کافیست پیام‌هایم را ریپلای کنید، نامم (<code>پرومته</code> یا <code>ربات</code>) را بیاورید یا از منشن استفاده کنید.",
+                text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_hello")),
                 parse_mode=ParseMode.HTML
             )
         except Exception:
@@ -1135,38 +1153,41 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     # Weather quick buttons
     if data.startswith("qweather_"):
-        await query.answer()
+        await query.answer(t(normalize_lang(user.language_code), "loading"))
         city = data.replace("qweather_", "")
         res = await web_network.get_weather(city)
-        await reply_safely(query.message, res, reply_markup=admin_panel.get_weather_quick_keyboard())
+        await reply_safely(query.message, await _maybe_translate(update, res), reply_markup=admin_panel.get_weather_quick_keyboard())
         return
 
     # Tools navigation
     if data == "open_toolbox_main":
         await query.answer()
-        await query.edit_message_text("🛠 <b>جعبه ابزارهای تخصصی پرومته:</b>", reply_markup=admin_panel.get_tools_keyboard(), parse_mode=ParseMode.HTML)
+        ulang_tb, _ = _ulang_of(update)
+        await query.edit_message_text(telegram_formatter.markdown_to_telegram_html(t(ulang_tb, "toolbox_title")), reply_markup=admin_panel.get_tools_keyboard(), parse_mode=ParseMode.HTML)
     elif data == "tool_crypto":
-        await query.answer()
+        await query.answer(t(normalize_lang(user.language_code), "loading"))
         res = await financial.get_crypto_overview()
-        await reply_safely(query.message, res)
+        await reply_safely(query.message, await _maybe_translate(update, res))
     elif data == "tool_gold":
-        await query.answer()
+        await query.answer(t(normalize_lang(user.language_code), "loading"))
         res = await financial.get_gold_and_coin_price()
-        await reply_safely(query.message, res)
+        await reply_safely(query.message, await _maybe_translate(update, res))
     elif data == "tool_news":
-        await query.answer()
+        await query.answer(t(normalize_lang(user.language_code), "loading"))
         res = await web_network.live_news("general")
-        await reply_safely(query.message, f"📰 *اخبار فوری جهان:*\n\n{res}")
+        await reply_safely(query.message, await _maybe_translate(update, f"📰 *اخبار فوری جهان:*\n\n{res}"))
     elif data == "tool_weather_menu":
         await query.answer()
-        await query.message.reply_text("🌦 شهر مورد نظر را انتخاب کنید:", reply_markup=admin_panel.get_weather_quick_keyboard())
+        ulang_wm, _ = _ulang_of(update)
+        await query.message.reply_text(t(ulang_wm, "choose_city"), reply_markup=admin_panel.get_weather_quick_keyboard())
     elif data == "tool_network_menu":
         await query.answer()
-        await query.message.reply_text("🌐 *ابزارهای شبکه:*\nدستور: `/net_prometheus google.com`", reply_markup=admin_panel.get_network_tools_keyboard())
+        ulang_nm, _ = _ulang_of(update)
+        await reply_safely(query.message, t(ulang_nm, "network_menu"), reply_markup=admin_panel.get_network_tools_keyboard())
     elif data == "tool_time":
-        await query.answer()
+        await query.answer(t(normalize_lang(user.language_code), "loading"))
         t_info = scientific.get_current_datetime_info()
-        await reply_safely(query.message, t_info)
+        await reply_safely(query.message, await _maybe_translate(update, t_info))
     elif data in ["tool_net_ip_prompt", "tool_net_dns_prompt", "tool_net_ssl_prompt"]:
         await query.answer()
         hints = {
@@ -1177,11 +1198,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await reply_safely(query.message, hints[data])
         return
     elif data in ["tool_calc_menu", "tool_hash_menu", "tool_units_menu", "tool_telegraph", "tool_qr", "tool_music_menu"]:
-        await query.answer("برای استفاده، دستور یا متن مربوطه را ارسال فرمایید.", show_alert=True)
+        await query.answer(t(normalize_lang(user.language_code), "use_menu_hint"), show_alert=True)
     else:
         # Unknown/dead callback (e.g. stale buttons): never leave the spinner hanging
         try:
-            await query.answer("این دکمه منقضی شده؛ از منوی جدید استفاده کنید.", show_alert=False)
+            await query.answer(t(normalize_lang(user.language_code), "expired"), show_alert=False)
         except Exception:
             pass
 
@@ -1222,7 +1243,8 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if not check_rate_limit(user.id):
-        await message.reply_text("⚠️ شما به سقف مجاز ارسال پیام در دقیقه رسیده‌اید. لطفاً کمی صبر فرمایید.")
+        ulang_rl, _ = _ulang_of(update)
+        await message.reply_text(t(ulang_rl, "rate_limited"))
         return
 
     is_pv = (chat.type == ChatType.PRIVATE)
@@ -1230,13 +1252,15 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # PRIVATE CHAT LOCK: Private chat (PV) is exclusively open for Master Admin.
     # Non-admin users attempting to talk in PV are politely directed to groups or rejected.
     if is_pv and not is_admin(user.id):
-        await message.reply_text("🔒 <b>دسترسی اختصاصی:</b>\nچت خصوصی (پیوی) ربات منحصراً برای فرمانده ارشد سیستم فعال است. لطفاً از امکانات ربات در گروه‌ها و سوپرگروه‌های متصل استفاده فرمایید.", parse_mode=ParseMode.HTML)
+        ulang_pv, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang_pv, "pv_locked"))
         return
 
+    ulang, ulang_name = _ulang_of(update)
     user_text = message.text or message.caption or ""
     user_uname = user.username or ""
-    fa_from_uname = username_to_persian_name(user_uname) if user_uname else ""
-    user_display = fa_from_uname or user.first_name or "کاربر"
+    fa_from_uname = username_to_persian_name(user_uname) if (user_uname and ulang == "fa") else ""
+    user_display = fa_from_uname or user.first_name or ("کاربر" if ulang == "fa" else "user")
 
     # Check fast natural language administrative actions from Master Admin on reply (Delete / Ban / Unban)
     # NOTE: non-admin replies fall THROUGH to the normal group gate below —
@@ -1416,8 +1440,10 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # Master-Admin STOP switch: when the admin says stop in a group, the bot
     # halts generation there (tasks cancelled, turns skipped) until resumed.
     # NOTE: the message is still archived — stopping answers, not memory.
-    _STOP_PHRASES = ("پرومته بسه", "پرومته بس کن", "ربات بسه", "ربات بس کن", "بات بسه", "پرومته ساکت", "پرومته خفه", "ساکت شو", "خفه شو")
-    _RESUME_PHRASES = ("پرومته ادامه", "پرومته ادامه بده", "ربات ادامه", "ادامه بده پرومته", "شروع کن پرومته")
+    _STOP_PHRASES = ("پرومته بسه", "پرومته بس کن", "ربات بسه", "ربات بس کن", "بات بسه", "پرومته ساکت", "پرومته خفه", "ساکت شو", "خفه شو",
+                       "prometheus stop", "prometheus shut up", "prometheus silence", "prometheus hush", "bot stop")
+    _RESUME_PHRASES = ("پرومته ادامه", "پرومته ادامه بده", "ربات ادامه", "ادامه بده پرومته", "شروع کن پرومته",
+                       "prometheus continue", "prometheus resume", "prometheus go on", "continue prometheus")
     _norm_stop = re.sub(r"[\s\u200c،,:؛!\-–—?.؟\"'()\[\]]+", " ", user_text).strip().lower()
     if not is_pv and is_admin(user.id):
         if any(_p == _norm_stop or f" {_p} " in f" {_norm_stop} " for _p in _STOP_PHRASES):
@@ -1429,14 +1455,14 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 pass
             try:
-                await message.reply_text("🤐 چشم فرمانده — تا اطلاع بعدی ساکت می‌مونم. (برای ادامه: «پرومته ادامه»)")
+                await message.reply_text(t(ulang, "stopped"))
             except Exception:
                 pass
             return
         if any(_p in _norm_stop for _p in _RESUME_PHRASES):
             _STOPPED_CHATS.pop(int(chat.id), None)
             try:
-                await message.reply_text("🎙 برگشتم فرمانده — در خدمتم.")
+                await message.reply_text(t(ulang, "resumed"))
             except Exception:
                 pass
             return
@@ -1658,7 +1684,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             if voice_failed and not user_text:
                 # Never go silent on an addressed voice note: say so instead of
                 # falling through with an empty prompt.
-                await reply_safely(message, "🎤 ویس شما دریافت شد ولی تبدیل گفتار به متن فعلاً ناموفق بود. لطفاً دقایقی دیگر دوباره تلاش کنید یا متن پیام را بنویسید.")
+                await reply_safely(message, t(ulang, "voice_failed"))
                 return
 
     # Build multi-message context if replying to someone else's message.
@@ -1759,9 +1785,10 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     user_uname = user.username or ""
     # Addressing: meaningful username -> Persian name (parham271$ -> پرهام);
     # gibberish username -> no name at all (never guess). Falls back to first_name.
-    fa_from_uname = username_to_persian_name(user_uname) if user_uname else ""
-    user_display = fa_from_uname or user.first_name or "کاربر"
-    address_hint = f" (خطاب: {fa_from_uname})" if (fa_from_uname and user.id != ADMIN_ID) else ""
+    # Persian addressing only applies to fa clients; everyone else keeps first_name.
+    fa_from_uname = username_to_persian_name(user_uname) if (user_uname and ulang == "fa") else ""
+    user_display = fa_from_uname or user.first_name or ("کاربر" if ulang == "fa" else "user")
+    address_hint = f" (خطاب: {fa_from_uname})" if (ulang == "fa" and fa_from_uname and user.id != ADMIN_ID) else ""
     chat_title = chat.title or ("پیوی" if is_pv else "گروه")
     # Rich auto-save: every reply/thread link, media kind, chat type and
     # Jalali date+time land in BOTH RAM (instant) and D1 (forever), split by
@@ -1855,12 +1882,12 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         _fast_res = None
         if not image_bytes and not bool(message.reply_to_message) and len(_norm_user) < 50:
             # 1. Time / Date Fast Path (< 1ms)
-            if _norm_user in ["ساعت", "ساعت چنده", "ساعت چند است", "ساعت الان", "تایم", "time"]:
+            if _norm_user in ["ساعت", "ساعت چنده", "ساعت چند است", "ساعت الان", "تایم", "time", "what time is it", "current time", "time now", "whats the time"]:
                 _t_iso, _t_hm, _t_j = database.get_tehran_timestamps()
-                _fast_res = f"⏰ <b>ساعت رسمی تهران:</b> <code>{_t_hm}</code>"
-            elif _norm_user in ["تاریخ", "امروز چندمه", "تاریخ امروز", "امروز چندم است", "امروز چندمه؟", "date"]:
+                _fast_res = t(ulang, "time_is", hm=_t_hm)
+            elif _norm_user in ["تاریخ", "امروز چندمه", "تاریخ امروز", "امروز چندم است", "امروز چندمه؟", "date", "what date is it", "todays date", "today's date", "current date"]:
                 _t_iso, _t_hm, _t_j = database.get_tehran_timestamps()
-                _fast_res = f"📅 <b>تاریخ امروز (خورشیدی):</b> <code>{_t_j}</code>\n🌐 <b>میلادی:</b> <code>{_t_iso}</code>"
+                _fast_res = t(ulang, "date_today", jalali=_t_j, iso=_t_iso)
             # 2. Dollar / Fiat Fast Path
             elif _norm_user in ["قیمت دلار", "دلار", "دلار چنده", "نرخ دلار", "دلار تهران", "دلار چند"]:
                 from src.tools import financial as _fin
@@ -1890,7 +1917,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         # Ping/pong fast-lane: pure social chatter answers instantly, no LLM burn.
         elif _prefetch_hints.get("intent_block") == "__PINGPONG__" and not image_bytes:
             _norm_pp = (_prefetch_hints.get("rewritten", "").replace("__PINGPONG__", "").strip() or user_text).strip()
-            ai_response, extra_action = _pingpong_reply(_norm_pp, user_display, user.id), None
+            ai_response, extra_action = _pingpong_reply(_norm_pp, user_display, user.id, ulang), None
         else:
             _tool_hint_suffix = ""
             _hint = (_prefetch_hints.get("tool_hint") or "").strip()
@@ -1904,7 +1931,8 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 caller_name=user_display,
                 caller_username=user_uname,
                 is_private_chat=is_pv,
-                has_reply_context=has_reply
+                has_reply_context=has_reply,
+                user_lang_code=(user.language_code or "fa"),
             )
     finally:
         typing_active = False

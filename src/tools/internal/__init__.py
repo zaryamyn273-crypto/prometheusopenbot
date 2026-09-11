@@ -111,6 +111,9 @@ _PINGPONG_WORDS = {
     "خوبی", "چطوری", "چه خبر", "خسته نباشی", "ممنون", "مرسی",
     "باشه", "اوکی", "ok", "okay", "بله", "نه", "آره", "اره",
     "چشم", "حله", "دمت گرم", "حاجی",
+    # English small talk (same instant lane, answered in the user's language)
+    "thanks", "thank you", "thx", "ty", "yes", "yeah", "sure", "alright",
+    "no", "nope", "how are you", "how are u", "whats up", "what's up",
 }
 
 
