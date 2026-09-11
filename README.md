@@ -1,10 +1,22 @@
 # پرومته (Prometheus) — یه ربات تلگرام معمولی که سعی می‌کنه مفید باشه
 > یه بات تلگرام وصل به مدل زبانی، با یه مشت ابزار کاربردی (قیمت ارز و طلا و رمزارز، هواشناسی، سرچ وب، موزیک، فایل، حساب‌وکتاب). به‌جای حدس زدن می‌ره سراغ ابزار؛ اگه چیزی خراب باشه همون رو می‌گه. معجزه‌ای در کار نیست.
 
+<p align="center" id="languages">
+  <a href="#persian">🇮🇷 فارسی</a> ·
+  <a href="#english">🇬🇧 English</a> ·
+  <a href="#russian">🇷🇺 Русский</a> ·
+  <a href="#spanish">🇪🇸 Español</a> ·
+  <a href="#french">🇫🇷 Français</a>
+</p>
+
 ---
 
 ## 📖 فهرست مطالب
 - [معرفی و فلسفه طراحی (Overview & Design Philosophy)](#-معرفی-و-فلسفه-طراحی-overview--design-philosophy)
+  - [🇬🇧 English](#english)
+  - [🇷🇺 Русский](#russian)
+  - [🇪🇸 Español](#spanish)
+  - [🇫🇷 Français](#french)
 - [ساختار پوشه‌بندی و ماژول‌ها (Project Structure)](#-ساختار-پوشه‌بندی-و-ماژول‌ها-project-structure)
 - [معماری و نحوه کارکرد ربات (How It Works)](#-معماری-و-نحوه-کارکرد-ربات-how-it-works)
 - [راهنمای جامع تهیه کلیدها و پیش‌نیازها (Where & How to Get Keys)](#-راهنمای-جامع-تهیه-کلیدها-و-پیش‌نیازها-where--how-to-get-keys)
@@ -26,7 +38,8 @@
 
 ---
 
-## معرفی (Overview)
+<a id="persian"></a>
+## 🇮🇷 معرفی (Overview)
 
 **پرومته** یه ربات تلگرام متن‌بازه که یه مدل زبانی رو به ابزارهای واقعی وصل می‌کنه. ایده‌ش ساده‌ست و همون رو هم درست انجام می‌ده:
 
@@ -35,10 +48,8 @@
 - **تو گروه سرش تو کار خودش نیست:** فقط وقتی جواب می‌ده که صداش کنی (ریپلای، منشن، یا اسم «پرومته»). بقیه پیام‌ها رو ساکت آرشیو می‌کنه.
 - **کد رو لوکال اجرا نکن:** اجرای پایتون اول می‌ره تو سندباکس ابری E2B (اگه کلیدش باشه)، وگرنه تو سندباکس لوکال ایزوله. شل مخرب تحت هیچ شرایطی اجرا نمی‌شه، حتی به دستور ادمین.
 
-### 🌍 همین معرفی به زبان‌های دیگر (Other languages)
-
-<details>
-<summary><b>English</b></summary>
+<a id="english"></a>
+## 🇬🇧 English
 
 Prometheus is an open-source Telegram bot that plugs a language model into real tools. The idea is simple, and it does just that:
 
@@ -47,10 +58,10 @@ Prometheus is an open-source Telegram bot that plugs a language model into real 
 - **It minds its own business in groups:** it only replies when addressed (reply, mention, or the word "Prometheus"). Everything else is silently archived.
 - **It doesn't run code locally:** Python runs in the E2B cloud sandbox first (if keyed), otherwise in an isolated local sandbox. Destructive shell never runs, not even on admin order.
 
-</details>
+<p align="right"><a href="#languages">↑ Languages</a></p>
 
-<details>
-<summary><b>Русский</b></summary>
+<a id="russian"></a>
+## 🇷🇺 Русский
 
 «Прометей» — open-source Telegram-бот, который подключает языковую модель к реальным инструментам. Идея простая, и он просто её выполняет:
 
@@ -59,10 +70,10 @@ Prometheus is an open-source Telegram bot that plugs a language model into real 
 - **В группах не лезет без спроса:** отвечает только при обращении (ответ на сообщение, упоминание или слово «Прометей»). Остальное тихо архивируется.
 - **Код локально не выполняется:** Python сначала идёт в облачную песочницу E2B (если есть ключ), иначе — в изолированную локальную. Деструктивный shell не выполняется никогда, даже по приказу админа.
 
-</details>
+<p align="right"><a href="#languages">↑ Языки</a></p>
 
-<details>
-<summary><b>Español</b></summary>
+<a id="spanish"></a>
+## 🇪🇸 Español
 
 Prometheus es un bot open-source de Telegram que conecta un modelo de lenguaje a herramientas reales. La idea es simple, y eso es lo que hace:
 
@@ -71,10 +82,10 @@ Prometheus es un bot open-source de Telegram que conecta un modelo de lenguaje a
 - **En grupos no se mete donde no le llaman:** solo responde cuando se le habla (respuesta, mención o la palabra «Prometheus»). Lo demás se archiva en silencio.
 - **No ejecuta código en local:** Python va primero al sandbox en la nube de E2B (si hay clave), si no a un sandbox local aislado. La shell destructiva nunca se ejecuta, ni siquiera por orden del admin.
 
-</details>
+<p align="right"><a href="#languages">↑ Idiomas</a></p>
 
-<details>
-<summary><b>Français</b></summary>
+<a id="french"></a>
+## 🇫🇷 Français
 
 Prometheus est un bot Telegram open-source qui branche un modèle de langage sur des outils réels. L'idée est simple, et c'est tout ce qu'il fait :
 
@@ -83,7 +94,7 @@ Prometheus est un bot Telegram open-source qui branche un modèle de langage sur
 - **Dans les groupes, il ne s'en mêle pas :** il ne répond que si on s'adresse à lui (réponse, mention ou le mot « Prometheus »). Le reste est archivé en silence.
 - **Pas d'exécution locale :** Python part d'abord dans le sandbox cloud E2B (si clé), sinon dans un sandbox local isolé. Le shell destructif ne s'exécute jamais, même sur ordre de l'admin.
 
-</details>
+<p align="right"><a href="#languages">↑ Langues</a></p>
 
 ---
 
