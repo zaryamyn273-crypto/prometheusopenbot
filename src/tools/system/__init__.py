@@ -107,9 +107,14 @@ def mask_sensitive_shell_output(output: str, is_private_chat: bool) -> tuple[str
         os.getenv("CLOUDFLARE_D1_ID", ""),
         os.getenv("CLOUDFLARE_KV_ID", ""),
         os.getenv("CLOUDFLARE_ACCOUNT_ID", ""),
-        os.getenv("CLOUDFLARE_API_KEY", ""),
-        os.getenv("TINYFISH_API_KEY", ""),
+        os.getenv("CLOUDFLARE_API_TOKEN", ""),
         os.getenv("ALLRATESTODAY_API_KEY", ""),
+        os.getenv("GITHUB_TOKEN", ""),
+        os.getenv("TAVILY_API_KEY", ""),
+        os.getenv("TAVILY_API_KEYS", ""),
+        os.getenv("SPOTIFY_CLIENT_ID", ""),
+        os.getenv("SPOTIFY_CLIENT_SECRET", ""),
+        os.getenv("E2B_API_KEY", ""),
     ]
     for s in known_secrets:
         if s and len(s) >= 8 and s in masked:

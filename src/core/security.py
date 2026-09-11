@@ -2,69 +2,18 @@ import ast
 import logging
 import os
 import re
-import threading
-import time
 from typing import Set, List
 from src.core import config as _config
-from src.core.config import (
-    TELEGRAM_BOT_TOKEN,
-    ROUTER_API_KEY,
-    TINYFISH_API_KEY,
-    ALLRATESTODAY_API_KEY,
-    GITHUB_TOKEN,
-    CLOUDFLARE_API_TOKEN,
-    CLOUDFLARE_ACCOUNT_ID,
-    ADMIN_ID,
-)
 
 logger = logging.getLogger(__name__)
-
-# --- Token-Bucket Rate Limiter ---
-class TokenBucketRateLimiter:
-    def __init__(self, rate: float = 5.0, capacity: float = 10.0):
-        self.rate = rate
-        self.capacity = capacity
-        self.buckets = {}
-        self._lock = threading.Lock()
-        self._last_sweep = time.time()
-
-    def allow(self, user_id: int) -> bool:
-        # Fail-closed: when ADMIN_ID is 0/unset, nobody is admin.
-        try:
-            admin_id = int(getattr(_config, "ADMIN_ID", 0) or 0)
-        except Exception:
-            admin_id = 0
-        if admin_id and int(user_id or 0) == admin_id:
-            return True
-        now = time.time()
-        with self._lock:
-            tokens, last_time = self.buckets.get(user_id, (self.capacity, now))
-            elapsed = now - last_time
-            tokens = min(self.capacity, tokens + elapsed * self.rate)
-            if tokens >= 1.0:
-                self.buckets[user_id] = (tokens - 1.0, now)
-                allowed = True
-            else:
-                self.buckets[user_id] = (tokens, now)
-                allowed = False
-            # Periodic cleanup: prevent unbounded bucket growth (DoS-safe)
-            if len(self.buckets) > 5000 or (now - self._last_sweep) > 300:
-                cutoff = now - 600.0
-                stale = [k for k, (_, t) in self.buckets.items() if t < cutoff]
-                for k in stale:
-                    del self.buckets[k]
-                self._last_sweep = now
-            return allowed
-
-rate_limiter = TokenBucketRateLimiter(rate=5.0, capacity=10.0)
 
 # --- Secrets Sanitizer ---
 def _build_secrets_list() -> List[str]:
     # Dynamic: read fresh from env/config every call so rotation works.
+    # (No import-time static snapshot: those went stale after key rotation.)
     vals = [
         getattr(_config, "TELEGRAM_BOT_TOKEN", ""),
         getattr(_config, "ROUTER_API_KEY", ""),
-        getattr(_config, "TINYFISH_API_KEY", ""),
         getattr(_config, "ALLRATESTODAY_API_KEY", ""),
         getattr(_config, "GITHUB_TOKEN", ""),
         getattr(_config, "CLOUDFLARE_API_TOKEN", ""),
@@ -73,12 +22,11 @@ def _build_secrets_list() -> List[str]:
         getattr(_config, "CLOUDFLARE_KV_ID", ""),
         os.getenv("TAVILY_API_KEY", ""),
         os.getenv("TAVILY_API_KEYS", ""),
+        os.getenv("SPOTIFY_CLIENT_ID", ""),
         os.getenv("SPOTIFY_CLIENT_SECRET", ""),
         os.getenv("E2B_API_KEY", ""),
         getattr(_config, "E2B_API_KEY", ""),
     ]
-    # keep backward-compat static list too
-    vals += SECRETS_TO_SANITIZE_STATIC
     out = []
     seen = set()
     for v in vals:
@@ -91,19 +39,6 @@ def _build_secrets_list() -> List[str]:
                 out.append(part)
     return out
 
-
-SECRETS_TO_SANITIZE_STATIC: List[str] = [
-    TELEGRAM_BOT_TOKEN,
-    ROUTER_API_KEY,
-    TINYFISH_API_KEY,
-    ALLRATESTODAY_API_KEY,
-    GITHUB_TOKEN,
-    CLOUDFLARE_API_TOKEN,
-    CLOUDFLARE_ACCOUNT_ID,
-]
-
-# kept for backward compat imports
-SECRETS_TO_SANITIZE: List[str] = SECRETS_TO_SANITIZE_STATIC
 
 _PATTERNS_EXTRA = [
     re.compile(r'ghp_[A-Za-z0-9]{20,}'),

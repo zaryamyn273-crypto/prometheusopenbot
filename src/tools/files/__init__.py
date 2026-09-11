@@ -142,7 +142,6 @@ async def create_and_upload_file(
             has_vazir = False
             vazir_candidates = [
                 os.path.join(os.getcwd(), "assets", "fonts", "Vazirmatn-Regular.ttf"),
-                "/home/dsh/workspace/prometheuspro/assets/fonts/Vazirmatn-Regular.ttf"
             ]
             for fpath in vazir_candidates:
                 if os.path.exists(fpath):

@@ -39,8 +39,6 @@ CLOUDFLARE_KV_ID = os.getenv("CLOUDFLARE_KV_ID", "")
 # DuckDuckGo/Bing/Open-Meteo/iTunes) when keys are empty.
 # ==========================================
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-# Deprecated/unused — kept only for backward-compat imports, no effect.
-TINYFISH_API_KEY = os.getenv("TINYFISH_API_KEY", "")
 ALLRATESTODAY_API_KEY = os.getenv("ALLRATESTODAY_API_KEY", "")
 ALLRATESTODAY_URL = os.getenv("ALLRATESTODAY_URL", "https://allratestoday.com/api/v1/rates")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")

@@ -9,10 +9,10 @@ psutil>=5.9.0
 Pillow==10.4.0
 python-dotenv>=1.0.0
 reportlab>=4.0.0
-pydantic-settings>=2.0.0
-pydantic>=2.0.0
 yt-dlp>=2025.1.0
-imageio-ffmpeg>=0.5.0
+# NOTE: imageio-ffmpeg intentionally NOT listed (~25MB wheel). Railway already
+# provides system ffmpeg via nixpacks; youtube_audio falls back to PATH "ffmpeg".
+# Local devs without ffmpeg: pip install imageio-ffmpeg  (or apt install ffmpeg)
 pypdf>=4.0.0
 python-docx>=1.1.0
 openpyxl>=3.1.0

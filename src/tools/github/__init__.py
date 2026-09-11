@@ -521,10 +521,21 @@ async def github_search_code(query: str, max_results: int = 5, language: str = "
                 out = "\n".join(lines)
                 await database.kv_set_cache_async(cache_key, out, expiration_ttl=900)
                 return out
-            if r.status_code in (403, 429):
+            if r.status_code in (401, 403, 429):
+                # Code search needs login: no token (or capped) -> free web fallback
+                # so key-less deploys still get an answer instead of an error.
+                fb = await _web_fallback(f"github code {clean_q} {clean_lang} example")
+                if fb:
+                    note = "بدون توکن گیت‌هاب" if r.status_code == 401 else "محدودیت نرخ API گیت‌هاب"
+                    return f"⚠️ *{note} — نتیجه زنده وب:*\n\n{fb}"
+                if r.status_code == 401:
+                    return "⚠️ جستجوی کد گیت‌هاب نیاز به توکن دارد؛ `GITHUB_TOKEN` را ست کنید (رایگان: github.com/settings/tokens)."
                 return "⚠️ محدودیت نرخ جستجوی کد گیت‌هاب؛ دقایقی دیگر تلاش کنید."
             return f"خطا در جستجوی کد گیت‌هاب (کد: {r.status_code})."
     except Exception as e:
+        fb = await _web_fallback(f"github code {clean_q} {clean_lang} example")
+        if fb:
+            return f"⚠️ *ارتباط مستقیم گیت‌هاب برقرار نشد — نتیجه زنده وب:*\n\n{fb}"
         return f"خطا در جستجوی کد گیت‌هاب: {str(e)}"
 
 @register_tool(

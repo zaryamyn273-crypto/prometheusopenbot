@@ -515,6 +515,7 @@ async def execute_registered_tool(
 
     call_kwargs: Dict[str, Any] = {}
     args_lower = {k.lower(): v for k, v in (args or {}).items()}
+    coerce_error: Optional[str] = None
 
     for p_name, param in sig.parameters.items():
         if p_name == "caller_id":
@@ -567,10 +568,18 @@ async def execute_registered_tool(
                         call_kwargs[p_name] = str(raw_val).strip()
                     else:
                         call_kwargs[p_name] = raw_val
+                except ValueError as ve:
+                    # Validation error: fail fast with a clean message instead of
+                    # passing garbage into the tool (which raised ugly TypeErrors).
+                    coerce_error = f"❌ ورودی نامعتبر برای ابزار `{name}`: {ve}"
+                    break
                 except Exception:
                     call_kwargs[p_name] = raw_val
             elif param.default is not inspect.Parameter.empty:
                 call_kwargs[p_name] = param.default
+
+    if coerce_error:
+        return coerce_error
 
     try:
         if tool_meta["is_async"]:

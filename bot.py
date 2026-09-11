@@ -1,13 +1,11 @@
-import os
 import io
 import json
 import time
 import logging
 import asyncio
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
-import httpx
 from telegram import (
     Update,
     InlineKeyboardMarkup,
@@ -446,8 +444,66 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     database.clear_chat_context(chat.id)
     await message.reply_text("🧹 <b>کانتکست گفتگو در این چت ریست شد.</b> آماده دریافت فرامین جدید هستم.", parse_mode=ParseMode.HTML)
 
+async def _reply_audio_bytes(message, chat, context, *, title, performer, caption,
+                             audio_bytes, duration=None, thumb_url="",
+                             thumb_min_bytes=5000, archive_label="موزیک ارسالی"):
+    """Single shared MP3-bytes uploader: cover thumb + reply_audio + file_id cache + D1 archive.
+
+    Used by /music AND the AI media pipeline so the upload path exists exactly once.
+    Returns the sent telegram Message, or None on failure (caller picks the fallback).
+    """
+    clean_filename = re.sub(r'[\\/*?:"<>|\r\n\t]', "_", str(title)).strip()[:60] or "track"
+    audio_stream = io.BytesIO(audio_bytes)
+    audio_stream.name = f"{clean_filename}.mp3"
+    thumb_stream = None
+    if (thumb_url or "").startswith("http"):
+        try:
+            from src.core.http import get_http_client as _thumb_client
+            th_res = await _thumb_client("web").get(thumb_url, timeout=10.0)
+            if th_res.status_code == 200 and len(th_res.content) > thumb_min_bytes:
+                thumb_stream = io.BytesIO(th_res.content)
+                thumb_stream.name = "cover.jpg"
+        except Exception:
+            thumb_stream = None
+    sent = await message.reply_audio(
+        audio=audio_stream,
+        title=title,
+        performer=performer,
+        caption=telegram_formatter.markdown_to_telegram_html(caption or ""),
+        parse_mode=ParseMode.HTML,
+        duration=duration or None,
+        thumbnail=thumb_stream,
+        write_timeout=180.0,
+        read_timeout=60.0,
+    )
+    if sent and getattr(sent, "message_id", 0):
+        try:
+            from src.tools.media import clean_music_query
+            _audio_fid = getattr(getattr(sent, "audio", None), "file_id", None)
+            if _audio_fid:
+                _q_clean = clean_music_query(f"{performer} {title}")
+                _fid_payload = json.dumps({
+                    "type": "audio_file_id",
+                    "file_id": _audio_fid,
+                    "title": title,
+                    "performer": performer,
+                    "caption": caption or "",
+                })
+                asyncio.create_task(database.kv_set_cache_async(
+                    f"music_v2_{_q_clean.replace(' ', '_')}", _fid_payload, expiration_ttl=604800))
+        except Exception:
+            pass
+        asyncio.create_task(database.save_message_async(
+            chat.id, context.bot.id, "assistant",
+            f"[{archive_label}: {title} — {performer}]",
+            user_name="Prometheus",
+            chat_title=getattr(chat, "title", "") or "",
+            message_id=sent.message_id))
+    return sent
+
 async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
+    chat = update.effective_chat
     query = " ".join(context.args).strip() if context.args else ""
     if not query:
         await reply_safely(message, "⚠️ لطفاً نام آهنگ یا خواننده را وارد نمایید:\nمثال: `/music_prometheus هایده سوغاتی`")
@@ -459,35 +515,19 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 1. Native MP3 bytes upload
         if res.get("type") == "audio_bytes" and res.get("bytes"):
             try:
-                audio_title = res.get("title", query)
-                clean_name = re.sub(r'[\\/*?:"<>|\r\n\t]', "_", str(audio_title)).strip()[:60] or "track"
-                audio_stream = io.BytesIO(res["bytes"])
-                audio_stream.name = f"{clean_name}.mp3"
-                
-                thumb_stream = None
-                thumb_url = res.get("thumb", "")
-                if thumb_url and thumb_url.startswith("http"):
-                    try:
-                        from src.core.http import get_http_client as _thumb_client2
-                        th_res = await _thumb_client2("web").get(thumb_url, timeout=10.0)
-                        if th_res.status_code == 200 and len(th_res.content) > 3000:
-                            thumb_stream = io.BytesIO(th_res.content)
-                            thumb_stream.name = "cover.jpg"
-                    except Exception:
-                        thumb_stream = None
-
-                await message.reply_audio(
-                    audio=audio_stream,
-                    title=audio_title,
+                sent = await _reply_audio_bytes(
+                    message, chat, context,
+                    title=res.get("title", query),
                     performer=res.get("performer", "Prometheus Audio"),
-                    caption=telegram_formatter.markdown_to_telegram_html(res.get("caption", "")),
-                    parse_mode=ParseMode.HTML,
-                    duration=res.get("duration", 0) or None,
-                    thumbnail=thumb_stream,
-                    write_timeout=180.0,
-                    read_timeout=60.0
+                    caption=res.get("caption", ""),
+                    audio_bytes=res["bytes"],
+                    duration=res.get("duration", 0),
+                    thumb_url=res.get("thumb", ""),
+                    thumb_min_bytes=3000,
+                    archive_label="موزیک ارسالی",
                 )
-                return
+                if sent:
+                    return
             except Exception as e:
                 logger.error(f"Error uploading native MP3 in music_command: {e}")
 
@@ -508,18 +548,16 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             audio_buf.write(chunk)
                 raw_bytes = audio_buf.getvalue()
                 if len(raw_bytes) >= 1500000:
-                    stream_obj = io.BytesIO(raw_bytes)
-                    stream_obj.name = f"{res.get('title', 'music')}.mp3"
-                    await message.reply_audio(
-                        audio=stream_obj,
+                    sent = await _reply_audio_bytes(
+                        message, chat, context,
                         title=res.get("title", query),
                         performer=res.get("performer", "Prometheus Audio"),
-                        caption=telegram_formatter.markdown_to_telegram_html(res.get("caption", "")),
-                        parse_mode=ParseMode.HTML,
-                        write_timeout=180.0,
-                        read_timeout=60.0
+                        caption=res.get("caption", ""),
+                        audio_bytes=raw_bytes,
+                        archive_label="موزیک ارسالی",
                     )
-                    return
+                    if sent:
+                        return
             except Exception as e:
                 logger.debug(f"Direct stream download in music_command failed: {e}")
 
@@ -929,7 +967,6 @@ async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_safely(message, "⚠️ فرمت دستور:\n<code>/id &lt;نام فرد یا @username&gt;</code>\nیا روی پیام فرد ریپلای کنید.")
         return
 
-    from src.tools import system
     res = await system.extract_user_id_tool(target=query, caller_id=user.id)
     await reply_safely(message, res)
 
@@ -1273,14 +1310,13 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # 3b. Direct Reply Mute with duration (MUTE30 / MUTE2H / MUTE1D / MUTE + text)
         elif (clean_cmd == "mute" or clean_cmd.startswith("mute") or clean_cmd in ["/mute"]) and target_user:
-            import re as _re2
-            _m = _re2.match(r"^(mute)\s*(\d+\s*[mhd])?$", clean_cmd)
+            _m = re.match(r"^(mute)\s*(\d+\s*[mhd])?$", clean_cmd)
             _sfx = (_m.group(2) or "").replace(" ", "") if _m else ""
             _dur = 1800
             try:
                 if _sfx:
-                    _n = int(_re2.sub(r"[^0-9]", "", _sfx) or 0)
-                    _u = _re2.sub(r"[0-9\s]", "", _sfx).lower()
+                    _n = int(re.sub(r"[^0-9]", "", _sfx) or 0)
+                    _u = re.sub(r"[0-9\s]", "", _sfx).lower()
                     _dur = _n * (60 if _u == "m" else (3600 if _u == "h" else 86400)) if _n else 1800
                 else:
                     _dur = database.parse_mute_duration_to_sec(user_text)
@@ -1386,12 +1422,10 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not is_pv and is_admin(user.id):
         if any(_p == _norm_stop or f" {_p} " in f" {_norm_stop} " for _p in _STOP_PHRASES):
             _STOPPED_CHATS[int(chat.id)] = time.time()
-            _cancelled = False
             try:
                 _t = _INFLIGHT_TURNS.pop(int(chat.id), None)
                 if _t is not None and not _t.done():
                     _t.cancel()
-                    _cancelled = True
             except Exception:
                 pass
             try:
@@ -1446,10 +1480,10 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                         files = {"file": (f_ext, raw_a_bytes, mime_t)}
                         data = {"model": "whisper-1"}
                         r_bg = await client.post(f"{config.ROUTER_BASE_URL}/audio/transcriptions", headers=headers, data=data, files=files, timeout=30.0)
-                            if r_bg.status_code == 200:
-                                v_txt = r_bg.json().get("text", "").strip()
-                                if v_txt:
-                                    msg_text = f"[پیام صوتی پیاده‌شده]: {v_txt}"
+                        if r_bg.status_code == 200:
+                            v_txt = r_bg.json().get("text", "").strip()
+                            if v_txt:
+                                msg_text = f"[پیام صوتی پیاده‌شده]: {v_txt}"
                 except Exception as e:
                     logger.debug(f"Background voice transcription error: {e}")
 
@@ -1855,7 +1889,6 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             ai_response, extra_action = _fast_res, None
         # Ping/pong fast-lane: pure social chatter answers instantly, no LLM burn.
         elif _prefetch_hints.get("intent_block") == "__PINGPONG__" and not image_bytes:
-            from src.tools.internal import _PINGPONG_WORDS as _PPW
             _norm_pp = (_prefetch_hints.get("rewritten", "").replace("__PINGPONG__", "").strip() or user_text).strip()
             ai_response, extra_action = _pingpong_reply(_norm_pp, user_display, user.id), None
         else:
@@ -1890,7 +1923,6 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Global safety net: NO addressed message may ever end without an answer.
     # Any unexpected exception below becomes a Persian apology, never silence.
-    sent_media_msg_id = 0
     try:
         _answered = await _deliver_ai_turn(message, chat, context, ai_response, extra_action, chat_title)
     except Exception as _e:
@@ -1947,50 +1979,18 @@ async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, ch
     # If a full MP3 was downloaded (YouTube strategy) -> upload bytes natively
     if isinstance(extra_action, dict) and extra_action.get("type") == "audio_bytes" and extra_action.get("bytes"):
         try:
-            audio_title = extra_action.get("title", "آهنگ")
-            audio_performer = extra_action.get("performer", "موزیک")
-            caption_formatted = telegram_formatter.markdown_to_telegram_html(extra_action.get("caption", ""))
-            audio_stream = io.BytesIO(extra_action["bytes"])
-            clean_filename = re.sub(r'[\\/*?:\"<>|\r\n\t]', "_", str(audio_title)).strip()[:60] or "track"
-            audio_stream.name = f"{clean_filename}.mp3"
-            thumb_stream = None
-            thumb_url = extra_action.get("thumb", "")
-            if thumb_url.startswith("http"):
-                try:
-                    from src.core.http import get_http_client as _thumb_client
-                    th_res = await _thumb_client("web").get(thumb_url, timeout=10.0)
-                    if th_res.status_code == 200 and len(th_res.content) > 5000:
-                        thumb_stream = io.BytesIO(th_res.content)
-                        thumb_stream.name = "cover.jpg"
-                except Exception:
-                    thumb_stream = None
-            sent_full = await message.reply_audio(
-                audio=audio_stream,
-                title=audio_title,
-                performer=audio_performer,
-                caption=caption_formatted,
-                parse_mode=ParseMode.HTML,
-                duration=extra_action.get("duration", 0) or None,
-                thumbnail=thumb_stream,
-                write_timeout=180.0,
-                read_timeout=60.0
+            sent_full = await _reply_audio_bytes(
+                message, chat, context,
+                title=extra_action.get("title", "آهنگ"),
+                performer=extra_action.get("performer", "موزیک"),
+                caption=extra_action.get("caption", ""),
+                audio_bytes=extra_action["bytes"],
+                duration=extra_action.get("duration", 0),
+                thumb_url=extra_action.get("thumb", ""),
+                archive_label="موزیک کامل ارسالی",
             )
-            sent_media_msg_id = sent_full.message_id if sent_full else 0
-            if sent_full and sent_full.audio and sent_full.audio.file_id:
-                # Save file_id to KV / RAM cache so future requests for this track return instantly in < 200ms!
-                from src.tools.media import clean_music_query
-                _q_clean = clean_music_query(f"{audio_performer} {audio_title}")
-                _fid_payload = json.dumps({
-                    "type": "audio_file_id",
-                    "file_id": sent_full.audio.file_id,
-                    "title": audio_title,
-                    "performer": audio_performer,
-                    "caption": extra_action.get("caption", "")
-                })
-                asyncio.create_task(database.kv_set_cache_async(f"music_v2_{_q_clean.replace(' ', '_')}", _fid_payload, expiration_ttl=604800))
-            if sent_media_msg_id:
-                asyncio.create_task(database.save_message_async(chat.id, context.bot.id, "assistant", f"[موزیک کامل ارسالی: {audio_title} — {audio_performer}]", user_name="Prometheus", chat_title=chat_title, message_id=sent_media_msg_id))
-            return True
+            if sent_full:
+                return True
         except Exception as e:
             logger.error(f"Error uploading full MP3 bytes: {e}")
 
@@ -2018,33 +2018,16 @@ async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, ch
             raw_audio_bytes = audio_buf.getvalue()
             # Verify full track size: genuine songs are at least 1.5MB (1,500,000 bytes)
             if len(raw_audio_bytes) >= 1500000:
-                audio_stream = io.BytesIO(raw_audio_bytes)
-                clean_filename2 = re.sub(r'[\\/*?:\"<>|\r\n\t]', "_", str(audio_title)).strip()[:60] or "track"
-                audio_stream.name = f"{clean_filename2}.mp3"
-                sent_audio = await message.reply_audio(
-                    audio=audio_stream,
+                sent_audio = await _reply_audio_bytes(
+                    message, chat, context,
                     title=audio_title,
                     performer=audio_performer,
-                    caption=caption_formatted,
-                    parse_mode=ParseMode.HTML,
-                    write_timeout=180.0,
-                    read_timeout=60.0
+                    caption=extra_action.get("caption", ""),
+                    audio_bytes=raw_audio_bytes,
+                    archive_label="موزیک ارسالی",
                 )
-                sent_media_msg_id = sent_audio.message_id if sent_audio else 0
-                if sent_audio and sent_audio.audio and sent_audio.audio.file_id:
-                    from src.tools.media import clean_music_query
-                    _q_clean = clean_music_query(f"{audio_performer} {audio_title}")
-                    _fid_payload = json.dumps({
-                        "type": "audio_file_id",
-                        "file_id": sent_audio.audio.file_id,
-                        "title": audio_title,
-                        "performer": audio_performer,
-                        "caption": extra_action.get("caption", "")
-                    })
-                    asyncio.create_task(database.kv_set_cache_async(f"music_v2_{_q_clean.replace(' ', '_')}", _fid_payload, expiration_ttl=604800))
-                if sent_media_msg_id:
-                    asyncio.create_task(database.save_message_async(chat.id, context.bot.id, "assistant", f"[موزیک ارسالی: {audio_title} — {audio_performer}]", user_name="Prometheus", chat_title=chat_title, message_id=sent_media_msg_id))
-                return True
+                if sent_audio:
+                    return True
             else:
                 logger.warning(f"Downloaded audio track too small ({len(raw_audio_bytes)} bytes), likely a preview. Initiating full YouTube fallback...")
         except Exception as e:

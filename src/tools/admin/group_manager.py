@@ -1,7 +1,5 @@
-import os
-import io
 import logging
-from typing import Dict, Any, Optional
+from typing import Optional
 
 from src.tools.registry import register_tool
 from src.core import database

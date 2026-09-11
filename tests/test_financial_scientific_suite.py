@@ -301,7 +301,8 @@ def generate_report(financial_results, scientific_results):
     for r in financial_results:
         lines.append(f"Test: {r['test_name']}")
         lines.append(f"  Latency: {r['latency_ms']} ms | Return Type: {r['return_type']} | Unhandled Exception: {r['unhandled_exception']}")
-        lines.append(f"  Output Preview: {r['result_preview'].replace('\n', ' ')[:140]}...")
+        _prev = str(r['result_preview']).replace(chr(10), ' ')[:140]
+        lines.append(f"  Output Preview: {_prev}...")
         lines.append("")
 
     lines.append("--------------------------------------------------------------------------------")
@@ -310,7 +311,8 @@ def generate_report(financial_results, scientific_results):
     for r in scientific_results:
         lines.append(f"Test: {r['test_name']}")
         lines.append(f"  Latency: {r['latency_ms']} ms | Return Type: {r['return_type']} | Unhandled Exception: {r['unhandled_exception']}")
-        lines.append(f"  Output Preview: {r['result_preview'].replace('\n', ' ')[:140]}...")
+        _prev2 = str(r['result_preview']).replace(chr(10), ' ')[:140]
+        lines.append(f"  Output Preview: {_prev2}...")
         lines.append("")
 
     lines.append("--------------------------------------------------------------------------------")
