@@ -8,7 +8,14 @@ load_dotenv()
 # 1. Telegram Bot & Access Configuration
 # ==========================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+def _parse_admin_id(raw: str) -> int:
+    try:
+        return int((raw or "0").strip() or "0")
+    except (ValueError, AttributeError):
+        return 0
+
+ADMIN_ID = _parse_admin_id(os.getenv("ADMIN_ID", "0"))
 
 # ==========================================
 # 2. High-Performance AI Router Configuration
@@ -26,15 +33,62 @@ CLOUDFLARE_D1_ID = os.getenv("CLOUDFLARE_D1_ID", "")
 CLOUDFLARE_KV_ID = os.getenv("CLOUDFLARE_KV_ID", "")
 
 # ==========================================
-# 4. External Services & APIs
+# 4. External Services & APIs (ALL OPTIONAL — bot works without them)
+# Only TELEGRAM_BOT_TOKEN + ADMIN_ID + ROUTER_* are needed for full brain.
+# Everything below gracefully falls back to free sources (Binance/TGJU,
+# DuckDuckGo/Bing/Open-Meteo/iTunes) when keys are empty.
 # ==========================================
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+# Deprecated/unused — kept only for backward-compat imports, no effect.
 TINYFISH_API_KEY = os.getenv("TINYFISH_API_KEY", "")
 ALLRATESTODAY_API_KEY = os.getenv("ALLRATESTODAY_API_KEY", "")
 ALLRATESTODAY_URL = os.getenv("ALLRATESTODAY_URL", "https://allratestoday.com/api/v1/rates")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-TAVILY_API_KEYS = [k.strip() for k in os.getenv("TAVILY_API_KEYS", "").split(",") if k.strip()]
+_raw_tavily = [k.strip() for k in os.getenv("TAVILY_API_KEYS", "").split(",") if k.strip()]
+# dedup preserving order + include singular key
+_seen = set()
+TAVILY_API_KEYS = []
+for _k in ([TAVILY_API_KEY] if TAVILY_API_KEY else []) + _raw_tavily:
+    if _k not in _seen:
+        _seen.add(_k)
+        TAVILY_API_KEYS.append(_k)
 TAVILY_API_URL = os.getenv("TAVILY_API_URL", "https://api.tavily.com/search")
+
+# --- E2B Cloud Sandbox (OPTIONAL — اجرای ایزوله کد در کلاد) ---
+# بدون کلید، ربات از سندباکس لوکال (multiprocessing) استفاده می‌کند.
+# با کلید، execute_python_code اول E2B ابری را امتحان می‌کند (امن‌تر + بدون لود Railway).
+# کلید را از https://e2b.dev/dashboard?tab=keys بگیرید (e2b_...).
+E2B_API_KEY = os.getenv("E2B_API_KEY", "")
+E2B_TEMPLATE = os.getenv("E2B_TEMPLATE", "")
+try:
+    E2B_TIMEOUT_SEC = max(5, min(120, int(os.getenv("E2B_TIMEOUT_SEC", "30") or "30")))
+except Exception:
+    E2B_TIMEOUT_SEC = 30
+
+# --- Railway-simple feature flags ---
+# Background market pre-sync burns Cloudflare KV writes; on free tiers
+# disable it or slow it down via env.
+ENABLE_FINANCIAL_SYNC = os.getenv("ENABLE_FINANCIAL_SYNC", "1").strip().lower() not in ("0", "false", "no", "off")
+try:
+    FINANCIAL_SYNC_INTERVAL_SEC = max(300, int(os.getenv("FINANCIAL_SYNC_INTERVAL_SEC", "900") or "900"))
+except Exception:
+    FINANCIAL_SYNC_INTERVAL_SEC = 900
+
+
+def has_router() -> bool:
+    return bool((ROUTER_API_KEY or "").strip())
+
+
+def has_tavily() -> bool:
+    return bool(TAVILY_API_KEYS)
+
+
+def has_cloudflare() -> bool:
+    return bool((CLOUDFLARE_ACCOUNT_ID or "").strip() and ((CLOUDFLARE_D1_ID or "").strip() or (CLOUDFLARE_KV_ID or "").strip()))
+
+
+def has_e2b() -> bool:
+    return bool((E2B_API_KEY or "").strip())
 
 # ==========================================
 # 5. Rate Limits & Performance Thresholds
@@ -91,10 +145,12 @@ SYSTEM_PROMPT = """شما «پرومته سوپر ایجنت» (Prometheus Super
    - گشت‌وگذار در ردیت و گفتگوهای کامیونیتی ➔ `reddit_search`
    - جستجوی تخصصی برنامه‌نویسی و پاسخ‌های تاییدشده در استک اورفلو ➔ `stackoverflow_search`
    - بررسی باگ‌ها، پیام‌های خطا و راه‌حل‌های توسعه‌دهندگان در ایشوهای گیت‌هاب ➔ `github_issues_search`
-   - اخبار زنده، جدیدترین تحولات، نسخه‌ها و جستجوی لحظه‌ای: حتماً در وهله اول از موتور پیشرفته `tavily_search` استفاده کن. در صورت عدم کفایت از `web_search` یا `live_news` استفاده نما.
+   - اخبار زنده، جدیدترین تحولات، نسخه‌ها و جستجوی لحظه‌ای: اگر ابزار `tavily_search` در دسترس بود (کلید ست شده) از آن استفاده کن، وگرنه از `web_search` یا `live_news` رایگان استفاده نما.
    - محاسبات ریاضی و آمار ➔ `calculate_math_expression` یا `statistics_summary`
    - تقویم، ساعت رسمی و تاریخ شمسی ➔ `get_current_datetime_info`
-   - اجرای کد پایتون و شل قدرتمند سیستم روی سرور ➔ `execute_python_code` (این ابزار کاملاً شخصی، انحصاری و مختص فرمانده ارشد سیستم است و هیچ کاربر دیگری حق استفاده از شل سرور را ندارد)
+   - اجرای کد پایتون و شل قدرتمند سیستم روی سرور ➔ `execute_python_code` (ابری-E2B اول، لوکال دوم؛ کاملاً شخصی و مختص فرمانده ارشد)
+   - اجرای ایزوله در سندباکس ابری E2B (نصب پکیج/pip، کدهای نیازمند اینترنت، جاوااسکریپت) ➔ `e2b_run_code` یا `e2b_run_command` (مختص فرمانده؛ بدون `E2B_API_KEY` غیرفعال است)
+   - وضعیت اتصال E2B ➔ `e2b_status`
    - وضعیت سیستم و تله‌متری سرور ➔ `admin_system_diagnostics`
 
 2. تعامل کامل و پیوسته با حافظه ابری Cloudflare (D1 SQL & KV):
@@ -136,3 +192,21 @@ SYSTEM_PROMPT = """شما «پرومته سوپر ایجنت» (Prometheus Super
     - توضیح اضافی، صغری‌کبری چیدن، مقدمه، تحلیل فرضی و نتیجه‌گیری‌های طویل کاملاً ممنوع است. فقط پاسخ قطعی و خالص را در کمترین واژگان ممکن و با کلمات کلیدی بولد (*متن*) ارائه کن.
     - خروجی ابزارها را منظم، خلاصه و متمرکز بر اصل داده‌ها بیاور.
 """
+
+# Resolve {ADMIN_ID} placeholder at import time (was previously never formatted).
+try:
+    SYSTEM_PROMPT = SYSTEM_PROMPT.replace("{ADMIN_ID}", str(ADMIN_ID))
+except Exception:
+    pass
+
+
+def validate_startup_config() -> list:
+    """Fail-fast validation for open-source deployment. Returns list of warnings/errors."""
+    issues = []
+    if not TELEGRAM_BOT_TOKEN:
+        issues.append("TELEGRAM_BOT_TOKEN خالی است — ربات بالا نمی‌آید.")
+    if ADMIN_ID <= 0:
+        issues.append("ADMIN_ID معتبر نیست (عدد >0 بگذارید) — ابزارهای ادمین غیرفعال می‌مانند.")
+    if not ROUTER_API_KEY:
+        issues.append("ROUTER_API_KEY خالی است — مغز AI کار نمی‌کند، فقط ابزارهای آفلاین فعال‌اند.")
+    return issues

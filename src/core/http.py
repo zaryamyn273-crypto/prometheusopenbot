@@ -7,6 +7,7 @@ Profiles:
   - stream: large downloads with long read windows (75s timeout)
 """
 import httpx
+import threading
 from typing import Dict, Optional
 
 _BROWSER_UA = (
@@ -17,6 +18,7 @@ _BROWSER_UA = (
 _LIMITS = httpx.Limits(max_keepalive_connections=150, max_connections=300, keepalive_expiry=300.0)
 
 _CLIENTS: Dict[str, httpx.AsyncClient] = {}
+_BUILD_LOCK = threading.Lock()
 
 
 def _build(profile: str) -> httpx.AsyncClient:
@@ -32,10 +34,14 @@ def _build(profile: str) -> httpx.AsyncClient:
 
 def get_http_client(profile: str = "web") -> httpx.AsyncClient:
     client = _CLIENTS.get(profile)
-    if client is None or client.is_closed:
-        client = _build(profile)
-        _CLIENTS[profile] = client
-    return client
+    if client is not None and not client.is_closed:
+        return client
+    with _BUILD_LOCK:
+        client = _CLIENTS.get(profile)
+        if client is None or client.is_closed:
+            client = _build(profile)
+            _CLIENTS[profile] = client
+        return client
 
 
 try:

@@ -111,19 +111,54 @@ def _pingpong_reply(norm_text: str, user_display: str, user_id: int) -> str:
     return "جانم؟ 🙂" 
 
 async def reply_safely(message, text: str, reply_markup=None):
-    """Safely formats markdown to HTML and sends message with fallback. Returns sent message or None."""
+    """Safely formats markdown to HTML and sends message with fallback + 4096-char chunking."""
     if not text or not str(text).strip():
         return None
     formatted = telegram_formatter.markdown_to_telegram_html(text)
-    try:
-        return await message.reply_text(formatted, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-    except Exception as e:
-        logger.debug(f"HTML Parse error, falling back to plain text: {e}")
+
+    async def _send_one(chunk: str, markup=None):
         try:
-            return await message.reply_text(text, reply_markup=reply_markup)
-        except Exception as e2:
-            logger.error(f"Failed to send reply: {e2}")
-            return None
+            return await message.reply_text(chunk, parse_mode=ParseMode.HTML, reply_markup=markup)
+        except Exception as e:
+            logger.debug(f"HTML Parse error, falling back to plain text: {e}")
+            try:
+                # Plain-text fallback must also respect the 4096 limit.
+                return await message.reply_text(chunk[:3900] if len(chunk) > 3900 else chunk, reply_markup=markup)
+            except Exception as e2:
+                logger.error(f"Failed to send reply: {e2}")
+                return None
+
+    # Telegram hard limit is 4096 chars — split long answers instead of failing silently.
+    if len(formatted) <= 4000 and len(str(text)) <= 4000:
+        return await _send_one(formatted, reply_markup)
+
+    # Prefer splitting the already-formatted HTML on newlines to keep tags intact.
+    chunks: list[str] = []
+    buf = ""
+    for line in formatted.split("\n"):
+        if len(buf) + len(line) + 1 > 3800:
+            if buf.strip():
+                chunks.append(buf)
+            buf = line
+            # Single huge line (e.g. a link dump) — hard cut it.
+            while len(buf) > 3800:
+                chunks.append(buf[:3800])
+                buf = buf[3800:]
+        else:
+            buf = (buf + "\n" + line) if buf else line
+    if buf.strip():
+        chunks.append(buf)
+    # Keep replies readable: max 4 chunks (~15k chars), truncate the rest.
+    if len(chunks) > 4:
+        chunks = chunks[:4]
+        chunks[-1] += "\n\n… [ادامه به دلیل سقف تلگرام خلاصه شد]"
+
+    sent = None
+    for i, ch in enumerate(chunks):
+        sent = await _send_one(ch, reply_markup if i == 0 else None)
+        if sent is None:
+            break
+    return sent
 
 
 async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -259,7 +294,13 @@ class PrometheusGroupCommandFilter(filters.MessageFilter):
     def filter(self, message):
         if not message.text:
             return False
-        if message.chat.type == "private":
+        try:
+            _ctype = getattr(message.chat, "type", "")
+            _ctype_s = str(_ctype).lower()
+        except Exception:
+            _ctype_s = ""
+        # PTB v20+: Chat.type is a ChatType enum, not a plain string.
+        if _ctype_s in ("private", "chatprivate") or _ctype == ChatType.PRIVATE:
             return True
         first_token = message.text.strip().split()[0].lower()
         return "@prometheusbaibot" in first_token or first_token.endswith("_prometheus")
@@ -449,16 +490,21 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Error uploading native MP3 in music_command: {e}")
 
-        # 2. Resilient streaming or direct URL upload
+        # 2. Resilient streaming or direct URL upload (shared pool, size-capped)
         if res.get("url"):
             try:
+                from src.core.http import get_http_client as _dl_client_f
                 audio_url = res["url"]
                 audio_buf = io.BytesIO()
-                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as dl_client:
-                    async with dl_client.stream("GET", audio_url) as r_stream:
-                        if r_stream.status_code == 200:
-                            async for chunk in r_stream.aiter_bytes():
-                                audio_buf.write(chunk)
+                dl_client = _dl_client_f("stream")
+                async with dl_client.stream("GET", audio_url) as r_stream:
+                    if r_stream.status_code == 200:
+                        _total = 0
+                        async for chunk in r_stream.aiter_bytes(65536):
+                            _total += len(chunk)
+                            if _total > 25 * 1024 * 1024:
+                                break
+                            audio_buf.write(chunk)
                 raw_bytes = audio_buf.getvalue()
                 if len(raw_bytes) >= 1500000:
                     stream_obj = io.BytesIO(raw_bytes)
@@ -668,6 +714,66 @@ async def sh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("⏱ زمان اجرای دستور شل به پایان رسید (Timeout 12s).")
     except Exception as e:
         await message.reply_text(f"❌ خطای اجرای شل:\n<code>{str(e)}</code>", parse_mode=ParseMode.HTML)
+
+
+async def e2b_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """E2B cloud sandbox runner: /e2b <python code> | /e2b js <code> | reply-to-code."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not is_admin(user.id):
+        await reply_safely(message, "⛔ <b>دسترسی غیرمجاز:</b>\nسندباکس ابری E2B فقط در انحصار فرمانده ارشد است.")
+        return
+    raw = " ".join(context.args).strip() if context.args else ""
+    if not raw and message.reply_to_message:
+        raw = message.reply_to_message.text or message.reply_to_message.caption or ""
+    if not raw:
+        await reply_safely(message, "☁️ <b>سندباکس ابری E2B:</b>\nمثال پایتون: <code>/e2b print(2**32)</code>\nمثال جاوااسکریپت: <code>/e2b js console.log(2**32)</code>\nوضعیت: <code>/e2bstatus</code>")
+        return
+    lang = "python"
+    low = raw.lower()
+    if low.startswith("js ") or low.startswith("javascript ") or low.startswith("node "):
+        lang = "javascript"
+        raw = raw.split(" ", 1)[1] if " " in raw else ""
+    try:
+        from src.tools.system import e2b_sandbox as _e2b
+        res = await _e2b.e2b_run_code(raw, language=lang, timeout_sec=30, caller_id=user.id)
+    except Exception as e:
+        res = f"❌ خطای E2B: {e}"
+    await reply_safely(message, res)
+
+
+async def e2bsh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """E2B cloud shell: /e2bsh <linux command> — filesystem ربات مصون می‌ماند."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not is_admin(user.id):
+        await reply_safely(message, "⛔ <b>دسترسی غیرمجاز:</b>\nسندباکس ابری E2B فقط در انحصار فرمانده ارشد است.")
+        return
+    cmd = " ".join(context.args).strip() if context.args else ""
+    if not cmd and message.reply_to_message:
+        cmd = message.reply_to_message.text or ""
+    if not cmd:
+        await reply_safely(message, "☁️ مثال: <code>/e2bsh pip list</code> یا <code>/e2bsh python --version</code>")
+        return
+    try:
+        from src.tools.system import e2b_sandbox as _e2b2
+        res = await _e2b2.e2b_run_command(cmd, timeout_sec=30, caller_id=user.id)
+    except Exception as e:
+        res = f"❌ خطای E2B: {e}"
+    await reply_safely(message, res)
+
+
+async def e2bstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not is_admin(user.id):
+        return
+    try:
+        from src.tools.system import e2b_sandbox as _e2b3
+        res = await _e2b3.e2b_status(caller_id=user.id)
+    except Exception as e:
+        res = f"❌ خطای E2B: {e}"
+    await reply_safely(message, res)
 
 
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1322,21 +1428,23 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             msg_text = message.text or message.caption or ""
 
             # If user sent a voice/audio note in the background, transcribe it so D1 gets the REAL text spoken!
-            if (message.voice or message.audio) and not msg_text:
+            # Skipped entirely when no ROUTER_API_KEY (offline Railway deploy) — no crash, just archive the voice tag.
+            if (message.voice or message.audio) and not msg_text and (config.ROUTER_API_KEY or "").strip():
                 try:
+                    from src.core.http import get_http_client as _bg_stt
                     target_a = message.voice or message.audio
                     a_file = await context.bot.get_file(target_a.file_id)
                     a_buf = io.BytesIO()
                     await a_file.download_to_memory(a_buf)
                     raw_a_bytes = a_buf.getvalue()
-                    if raw_a_bytes:
+                    if raw_a_bytes and len(raw_a_bytes) <= 25 * 1024 * 1024:
                         mime_t = "audio/ogg" if message.voice else "audio/mpeg"
                         f_ext = "voice.ogg" if mime_t == "audio/ogg" else "audio.mp3"
-                        async with httpx.AsyncClient(timeout=25.0) as client:
-                            headers = {"Authorization": f"Bearer {config.ROUTER_API_KEY}"}
-                            files = {"file": (f_ext, raw_a_bytes, mime_t)}
-                            data = {"model": "whisper-1"}
-                            r_bg = await client.post(f"{config.ROUTER_BASE_URL}/audio/transcriptions", headers=headers, data=data, files=files)
+                        client = _bg_stt("api")
+                        headers = {"Authorization": f"Bearer {config.ROUTER_API_KEY}"}
+                        files = {"file": (f_ext, raw_a_bytes, mime_t)}
+                        data = {"model": "whisper-1"}
+                        r_bg = await client.post(f"{config.ROUTER_BASE_URL}/audio/transcriptions", headers=headers, data=data, files=files, timeout=30.0)
                             if r_bg.status_code == 200:
                                 v_txt = r_bg.json().get("text", "").strip()
                                 if v_txt:
@@ -1894,12 +2002,17 @@ async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, ch
 
         # Strategy 1: Resilient chunk streaming to guarantee 100% complete audio (no half-cuts)
         try:
+            from src.core.http import get_http_client as _dl_client_s
             audio_buf = io.BytesIO()
-            async with httpx.AsyncClient(timeout=75.0, follow_redirects=True) as dl_client:
-                async with dl_client.stream("GET", audio_url) as r_stream:
-                    if r_stream.status_code == 200:
-                        async for chunk in r_stream.aiter_bytes():
-                            audio_buf.write(chunk)
+            dl_client = _dl_client_s("stream")
+            async with dl_client.stream("GET", audio_url) as r_stream:
+                if r_stream.status_code == 200:
+                    _tot2 = 0
+                    async for chunk in r_stream.aiter_bytes(65536):
+                        _tot2 += len(chunk)
+                        if _tot2 > 25 * 1024 * 1024:
+                            break
+                        audio_buf.write(chunk)
             
             raw_audio_bytes = audio_buf.getvalue()
             # Verify full track size: genuine songs are at least 1.5MB (1,500,000 bytes)
@@ -2030,28 +2143,55 @@ async def post_init_callback(application):
             await asyncio.sleep(300.0)
     asyncio.create_task(self_health_daemon())
 
-    # High-Performance Keep-Alive Connection Warmer Loop (Pings 9Router every 20s to ensure sub-millisecond hot TCP/HTTP2 socket)
+    # Keep-Alive warmer: ONLY when a router key exists, and every 120s
+    # (not 20s) so Railway free tiers don't burn quota/traffic.
     async def keep_ai_router_warm():
         from src.core import ai_service
+        try:
+            from src.core.config import has_router as _has_r
+            if not bool(_has_r()):
+                return
+        except Exception:
+            return
         while True:
             try:
                 client = ai_service.get_shared_client()
                 await client.get(f"{config.ROUTER_BASE_URL}/models", timeout=4.0)
             except Exception:
                 pass
-            await asyncio.sleep(20.0)
+            await asyncio.sleep(120.0)
 
     asyncio.create_task(keep_ai_router_warm())
 
 def build_application():
+    # Fail-fast with a CLEAR Persian log so Railway users instantly see what's missing.
+    try:
+        _issues = config.validate_startup_config()
+    except Exception:
+        _issues = []
+    for _iss in (_issues or []):
+        logger.warning(f"CONFIG: {_iss}")
+    try:
+        from src.core.config import has_router, has_tavily, has_cloudflare, has_e2b
+        logger.info(
+            "API mode: router=%s tavily=%s cloudflare=%s e2b=%s fin_sync=%s",
+            "ON" if has_router() else "OFFLINE (free tools only)",
+            "ON" if has_tavily() else "OFF (free DDG/Bing)",
+            "ON" if has_cloudflare() else "OFF (RAM only)",
+            "ON" if has_e2b() else "OFF (local sandbox)",
+            getattr(config, "ENABLE_FINANCIAL_SYNC", True),
+        )
+    except Exception:
+        pass
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN خالی است — در Railway Variables ست کنید.")
     database.init_db()
 
     from telegram.request import HTTPXRequest
-    # High-Performance Extended Network Request Pool:
-    # 320kbps MP3 audio files are typically 5MB to 15MB. Telegram API uploads need generous write/read timeouts
-    # to prevent premature socket timeouts, aborted stream transfers, or half-uploaded drops.
+    # Railway-safe pool: 512 connections OOMs on 512MB instances. 128 is plenty
+    # for polling + music uploads and keeps RAM flat.
     extended_request = HTTPXRequest(
-        connection_pool_size=512,
+        connection_pool_size=128,
         connect_timeout=25.0,
         read_timeout=60.0,
         write_timeout=120.0,
@@ -2111,6 +2251,12 @@ def build_application():
     app.add_handler(_pcmd("sh", sh_command))
     app.add_handler(_pcmd("sh_prometheus", sh_command))
     app.add_handler(_pcmd("bash", sh_command))
+    app.add_handler(_pcmd("e2b", e2b_command))
+    app.add_handler(_pcmd("e2b_prometheus", e2b_command))
+    app.add_handler(_pcmd("e2bsh", e2bsh_command))
+    app.add_handler(_pcmd("e2bsh_prometheus", e2bsh_command))
+    app.add_handler(_pcmd("e2bstatus", e2bstatus_command))
+    app.add_handler(_pcmd("e2bstatus_prometheus", e2bstatus_command))
     app.add_handler(_pcmd("net", net_command))
     app.add_handler(_pcmd("net_prometheus", net_command))
     app.add_handler(_pcmd("channels", channels_command))

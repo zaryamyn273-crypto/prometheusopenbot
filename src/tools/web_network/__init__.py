@@ -21,6 +21,31 @@ _client: Optional[httpx.AsyncClient] = None
 _L1_WEB_CACHE: Dict[str, Tuple[float, str]] = {}
 _L1_FRESH_TTL = 90.0      # 90 seconds for fresh/breaking/price queries
 _L1_STANDARD_TTL = 3600.0  # 1 hour for general knowledge
+_L1_WEB_MAX_KEYS = 400
+
+
+def _l1_web_put(key: str, value: str) -> None:
+    # Bounded L1: evict oldest 100 when full so Railway small RAM never leaks.
+    try:
+        if len(_L1_WEB_CACHE) >= _L1_WEB_MAX_KEYS:
+            for _k in list(_L1_WEB_CACHE.keys())[:100]:
+                _L1_WEB_CACHE.pop(_k, None)
+        _L1_WEB_CACHE[key] = (time.time(), value)
+    except Exception:
+        pass
+
+
+def _kv_safe_key(prefix: str, query: str) -> str:
+    # Cloudflare KV keys max out at 512 chars; hash long Persian queries.
+    try:
+        base = f"{prefix}_{(query or '').lower().replace(' ', '_')}"
+        if len(base) <= 300:
+            return base
+        import hashlib as _hl
+        h = _hl.sha1((query or '').lower().encode("utf-8")).hexdigest()[:16]
+        return f"{prefix}_{h}"
+    except Exception:
+        return f"{prefix}_q"
 
 def get_async_client() -> httpx.AsyncClient:
     global _client
@@ -161,7 +186,7 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
     # Freshness-aware cache: breaking/live queries revalidate every 90s so the
     # user always sees the newest data; ordinary queries keep the 3600s TTL.
     _fresh = _is_fresh_query(clean_q)
-    cache_key = f"SEARCH_{clean_q.lower().replace(' ', '_')}"
+    cache_key = _kv_safe_key("SEARCH", clean_q)
     _now = time.time()
 
     # 1. Fast L1 In-Memory RAM Cache (Sub-millisecond retrieval)
@@ -176,15 +201,15 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
         cached = await database.kv_get_cache_async(cache_key)
         if cached:
             if not _fresh:
-                _L1_WEB_CACHE[cache_key] = (_now, cached)
+                _l1_web_put(cache_key, cached)
                 return cached
             try:
                 _age_ok = await database.kv_get_cache_async(cache_key + "_TS")
                 if _age_ok and (_now - float(_age_ok)) < _L1_FRESH_TTL:
-                    _L1_WEB_CACHE[cache_key] = (_now, cached)
+                    _l1_web_put(cache_key, cached)
                     return cached
             except Exception:
-                _L1_WEB_CACHE[cache_key] = (_now, cached)
+                _l1_web_put(cache_key, cached)
                 return cached
 
     client = get_async_client()
@@ -475,7 +500,7 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
     async def _format_and_cache(deduped_items: List[str]) -> str:
         _stamp = time.strftime("%H:%M")
         out_text = f"🕐 _به‌روزرسانی زنده وب ({_stamp})_\n\n" + "\n\n".join(deduped_items)
-        _L1_WEB_CACHE[cache_key] = (time.time(), out_text)
+        _l1_web_put(cache_key, out_text)
         try:
             await database.kv_set_cache_async(cache_key, out_text, expiration_ttl=3600 if not _fresh else 90)
             await database.kv_set_cache_async(cache_key + "_TS", str(time.time()), expiration_ttl=3600)
@@ -483,8 +508,14 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
             pass
         return out_text
 
-    # Speculative Racing: launch Tavily and DDG Lite concurrently
-    tavily_task = asyncio.create_task(search_tavily())
+    # Speculative Racing: Tavily ONLY when a key exists (no key = zero cost,
+    # pure free engines DDG/Bing/Brave). This removes the Tavily dependency.
+    try:
+        from src.core.config import has_tavily as _has_tv_cfg
+        _tavily_enabled = bool(_has_tv_cfg())
+    except Exception:
+        _tavily_enabled = False
+    tavily_task = asyncio.create_task(search_tavily()) if _tavily_enabled else None
     ddg_task = asyncio.create_task(search_ddg_lite())
 
     r_tavily: List[str] = []
@@ -493,8 +524,9 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
     winner_items: Optional[List[str]] = None
 
     try:
+        _spec_tasks = [t for t in (tavily_task, ddg_task) if t is not None]
         done, pending = await asyncio.wait(
-            [tavily_task, ddg_task],
+            _spec_tasks,
             timeout=4.0,
             return_when=asyncio.FIRST_COMPLETED
         )
@@ -643,13 +675,20 @@ async def deep_search_and_read(query: str, max_pages: int = 3) -> str:
 
 @register_tool(
     name="tavily_search",
-    description="موتور جستجوی اختصاصی و فوق‌پیشرفته Tavily AI: اولویت اول و قطعی برای جستجوی اخبار، آخرین رویدادها، نسخه‌ها، مقایسه‌ها و اطلاعات زنده روز با پاسخ مستقیم و مستندات تاریخی",
+    description="موتور جستجوی اختصاصی Tavily AI (اختیاری؛ بدون کلید خودکار به web_search رایگان برمی‌گردد)",
     category="search"
 )
 async def tavily_search(query: str, max_results: int = 5, time_range: str = "") -> str:
     clean_q = (query or "").strip()
     if not clean_q:
         return "عبارت جستجو خالی است."
+    try:
+        from src.core.config import has_tavily as _has_tv2
+        if not bool(_has_tv2()):
+            # No key configured → free path, zero failure for key-less deploys.
+            return await web_search(clean_q, max_results=max_results, force_refresh=True)
+    except Exception:
+        pass
     data = await tavily_search_raw(clean_q, max_results=max_results, time_range=(time_range or None))
     if not data or not data.get("results"):
         return await web_search(clean_q, max_results=max_results, force_refresh=True)

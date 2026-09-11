@@ -39,7 +39,7 @@ CASES = {
     "reddit_search": ({"query": "python", "max_results": 3}, 60),
     "stackoverflow_search": ({"query": "python list", "max_results": 3}, 60),
     # --- network ---
-    "check_website_status": ({"url": "https://google.com"}, 40),
+    "check_website_status": ({"target": "google.com"}, 40),
     "get_ip_info": ({"target": "1.1.1.1"}, 40),
     "resolve_dns": ({"domain": "google.com"}, 40),
     "check_ssl_certificate": ({"domain": "github.com"}, 40),
@@ -47,7 +47,7 @@ CASES = {
     # --- media ---
     "download_music_track": ({"query": "Hello Adele"}, 150),
     "get_song_lyrics": ({"song_title": "Hello Adele"}, 90),
-    "transcribe_audio_tool": ({"file_id_or_url": ""}, 30),
+    "transcribe_audio_tool": ({"audio_url_or_path": ""}, 30),
     "generate_qr_code_tool": ({"text_or_url": "https://t.me"}, 30),
     "publish_telegraph_article": ({"title": "تست استرس", "content": "متن تستی برای انتشار تلگراف. " * 10}, 60),
     "internal_resilient_fallback_search": ({"query": "تست"}, 60),
@@ -61,8 +61,8 @@ CASES = {
     "calculate_math_expression": ({"expression": "2+3*4"}, 20),
     "statistics_summary": ({"numbers": [1, 2, 3, 4, 5]}, 20),
     "convert_units": ({"value": 100, "from_unit": "c", "to_unit": "f"}, 20),
-    "color_converter_tool": ({"color": "#ff0000"}, 20),
-    "json_formatter_validator": ({"text": '{"a": 1}'}, 20),
+    "color_converter_tool": ({"color_code": "#ff0000"}, 20),
+    "json_formatter_validator": ({"json_text": '{"a": 1}'}, 20),
     # --- github ---
     "github_search_repositories": ({"query": "telegram bot", "max_results": 2}, 60),
     "github_repo_info": ({"repo": "python/cpython"}, 60),
@@ -80,6 +80,10 @@ CASES = {
     # --- dev ---
     "execute_python_code": ({"code": "print(2+2)", "caller_id": ADMIN, "is_private_chat": True}, 30),
     "autonomous_system_health_check": ({}, 30),
+    # --- e2b cloud sandbox (graceful without key: tools return Persian guide, still counts as handled) ---
+    "e2b_run_code": ({"code": "print(2+2)", "language": "python", "timeout_sec": 20, "caller_id": ADMIN}, 60),
+    "e2b_run_command": ({"command": "python --version", "timeout_sec": 20, "caller_id": ADMIN}, 60),
+    "e2b_status": ({"caller_id": ADMIN}, 60),
     # --- files ---
     "create_and_upload_file": ({"filename": "stress.txt", "content": "hello stress", "caption": "stress"}, 40),
     "read_document_file": ({"file_path": "README.md"}, 40),

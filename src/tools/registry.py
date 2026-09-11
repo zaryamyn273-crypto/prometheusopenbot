@@ -164,7 +164,9 @@ CATEGORY_KEYWORDS = {
         "اجرای کد", "پایتون", "کد پایتون", "برنامه", "اسکریپت", "run python",
         "ردیت", "reddit", "استک", "استک اورفلو", "stackoverflow", "باگ", "ارور", "error", "bug",
         "exception", "ایشو", "issue", "کدنویسی", "برنامه نویسی", "توسعه دهنده", "حل مشکل", "سایت تخصصی",
-        "stack", "مخزن", "repo", "کامپایل", "دیباگ", "debug", "crash", "کرش"
+        "stack", "مخزن", "repo", "کامپایل", "دیباگ", "debug", "crash", "کرش",
+        "e2b", "سندباکس ابری", "سندباکس", "sandbox", "کلاد", "کد ابری",
+        "جاوااسکریپت", "javascript", "pip install", "نصب پکیج",
     ],
     "github_legacy_placeholder": []
 }
@@ -408,6 +410,8 @@ FAILURE_MARKERS = (
 )
 
 TOOL_FALLBACKS: Dict[str, List[str]] = {
+    # Internal bot_* tools exist in the registry (category=internal) and are
+    # valid fallback targets — execute_registered_tool resolves them directly.
     "get_price": ["get_crypto_overview", "bot_fallback_search"],
     "get_crypto_overview": ["get_price", "bot_fallback_search"],
     "get_gold_and_coin_price": ["get_fiat_overview", "bot_fallback_search"],
@@ -440,6 +444,8 @@ TOOL_FALLBACKS: Dict[str, List[str]] = {
     "cloudflare_d1_retrieve_record": ["cloudflare_kv_retrieve", "cloudflare_d1_list_records"],
     "mute_user_tool": ["ban_user_tool"],
     "unmute_user_tool": ["unban_user_tool"],
+    # Tavily is optional: when no key exists it auto-falls back to free web_search.
+    "tavily_search": ["web_search", "deep_search_and_read"],
 }
 
 
@@ -528,13 +534,30 @@ async def execute_registered_tool(
                 p_anno = param.annotation
                 try:
                     if p_anno is int:
-                        if isinstance(raw_val, str):
-                            raw_val = "".join(c for c in raw_val if c.isdigit() or c == "-")
-                        call_kwargs[p_name] = int(raw_val) if raw_val else (param.default if param.default is not inspect.Parameter.empty else 0)
+                        if isinstance(raw_val, bool):
+                            call_kwargs[p_name] = int(raw_val)
+                        elif isinstance(raw_val, (int, float)):
+                            call_kwargs[p_name] = int(raw_val)
+                        elif isinstance(raw_val, str):
+                            s = raw_val.strip()
+                            # Strict: reject mixed junk like "12abc34" instead of silently mangling it.
+                            if re.fullmatch(r"-?\d+", s):
+                                call_kwargs[p_name] = int(s)
+                            else:
+                                raise ValueError(f"عدد نامعتبر برای {p_name}: {raw_val!r}")
+                        else:
+                            call_kwargs[p_name] = int(raw_val)
                     elif p_anno is float:
-                        if isinstance(raw_val, str):
-                            raw_val = "".join(c for c in raw_val if c.isdigit() or c in ".-")
-                        call_kwargs[p_name] = float(raw_val) if raw_val else (param.default if param.default is not inspect.Parameter.empty else 0.0)
+                        if isinstance(raw_val, (int, float)) and not isinstance(raw_val, bool):
+                            call_kwargs[p_name] = float(raw_val)
+                        elif isinstance(raw_val, str):
+                            s = raw_val.strip()
+                            if re.fullmatch(r"-?\d+(?:\.\d+)?", s):
+                                call_kwargs[p_name] = float(s)
+                            else:
+                                raise ValueError(f"عدد نامعتبر برای {p_name}: {raw_val!r}")
+                        else:
+                            call_kwargs[p_name] = float(raw_val)
                     elif p_anno is bool:
                         if isinstance(raw_val, str):
                             call_kwargs[p_name] = raw_val.lower() in ["true", "1", "yes", "on", "بله", "صحیح"]

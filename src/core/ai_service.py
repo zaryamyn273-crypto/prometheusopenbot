@@ -19,6 +19,8 @@ _http_limits = httpx.Limits(max_keepalive_connections=150, max_connections=300, 
 _shared_client: Optional[httpx.AsyncClient] = None
 
 def get_shared_client() -> httpx.AsyncClient:
+    # NOTE: no Authorization header here on purpose — the key is read fresh
+    # per-request from config so rotation/reload works without restart.
     global _shared_client
     if _shared_client is None or _shared_client.is_closed:
         _shared_client = httpx.AsyncClient(
@@ -26,11 +28,19 @@ def get_shared_client() -> httpx.AsyncClient:
             http2=True,
             timeout=35.0,
             headers={
-                "Authorization": f"Bearer {ROUTER_API_KEY}",
                 "Content-Type": "application/json"
             }
         )
     return _shared_client
+
+
+def _router_headers() -> Dict[str, str]:
+    # Read fresh every call so ROUTER_API_KEY rotation works.
+    from src.core import config as _cfg
+    return {
+        "Authorization": f"Bearer {_cfg.ROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
 
 def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
     """
@@ -317,7 +327,7 @@ async def generate_response(
         + memory_section
         + caller_info
         + f"\n\n[تاریخ امروز: {_today_j} (شمسی) — ساعت تهران: {_today_hm} — میلادی (ISO): {_today_iso}]"
-        + "\n[دستور اکید جستجوی هوشمند Tavily]: برای پاسخ به هرگونه سؤال در مورد اخبار، حوادث روز، تکنولوژی، مقایسه نسخه‌ها و تحولات لحظه‌ای، اولویت مطلق شما استفاده از ابزار tavily_search است. Tavily موتور مستقیم هوش مصنوعی با تاریخ روز و خلاصه دقیق است؛ بنابراین در وهله اول همواره tavily_search را فراخوانی کن و فقط در صورت لزوم از web_search استفاده نما. هرگز از داده‌های ذهنی خودت بدون ابزار پاسخ نده.]"
+        + "\n[دستور جستجوی زنده]: برای اخبار/حوادث روز/مقایسه نسخه‌ها از ابزار جستجوی زنده استفاده کن — اگر tavily_search در دسترس بود از آن، وگرنه از web_search رایگان. هرگز از داده‌های ذهنی بدون ابزار پاسخ نده.]"
         + "\n\nدستور قطعی لحن و تمرکز: لحن کاملاً جدی، رسمی، قاطع و فوق‌العاده خلاصه باشد. بدون سلام، بدون تعارف، بدون مقدمه و حاشیه. فقط و فقط دقیقاً به همان سؤالی که مستقیماً در این پیام پرسیده شده پاسخ بده و به هیچ موضوع دیگری وارد نشو مگر اینکه صراحتاً درخواست شده باشد."
     )
 
@@ -430,10 +440,33 @@ async def generate_response(
     else:
         messages.append({"role": "user", "content": user_prompt})
 
-    headers = {
-        "Authorization": f"Bearer {ROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = _router_headers()
+
+    # Offline/no-key mode: still serve deterministic tools (price/time/etc.)
+    # without burning LLM calls. Everything else gets a clear Persian notice.
+    from src.core import config as _cfg_off
+    if not (_cfg_off.ROUTER_API_KEY or "").strip():
+        try:
+            _off_fast = await _try_fast_market_match(user_prompt)
+            if _off_fast:
+                return _off_fast, None
+        except Exception:
+            pass
+        # Deterministic offline tools that need no key:
+        _pl_off = (user_prompt or "").strip().lower()
+        try:
+            if _pl_off in ("ساعت", "ساعت چنده", "time") or "ساعت" == _pl_off:
+                from src.core import database as _db_off
+                _iso, _hm, _j = _db_off.get_tehran_timestamps()
+                return f"⏰ *ساعت رسمی تهران:* `{_hm}`", None
+        except Exception:
+            pass
+        return (
+            "⚠️ *مغز AI فعال نیست:* کلید `ROUTER_API_KEY` ست نشده.\n"
+            "ربات در حالت آفلاین فقط قیمت/طلا/ارز/ساعت/محاسبات را می‌دهد.\n"
+            "برای فعال‌سازی کامل، در Railway یک متغیر `ROUTER_API_KEY` بگذارید.",
+            None,
+        )
 
     extra_action = None
     max_tool_loops = 8
@@ -470,9 +503,25 @@ async def generate_response(
         _web_only = {"tavily_search", "web_search", "deep_search_and_read", "live_news", "fetch_webpage_content"}
         _filtered = [t for t in tools_schema if t.get("function", {}).get("name") in _web_only]
         if _filtered:
-            # Tavily first: dated AI ranking beats scraping for recency questions.
-            _filtered.sort(key=lambda t: 0 if t.get("function", {}).get("name") == "tavily_search" else 1)
+            # Tavily first ONLY when a key exists; otherwise web_search is free and reliable.
+            try:
+                from src.core.config import has_tavily as _has_tv
+                _tv_ok = bool(_has_tv())
+            except Exception:
+                _tv_ok = False
+            if _tv_ok:
+                _filtered.sort(key=lambda t: 0 if t.get("function", {}).get("name") == "tavily_search" else 1)
+            else:
+                _filtered.sort(key=lambda t: 0 if t.get("function", {}).get("name") == "web_search" else 1)
             tools_schema = _filtered
+
+    # Read model/base-url fresh per-turn so Railway variable changes apply without restart.
+    try:
+        from src.core import config as _cfg_turn
+        _live_model = _cfg_turn.ROUTER_MODEL
+        _live_base = (_cfg_turn.ROUTER_BASE_URL or "").rstrip("/")
+    except Exception:
+        _live_model, _live_base = ROUTER_MODEL, ROUTER_BASE_URL
 
     for loop_idx in range(max_tool_loops):
         # Mid-loop escalation: if the model stalls without calling tools twice,
@@ -482,7 +531,7 @@ async def generate_response(
             from src.tools.registry import get_all_tool_definitions as _all_defs
             active_schemas = _all_defs()  # internal bot_* tools excluded by default
         payload: Dict[str, Any] = {
-            "model": ROUTER_MODEL,
+            "model": _live_model,
             "stream": False,
             "messages": messages,
             "temperature": 0.2,
@@ -499,7 +548,7 @@ async def generate_response(
         for attempt in range(max_retries):
             try:
                 resp = await client.post(
-                    f"{ROUTER_BASE_URL}/chat/completions",
+                    f"{_live_base}/chat/completions",
                     headers=headers,
                     json=payload,
                     timeout=35.0
@@ -636,7 +685,8 @@ async def generate_response(
                 "digikala_search", "reddit_search", "stackoverflow_search", "github_issues_search", "extract_user_id_tool", "ban_group_by_name_or_id_tool", "twitter_search", "cloudflare_d1_store_record", "cloudflare_d1_retrieve_record", "cloudflare_d1_delete_record", "cloudflare_d1_list_records", "cloudflare_d1_search_records", "manage_admin_memory",
                 "internal_resilient_fallback_search", "quick_http_inspect_tool", "autonomous_system_health_check",
                 "tavily_search", "web_search", "deep_search_and_read", "live_news", "fetch_webpage_content", "transcribe_audio_tool",
-                "publish_telegraph_article", "check_ssl_certificate", "get_global_forex_rates"
+                "publish_telegraph_article", "check_ssl_certificate", "get_global_forex_rates",
+                "e2b_run_code", "e2b_run_command", "e2b_status", "execute_python_code"
             }
             called_names = [tc.get("function", {}).get("name") for tc in tool_calls]
             all_self_contained = all(fn in direct_tools for fn in called_names if fn)
@@ -654,7 +704,6 @@ async def generate_response(
                 tools_schema = []
                 consecutive_empty_loops = 0
                 continue
-                return "\n\n".join(last_tool_outputs), extra_action
 
             # For subsequent reasoning turns, drop tool schemas to eliminate redundant latency
             tools_schema = []

@@ -46,6 +46,8 @@ _http_limits = httpx.Limits(max_keepalive_connections=200, max_connections=400, 
 _cf_client: Optional[httpx.AsyncClient] = None
 
 def get_cf_client() -> httpx.AsyncClient:
+    # No auth header in the pool — token is attached per-request via _cf_headers()
+    # so Railway variable rotation works without restart.
     global _cf_client
     if _cf_client is None or _cf_client.is_closed:
         _cf_client = httpx.AsyncClient(
@@ -53,11 +55,21 @@ def get_cf_client() -> httpx.AsyncClient:
             http2=True,
             timeout=8.0,
             headers={
-                "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
                 "Content-Type": "application/json"
             }
         )
     return _cf_client
+
+
+def _cf_headers() -> Dict[str, str]:
+    try:
+        from src.core.config import CLOUDFLARE_API_TOKEN as _tok
+    except Exception:
+        _tok = CLOUDFLARE_API_TOKEN
+    return {
+        "Authorization": f"Bearer {_tok}",
+        "Content-Type": "application/json",
+    }
 
 def get_tehran_timestamps() -> Tuple[str, str, str]:
     """Returns (created_at_iso, time_str, jalali_date_str)."""
@@ -175,7 +187,7 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     try:
         client = get_cf_client()
         url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_KV_ID}/values/{key}"
-        resp = await client.get(url, timeout=3.5)
+        resp = await client.get(url, headers=_cf_headers(), timeout=3.5)
         if resp.status_code == 200:
             val_str = resp.text
             l1_set(key, val_str, ttl_sec=120)
@@ -214,7 +226,7 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     try:
         client = get_cf_client()
         url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_KV_ID}/values/{key}?expiration_ttl={clean_ttl}"
-        resp = await client.put(url, content=value.encode("utf-8"), timeout=3.5)
+        resp = await client.put(url, headers=_cf_headers(), content=value.encode("utf-8"), timeout=3.5)
         if resp.status_code == 200:
             _KV_LAST_CLOUD_WRITE[key] = now
             _KV_LAST_CLOUD_HASH[key] = val_hash
@@ -244,7 +256,7 @@ async def kv_get_cloud_async(key: str) -> Optional[str]:
     try:
         client = get_cf_client()
         url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_KV_ID}/values/{key}"
-        resp = await client.get(url, timeout=4.0)
+        resp = await client.get(url, headers=_cf_headers(), timeout=4.0)
         if resp.status_code == 200:
             return resp.text
     except Exception as e:
@@ -348,7 +360,7 @@ async def execute_d1_query(sql: str, params: Optional[List[Any]] = None) -> Dict
         client = get_cf_client()
         url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/d1/database/{CLOUDFLARE_D1_ID}/query"
         body = {"sql": sql, "params": clean_params}
-        resp = await client.post(url, json=body, timeout=6.0)
+        resp = await client.post(url, headers=_cf_headers(), json=body, timeout=6.0)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("success") and data.get("result"):
@@ -369,7 +381,6 @@ def get_cf_sync_client() -> httpx.Client:
             limits=_http_limits,
             timeout=5.0,
             headers={
-                "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
                 "Content-Type": "application/json"
             }
         )
@@ -390,7 +401,7 @@ def execute_d1_query_sync(sql: str, params: Optional[List[Any]] = None) -> Dict[
     try:
         client = get_cf_sync_client()
         url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/d1/database/{CLOUDFLARE_D1_ID}/query"
-        resp = client.post(url, json={"sql": sql, "params": clean_params})
+        resp = client.post(url, headers=_cf_headers(), json={"sql": sql, "params": clean_params})
         if resp.status_code == 200:
             data = resp.json()
             if data.get("success") and data.get("result"):
@@ -1139,7 +1150,7 @@ async def delete_custom_record_d1(key_name: str) -> bool:
         try:
             client = get_cf_client()
             url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_KV_ID}/values/D1_STORE_{clean_k}"
-            await client.delete(url, timeout=3.5)
+            await client.delete(url, headers=_cf_headers(), timeout=3.5)
         except Exception as e:
             logger.debug(f"KV delete error for {clean_k}: {e}")
     sql = "DELETE FROM custom_data_store WHERE key_name = ?"

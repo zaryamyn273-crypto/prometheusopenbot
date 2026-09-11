@@ -69,12 +69,52 @@ def calculate_math_expression(expression: str) -> str:
     """
     :param expression: عبارت ریاضی برای محاسبه (مثال: sqrt(144) + 2^10 یا sin(pi/6))
     """
+    import ast as _ast
     try:
-        expr = expression.strip().replace("^", "**").replace("×", "*").replace("÷", "/")
+        expr = (expression or "")[:200].strip().replace("^", "**").replace("×", "*").replace("÷", "/")
+        if not expr:
+            return "عبارت ریاضی خالی است."
         # Guard against nested exponentiation attack (e.g. 9**9**9**9)
         if expr.count("**") > 2 or any(len(part) > 6 for part in re.findall(r"\*\*(\d+)", expr)):
             return "⚠️ توان درخواستی فراتر از سقف مجاز ایمنی محاسباتی است."
-        result = eval(expr, {"__builtins__": None}, SAFE_MATH_ENVIRONMENT)
+        # AST whitelist: only pure math, no Attribute/Subscript/calls outside SAFE env
+        try:
+            tree = _ast.parse(expr, mode="eval")
+        except SyntaxError as e:
+            return f"خطا در محاسبه عبارت ریاضی: {e}"
+        allowed_nodes = (_ast.Expression, _ast.BinOp, _ast.UnaryOp, _ast.Call,
+                         _ast.Name, _ast.Load, _ast.Constant, _ast.Add, _ast.Sub,
+                         _ast.Mult, _ast.Div, _ast.Pow, _ast.Mod, _ast.USub, _ast.UAdd,
+                         _ast.FloorDiv)
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.Attribute, _ast.Subscript, _ast.Lambda, _ast.ListComp,
+                                 _ast.DictComp, _ast.GeneratorExp, _ast.Await, _ast.Yield)):
+                return "⛔ عبارت مجاز نیست (دسترسی به اتریبیوت/ایندکس مسدود است)."
+            if not isinstance(node, allowed_nodes):
+                # Allow operator nodes already covered; reject everything else
+                if isinstance(node, (_ast.operator, _ast.unaryop)):
+                    continue
+                if isinstance(node, _ast.Expr):
+                    continue
+                # _ast.Module etc not in eval mode; be strict
+                if type(node).__name__ in ("Expr", "Module"):
+                    continue
+                return f"⛔ عبارت مجاز نیست (گره {type(node).__name__} مسدود است)."
+            if isinstance(node, _ast.Call):
+                if not isinstance(node.func, _ast.Name) or node.func.id not in SAFE_MATH_ENVIRONMENT:
+                    return "⛔ تابع مجاز نیست."
+                if len(node.args) > 4 or node.keywords:
+                    return "⛔ تعداد آرگومان مجاز نیست."
+            if isinstance(node, _ast.Name) and node.id not in SAFE_MATH_ENVIRONMENT:
+                return f"⛔ نام '{node.id}' مجاز نیست."
+            if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)):
+                if abs(float(node.value)) > 1e12:
+                    return "⚠️ عدد ورودی بیش از سقف مجاز است."
+        # Extra DoS caps for heavy combinatorics
+        m = re.search(r"(factorial|comb|perm|gamma)\s*\(\s*(\d+)", expr)
+        if m and int(m.group(2)) > 1000:
+            return "⚠️ ورودی فاکتوریل/ترکیبیات بیش از سقف ۱۰۰۰ است."
+        result = eval(compile(tree, "<math>", "eval"), {"__builtins__": {}}, SAFE_MATH_ENVIRONMENT)
         if isinstance(result, float) and result.is_integer():
             result = int(result)
         return f"🧮 *محاسبه ریاضی*:\n• *عبارت*: `{expression}`\n• *حاصل*: *{result:,}*" if isinstance(result, (int, float)) else f"🧮 *حاصل*: `{result}`"

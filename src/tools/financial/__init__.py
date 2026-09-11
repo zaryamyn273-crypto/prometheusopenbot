@@ -168,14 +168,21 @@ TOP_CRYPTOS = ["BTC", "ETH", "SOL", "BNB", "TON", "XRP", "DOGE", "ADA", "TRX", "
 
 async def background_sync_financial_cache():
     """
-    Perpetual background worker: pre-fetches and caches all global financial data
-    (Cryptos from Binance/Nobitex, Forex from ECB/AllRates, Gold & Currencies from TGJU)
-    every 300 seconds (5 minutes) in Cloudflare KV and L1 RAM for instant sub-millisecond responses.
+    Perpetual background worker (FREE sources only unless keys exist).
+    Interval is configurable for Railway free tiers via FINANCIAL_SYNC_INTERVAL_SEC
+    (default 900s). Disable entirely with ENABLE_FINANCIAL_SYNC=0 to save KV writes.
     """
-    logger.info("Starting Prometheus 5-Minute Global Financial Syncer...")
+    try:
+        from src.core.config import ENABLE_FINANCIAL_SYNC, FINANCIAL_SYNC_INTERVAL_SEC
+    except Exception:
+        ENABLE_FINANCIAL_SYNC, FINANCIAL_SYNC_INTERVAL_SEC = True, 900
+    if not ENABLE_FINANCIAL_SYNC:
+        logger.info("Financial background sync disabled via ENABLE_FINANCIAL_SYNC=0.")
+        return
+    logger.info(f"Starting Prometheus financial syncer (every {FINANCIAL_SYNC_INTERVAL_SEC}s)...")
     while True:
         try:
-            logger.info("Auto-syncing global market rates (Crypto, Forex, Gold, Fiat) to Cloudflare KV...")
+            logger.info("Auto-syncing market rates (free: Binance/Nobitex/TGJU/Frankfurter)...")
             tasks = [
                 _sync_all_crypto_prices(),
                 get_gold_and_coin_price(force_refresh=True),
@@ -185,11 +192,11 @@ async def background_sync_financial_cache():
                 _fetch_and_cache_live_dashboard()
             ]
             await asyncio.gather(*tasks, return_exceptions=True)
-            logger.info("Global financial data successfully pre-cached in Cloudflare KV & L1 RAM.")
+            logger.info("Financial data pre-cached in L1 RAM (+KV if configured).")
         except Exception as e:
             logger.warning(f"Background financial sync loop error: {e}")
-        
-        await asyncio.sleep(300)
+
+        await asyncio.sleep(FINANCIAL_SYNC_INTERVAL_SEC)
 
 async def _sync_all_crypto_prices():
     """Fetches and caches top cryptos from Binance & Nobitex."""
@@ -300,37 +307,39 @@ async def get_global_forex_rates(base: str = "USD", force_refresh: bool = False)
     except Exception:
         pass
 
-    # Provider 2: AllRatesToday API
-    try:
-        headers = {"Authorization": f"Bearer {ALLRATESTODAY_API_KEY}", "Accept": "application/json"}
-        r = await client.get(ALLRATESTODAY_URL, headers=headers, timeout=4.0)
-        if r.status_code == 200:
-            payload = r.json()
-            rates_list = payload if isinstance(payload, list) else payload.get("rates", payload.get("data", []))
-            matched = {}
-            if isinstance(rates_list, list):
-                for item in rates_list:
-                    if not isinstance(item, dict):
-                        continue
-                    src = item.get("source")
-                    tgt = item.get("target")
-                    try:
-                        rate_v = float(item.get("rate", 0))
-                    except (TypeError, ValueError):
-                        continue
-                    if src == clean_base and tgt in targets and rate_v > 0:
-                        matched[tgt] = rate_v
+    # Provider 2: AllRatesToday API (OPTIONAL — skipped entirely when no key,
+    # so key-less Railway deploys never pay/wait for it).
+    if (ALLRATESTODAY_API_KEY or "").strip():
+        try:
+            headers = {"Authorization": f"Bearer {ALLRATESTODAY_API_KEY}", "Accept": "application/json"}
+            r = await client.get(ALLRATESTODAY_URL, headers=headers, timeout=4.0)
+            if r.status_code == 200:
+                payload = r.json()
+                rates_list = payload if isinstance(payload, list) else payload.get("rates", payload.get("data", []))
+                matched = {}
+                if isinstance(rates_list, list):
+                    for item in rates_list:
+                        if not isinstance(item, dict):
+                            continue
+                        src = item.get("source")
+                        tgt = item.get("target")
+                        try:
+                            rate_v = float(item.get("rate", 0))
+                        except (TypeError, ValueError):
+                            continue
+                        if src == clean_base and tgt in targets and rate_v > 0:
+                            matched[tgt] = rate_v
 
-            if matched:
-                lines = [f"🌐 *تابلوی برابری ارزهای بین‌المللی فارکس (مبنا: ۱ {clean_base})*:\n"]
-                for t_sym, rate_val in matched.items():
-                    lines.append(f"• *{clean_base}/{t_sym}*: `{rate_val:,.4f}`")
+                if matched:
+                    lines = [f"🌐 *تابلوی برابری ارزهای بین‌المللی فارکس (مبنا: ۱ {clean_base})*:\n"]
+                    for t_sym, rate_val in matched.items():
+                        lines.append(f"• *{clean_base}/{t_sym}*: `{rate_val:,.4f}`")
 
-                out_text = "\n".join(lines)
-                await _put_cached(cache_key, out_text, ttl=3600)
-                return _with_fresh_label(out_text)
-    except Exception:
-        pass
+                    out_text = "\n".join(lines)
+                    await _put_cached(cache_key, out_text, ttl=3600)
+                    return _with_fresh_label(out_text)
+        except Exception:
+            pass
 
     # Fallback to standard benchmark rates
     fallback_text = (
@@ -348,11 +357,13 @@ async def get_global_forex_rates(base: str = "USD", force_refresh: bool = False)
 # =========================================================================
 
 async def _get_binance_depth(symbol: str) -> Optional[Dict[str, Any]]:
+    # USDT is a $1 stablecoin — no Binance lookup needed (also avoids the
+    # misleading USDCUSDT proxy). Free, instant, no key.
+    if (symbol or "").upper().strip() in ("USDT", "USDTUSDT", "تتر"):
+        return {"symbol": "USDT", "price": 1.0, "change": 0.0, "high": 1.0, "low": 1.0, "volume": 0.0}
     client = get_async_client()
     sym = symbol.upper()
-    if sym in ("USDT", "USDTUSDT"):
-        sym = "USDCUSDT"
-    elif not sym.endswith("USDT"):
+    if not sym.endswith("USDT"):
         sym = f"{sym}USDT"
     try:
         r = await client.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={sym}", timeout=3.5)

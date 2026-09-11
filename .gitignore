@@ -5,3 +5,7 @@ __pycache__/
 .env
 .DS_Store
 *.log
+# Generated test output artifacts (never commit)
+/tmp/test_battery_results.json
+tests/test_results_dump.json
+test_results_dump.json

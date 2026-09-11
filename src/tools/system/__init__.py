@@ -17,6 +17,14 @@ from src.core import database
 from src.core.config import ADMIN_ID
 from src.core.security import validate_python_code, sanitize_output as _sanitize_secrets
 
+# E2B cloud sandbox tools (e2b_run_code / e2b_run_command / e2b_status).
+# Imported for side-effect registration only; module itself is fully lazy
+# (no E2B import at startup, safe on Railway without the key/package).
+try:
+    from src.tools.system import e2b_sandbox as _e2b_mod  # noqa: F401
+except Exception:
+    _e2b_mod = None  # type: ignore
+
 # Commands matching any of these patterns are destructive/sensitive shell and
 # are NEVER executed — even for the Master Admin. Everything else stays open.
 DESTRUCTIVE_SHELL_PATTERNS = [
@@ -114,6 +122,10 @@ def mask_sensitive_shell_output(output: str, is_private_chat: bool) -> tuple[str
         r'[0-9]{8,11}:[a-zA-Z0-9_\-]{30,}',
         r'art_live_[a-zA-Z0-9]{12,}',
         r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+        r'ghp_[A-Za-z0-9]{20,}',
+        r'gho_[A-Za-z0-9]{20,}',
+        r'github_pat_[A-Za-z0-9_]{10,}',
+        r'tvly-[A-Za-z0-9_\-]{8,}',
     ]
     for pat in patterns:
         if re.search(pat, masked):
@@ -127,7 +139,7 @@ def mask_sensitive_shell_output(output: str, is_private_chat: bool) -> tuple[str
 
 @register_tool(
     name="execute_python_code",
-    description="اجرای مستقیم شل و کدهای پایتون (Python 3) روی سرور ربات (منحصراً مختص شخص فرمانده ارشد)",
+    description="اجرای کد پایتون (مختص فرمانده ارشد؛ اگر E2B_API_KEY ست باشد در سندباکس ابری E2B، وگرنه لوکال)",
     category="admin"
 )
 async def execute_python_code(code: str, caller_id: int = 0, is_private_chat: bool = False) -> str:
@@ -161,6 +173,46 @@ async def execute_python_code(code: str, caller_id: int = 0, is_private_chat: bo
     except PermissionError as e:
         return f"⛔ کد به دلایل امنیتی مسدود شد:\n{e}"
 
+    # Secrets never leave the bot — blocked on BOTH backends.
+    _lower_sec = clean_code.lower()
+    if any(t in _lower_sec for t in (".env", "telegram_bot_token", "router_api_key", "e2b_api_key", "cloudflare")):
+        return "⛔ کد به دلایل امنیتی مسدود شد: دسترسی به سکرت/توکن ممنوع است."
+
+    # Cloud-first: E2B sandbox is isolated (network/pip allowed) and keeps
+    # Railway free-tier RAM/CPU at zero. Any E2B failure falls through to local.
+    try:
+        from src.core.config import has_e2b as _has_e2b_cfg
+        _e2b_on = bool(_has_e2b_cfg())
+    except Exception:
+        _e2b_on = False
+    if _e2b_on:
+        try:
+            from src.tools.system.e2b_sandbox import run_e2b_python as _e2b_run
+            _e2b_out = await _e2b_run(clean_code)
+            # run_e2b_python only raises on transport errors; a normal
+            # execution (even with code error inside) returns formatted text.
+            if _e2b_out and "فعال نیست" not in _e2b_out and "نصب نیست" not in _e2b_out:
+                try:
+                    masked, _ = mask_sensitive_shell_output(_e2b_out, is_private_chat=is_private_chat)
+                    return masked
+                except Exception:
+                    return _e2b_out
+            # Missing key/package message → fall through to local sandbox below.
+            logger.debug(f"E2B unavailable, using local sandbox: {_e2b_out[:120]}")
+        except Exception as _e:
+            logger.warning(f"E2B cloud run failed, falling back to local: {_e}")
+
+    # Extra hardening for the LOCAL backend only: block network/sys modules
+    # (E2B above already allows them safely in the cloud).
+    _lower = clean_code.lower()
+    _danger_tokens = ["__builtins__", "__class__", "__globals__", "getattr", "setattr",
+                      "importlib", "import os", "import sys", "import subprocess",
+                      "from os", "from sys", "os.system", "os.popen", "subprocess.",
+                      "socket", "urllib", "requests", "httpx", "/etc/passwd", "/etc/shadow",
+                      ".env", "telegram_bot_token", "router_api_key"]
+    if any(t in _lower for t in _danger_tokens):
+        return "⛔ کد به دلایل امنیتی مسدود شد: استفاده از ماژول‌های سیستمی/شبکه یا دسترسی به سکرت ممنوع است."
+
     # Watchdog: user code runs in a SEPARATE PROCESS killed on timeout.
     # (Threads can't work: a `while True: pass` hogs the GIL and starves the
     # waiter. Only process termination truly stops runaway code.)
@@ -176,15 +228,20 @@ async def execute_python_code(code: str, caller_id: int = 0, is_private_chat: bo
         if is_master:
             import math as _math
             import re as _re
+            # Hardened: NO os/sys/__builtins__ full access. Only pure libs.
             safe_globals = {
-                "__builtins__": __builtins__,
-                "sys": sys,
-                "os": os,
+                "__builtins__": {
+                    "print": print, "range": range, "len": len, "int": int, "float": float,
+                    "str": str, "bool": bool, "list": list, "dict": dict, "set": set,
+                    "tuple": tuple, "sum": sum, "max": max, "min": min, "abs": abs,
+                    "round": round, "sorted": sorted, "enumerate": enumerate, "zip": zip,
+                    "map": map, "filter": filter, "isinstance": isinstance, "isinstance": isinstance,
+                    "pow": pow, "divmod": divmod, "any": any, "all": all,
+                },
                 "json": json,
                 "time": time,
                 "math": _math,
                 "re": _re,
-                "psutil": psutil,
                 "platform": platform,
             }
         else:
