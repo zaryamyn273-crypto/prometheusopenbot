@@ -3,7 +3,7 @@ import io
 import json
 import csv
 import logging
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from src.tools.registry import register_tool
 

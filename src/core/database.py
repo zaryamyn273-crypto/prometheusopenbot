@@ -1,4 +1,3 @@
-import os
 import re
 import json
 import time
@@ -598,7 +597,9 @@ def init_db():
         chat_type TEXT,
         member_count INTEGER DEFAULT 0,
         added_by INTEGER,
-        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        username TEXT DEFAULT '',
+        invite_link TEXT DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_search ON messages(chat_id, content);
@@ -617,18 +618,52 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_custom_data_cat ON custom_data_store(category, key_name);
     CREATE INDEX IF NOT EXISTS idx_banned_username ON banned_users(username);
     """
-    # Single-pass batch DDL execution: Runs entire schema in one fast round-trip
-    execute_d1_query_sync(schema.strip())
+    # D1 REST /query runs exactly ONE statement per call — a batched multi-statement
+    # string fails (or silently runs only the first CREATE). Split, never batch.
+    # Trigger bodies contain inner semicolons, so they are executed whole, separately.
+    # Fast path: a single sqlite_master probe skips all DDL on warm boots
+    # (20 serial round-trips at startup would stall boot when CF is slow).
+    _need_ddl = True
+    try:
+        _probe = execute_d1_query_sync(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','index') LIMIT 60"
+        )
+        if _probe.get("success"):
+            _have = {str(r.get("name", "")) for r in (_probe.get("results") or [])}
+            _need_ddl = not {"messages", "admin_memories", "custom_data_store",
+                             "banned_users", "muted_users", "user_mappings",
+                             "tracked_groups", "messages_fts"}.issubset(_have)
+    except Exception:
+        _need_ddl = True
+    if _need_ddl:
+        for _stmt in schema.split(";"):
+            _s = _stmt.strip()
+            if _s:
+                execute_d1_query_sync(_s)
+
+    # Migrate DBs created before username/invite_link existed (no-op if present).
+    for _mig in (
+        "ALTER TABLE tracked_groups ADD COLUMN username TEXT DEFAULT ''",
+        "ALTER TABLE tracked_groups ADD COLUMN invite_link TEXT DEFAULT ''",
+    ):
+        try:
+            execute_d1_query_sync(_mig)
+        except Exception:
+            pass
 
     # Synchronize FTS Triggers (Automatic high-speed real-time sync into messages_fts)
     execute_d1_query_sync("""CREATE TRIGGER IF NOT EXISTS trg_messages_ai AFTER INSERT ON messages BEGIN
         INSERT INTO messages_fts(rowid, content, user_name, username) VALUES (new.id, new.content, new.user_name, new.username);
-    END;
-    CREATE TRIGGER IF NOT EXISTS trg_messages_ad AFTER DELETE ON messages BEGIN
+    END;""")
+    execute_d1_query_sync("""CREATE TRIGGER IF NOT EXISTS trg_messages_ad AFTER DELETE ON messages BEGIN
         INSERT INTO messages_fts(messages_fts, rowid, content, user_name, username) VALUES ('delete', old.id, old.content, old.user_name, old.username);
     END;""")
 
-    sync_memory_from_d1_sync()
+    # A D1 hiccup must NEVER prevent boot: RAM works standalone.
+    try:
+        sync_memory_from_d1_sync()
+    except Exception as e:
+        logger.warning(f"D1 startup sync skipped: {e}")
 
 def sync_memory_from_d1_sync():
     global _MEMORY_DIRECTIVES, _BANNED_USERS, _BANNED_USERNAMES, _USERNAME_TO_ID_MAP, _ACTIVE_GROUPS
@@ -667,7 +702,13 @@ def sync_memory_from_d1_sync():
     group_res = execute_d1_query_sync("SELECT chat_id, title, chat_type, member_count, added_by, added_at, username, invite_link FROM tracked_groups")
     if group_res.get("success"):
         for g in group_res["results"]:
-            _ACTIVE_GROUPS[g["chat_id"]] = g
+            try:
+                _cid = g.get("chat_id")
+                if _cid is None:
+                    continue
+                _ACTIVE_GROUPS[int(_cid)] = g
+            except Exception:
+                continue
 
     logger.info(f"D1 Synced: {len(_MEMORY_DIRECTIVES)} perpetual directives, {len(_BANNED_USERS)} banned users, {len(_ACTIVE_GROUPS)} active groups.")
 
@@ -692,7 +733,13 @@ async def sync_memory_from_d1_async():
     group_res = await execute_d1_query("SELECT chat_id, title, chat_type, member_count, added_by, added_at, username, invite_link FROM tracked_groups")
     if group_res.get("success"):
         for g in group_res["results"]:
-            _ACTIVE_GROUPS[g["chat_id"]] = g
+            try:
+                _cid = g.get("chat_id")
+                if _cid is None:
+                    continue
+                _ACTIVE_GROUPS[int(_cid)] = g
+            except Exception:
+                continue
 
 # --- Tracked Groups Management ---
 
@@ -1276,7 +1323,7 @@ def remove_admin_memory(directive: str) -> bool:
     for m in (matched or [clean_d]):
         if m in _MEMORY_DIRECTIVES:
             _MEMORY_DIRECTIVES.remove(m)
-    res = execute_d1_query_sync("DELETE FROM admin_memories WHERE directive = ?", [clean_d])
+    execute_d1_query_sync("DELETE FROM admin_memories WHERE directive = ?", [clean_d])
     if matched:
         for m in matched:
             execute_d1_query_sync("DELETE FROM admin_memories WHERE directive = ?", [m])

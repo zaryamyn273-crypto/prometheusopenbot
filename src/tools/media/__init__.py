@@ -9,7 +9,8 @@ from typing import Dict, Any, Optional, List
 
 from src.tools.registry import register_tool
 from src.core import database
-from src.tools.media import transcription
+from src.core.http import shared_client_ctx
+from src.tools.media import transcription  # noqa: F401  (registers transcribe_audio_tool)
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +280,6 @@ async def download_music_track(query: str) -> Any:
 
     cache_key = f"music_v2_{clean_q.replace(' ', '_')}"
     try:
-        from src.tools.media import youtube_audio as _yt_cache_check
         cached = await database.kv_get_cache_async(cache_key)
     except Exception:
         cached = None
@@ -299,8 +299,8 @@ async def download_music_track(query: str) -> Any:
                 # skipping search (~8s) AND metadata lookups entirely.
                 if t == "yt_id" and hit.get("video_id"):
                     try:
-                        from src.tools.media.youtube_audio import _download_mp3_sync as _dl_sync, _ffmpeg_path as _ff
-                        import tempfile as _tf, os as _os
+                        from src.tools.media.youtube_audio import _download_mp3_sync as _dl_sync
+                        import tempfile as _tf
                         with _tf.TemporaryDirectory(prefix="yt_cachehit_") as _wd:
                             _mp3 = await asyncio.wait_for(
                                 asyncio.to_thread(
@@ -532,7 +532,7 @@ async def publish_telegraph_article(
     except Exception as e:
         logger.error(f"Telegraph creation error: {e}")
         return f"خطا در انتشار مقاله تلگراف: {str(e)}"
-    return f"📄 [مقاله در تلگراف منتشر شد](https://telegra.ph/Prometheus-Doc)"
+    return "❌ انتشار مقاله در تلگراف ناموفق بود؛ توکن موقت تلگراف صادر نشد. کمی بعد دوباره تلاش کنید."
 
 # =========================================================================
 # 3. QR Code Generator

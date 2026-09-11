@@ -5,12 +5,9 @@ Part of the Prometheus Audio Super-System.
 import asyncio
 import logging
 import os
-import re
 import tempfile
-import urllib.parse
 from typing import Dict, Any, Optional, List
 
-import httpx
 from src.core.http import shared_client_ctx
 
 logger = logging.getLogger(__name__)
@@ -26,6 +23,40 @@ def _ffmpeg_path() -> str:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
         return "ffmpeg"
+
+def _yt_cookies_file() -> Optional[str]:
+    """Optional Netscape cookies.txt to bypass YouTube bot-checks on datacenter IPs.
+
+    Set YT_COOKIES_FILE to a mounted cookies file (Railway volume). Absent by
+    default — everything works without it on residential/undisturbed egress.
+    """
+    try:
+        from src.core import config as _cfg
+        p = (_cfg.YT_COOKIES_FILE or "").strip()
+    except Exception:
+        return None
+    try:
+        if p and os.path.isfile(p) and os.path.getsize(p) > 0:
+            return p
+    except Exception:
+        pass
+    return None
+
+
+def _ydl_kwargs(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Base yt-dlp options shared by search + download (cookies wired once)."""
+    opts: Dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 8,
+        "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
+    }
+    ck = _yt_cookies_file()
+    if ck:
+        opts["cookiefile"] = ck
+    if extra:
+        opts.update(extra)
+    return opts
 
 async def itunes_track_metadata(query: str) -> Optional[Dict[str, str]]:
     """Fetches high-res iTunes artwork and normalized metadata without credentials."""
@@ -95,14 +126,10 @@ async def spotify_track_metadata(query: str) -> Optional[Dict[str, str]]:
 
 def _ytsearch_sync(query: str, max_results: int = 4) -> List[Dict[str, Any]]:
     from yt_dlp import YoutubeDL
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
+    ydl_opts = _ydl_kwargs({
         "skip_download": True,
         "extract_flat": True,
-        "socket_timeout": 8,
-        "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
-    }
+    })
     with YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(f"ytsearch{max_results}:{query}", download=False)
@@ -184,18 +211,16 @@ def _download_mp3_sync(video_id: str, workdir: str, title: str = "", artist: str
     import subprocess
     from yt_dlp import YoutubeDL
     out_tpl = os.path.join(workdir, "raw_track.%(ext)s")
-    ydl_opts = {
+    ydl_opts = _ydl_kwargs({
         "format": "ba[ext=m4a]/ba/b",
         "outtmpl": out_tpl,
-        "quiet": True,
-        "no_warnings": True,
         "socket_timeout": 20,
         "retries": 5,
         "fragment_retries": 5,
         "concurrent_fragment_downloads": 4,
         "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
         "ffmpeg_location": _ffmpeg_path(),
-    }
+    })
     url = f"https://www.youtube.com/watch?v={video_id}"
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])

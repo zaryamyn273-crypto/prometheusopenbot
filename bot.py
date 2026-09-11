@@ -8,8 +8,6 @@ from typing import Dict, Any
 
 from telegram import (
     Update,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
     constants
 )
 from telegram.constants import ParseMode, ChatAction, ChatType
@@ -40,9 +38,6 @@ from src.tools import (
     scientific,
     media,
     system,
-    github,
-    files,
-    database as db_tools
 )
 from src.ui import admin_panel
 from src.utils import telegram_formatter
@@ -846,20 +841,17 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_str = ""
     reason = "دستور مستقیم فرمانده"
     first_name = ""
-    username = ""
 
     if target_user:
         target_str = str(target_user.id)
         if args:
             reason = " ".join(args).strip()
         first_name = target_user.first_name or ""
-        username = target_user.username or ""
     elif args:
         target_str = args[0].strip()
         if len(args) > 1:
             reason = " ".join(args[1:]).strip()
         first_name = ""
-        username = target_str if target_str.startswith("@") else ""
     else:
         await reply_safely(message, "⚠️ فرمت دستور:\n<code>/ban &lt;شناسه یا @username یا نام فرد&gt; [علت]</code>\nیا روی پیام کاربر دستور /ban را ریپلای کنید.")
         return

@@ -15,7 +15,7 @@ from src.tools import system
 from src.tools import github
 from src.tools import files
 from src.tools import database as database_tools
-from src.tools.admin import group_manager
+from src.tools.admin import group_manager  # noqa: F401 (registers group tools)
 from src.tools import dev
 from src.tools import internal
 

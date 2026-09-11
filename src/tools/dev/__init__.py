@@ -1,8 +1,6 @@
 import urllib.parse
-import httpx
 import logging
 from src.core.http import shared_client_ctx
-import re
 from bs4 import BeautifulSoup
 from src.tools.registry import register_tool
 from src.core import database

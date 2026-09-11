@@ -63,6 +63,11 @@ try:
 except Exception:
     E2B_TIMEOUT_SEC = 30
 
+# --- YouTube cookies (OPTIONAL — دور زدن بات‌چک یوتیوب در IPهای دیتاسنتر) ---
+# اگه yt-dlp با خطای "Sign in to confirm you're not a bot" مواجه شد، یه فایل
+# کوکی Netscape (خروجی افزونه Get cookies.txt) رو mount کن و مسیرش رو اینجا بده.
+YT_COOKIES_FILE = os.getenv("YT_COOKIES_FILE", "")
+
 # --- Railway-simple feature flags ---
 # Background market pre-sync burns Cloudflare KV writes; on free tiers
 # disable it or slow it down via env.

@@ -25,6 +25,7 @@
   - [7. Token GitHub (GITHUB_TOKEN)](#7-token-github-github_token)
   - [8. Clés Spotify (SPOTIFY_CLIENT_ID et SPOTIFY_CLIENT_SECRET)](#8-clés-spotify-spotify_client_id-et-spotify_client_secret)
   - [9. Sandbox cloud E2B (E2B_API_KEY)](#9-sandbox-cloud-e2b-e2b_api_key)
+  - [10. Cookies YouTube (YT_COOKIES_FILE)](#10-cookies-youtube-yt_cookies_file)
 - [Fichier .env](#fichier-env)
 - [Installation pas à pas](#installation-pas-à-pas)
 - [Déploiement cloud](#déploiement-cloud)
@@ -64,6 +65,7 @@ prometheusopenbot/
 │   │   ├── config.py          # Chargement env, politique sécu, prompt système
 │   │   ├── database.py        # Stockage cloud multi-niveaux (Cloudflare D1 et KV)
 │   │   ├── http.py            # Gestion des sessions HTTP async
+│   │   ├── i18n.py            # Détection langue + chaînes bilingues
 │   │   └── security.py        # Validation commandes, rate limits, anti-intrusion
 │   ├── tools/                 # ~90 outils ciblés (extras supprimés)
 │   │   ├── admin/             # Gouvernance des groupes et modération
@@ -76,6 +78,7 @@ prometheusopenbot/
 │   │   ├── media/             # Téléchargement musique, métadonnées, paroles, voix
 │   │   ├── scientific/        # Maths, stats, convertisseur d'unités
 │   │   ├── system/            # Télémétrie, sandbox E2B, shell admin sûr
+│   │   │   └── e2b_sandbox.py   # E2B cloud optionnel (fallback local)
 │   │   ├── web_network/       # Moteurs live (Tavily, Bing, Brave, Digikala)
 │   │   └── registry.py        # Auto-enregistrement des schémas + dispatcher
 │   ├── ui/                    # Panneau admin in-app (boutons inline)
@@ -83,6 +86,8 @@ prometheusopenbot/
 │
 ├── tests/                     # Suites de tests
 │   ├── test_master.py         # Validation intégrale du système
+│   ├── test_e2b.py            # Test sandbox E2B (voie offline sans clé)
+│   ├── test_i18n.py           # Bilinguisme, triggers EN/FA, fallback traduction
 │   ├── run_test_battery.py    # Simu bot, BD et stress
 │   ├── test_stress.py         # Stabilité sous forte charge
 │   ├── run_rigorous_tests.py  # Éval outils web/réseau live
@@ -233,6 +238,12 @@ Pour toutes les fonctions il faut quelques clés. Certaines sont **obligatoires*
   2. Clé du [panel E2B](https://e2b.dev/dashboard?tab=keys) (commence par `e2b_`).
   3. Mettez-la dans `E2B_API_KEY`. (Optionnel : `E2B_TEMPLATE` pour un template perso, `E2B_TIMEOUT_SEC` pour le plafond.)
 
+### 10. Cookies YouTube (YT_COOKIES_FILE) — [optionnel ⚪]
+- **Usage :** utile uniquement si YouTube prend l'IP du serveur pour un bot et que les téléchargements échouent avec `Sign in to confirm you're not a bot`. Sinon, laissez vide.
+- **Comment l'avoir :**
+  1. Exportez un fichier cookies Netscape depuis youtube.com avec une extension (p. ex. Get cookies.txt).
+  2. Placez-le à côté du bot (sur Railway : un Volume) et mettez le chemin dans `YT_COOKIES_FILE`.
+
 ---
 
 ## Fichier .env
@@ -256,7 +267,9 @@ Créez un `.env` à la racine et remplissez selon le guide :
 | `SPOTIFY_CLIENT_ID` | optionnel ⚪ | `""` | Spotify Client ID |
 | `SPOTIFY_CLIENT_SECRET` | optionnel ⚪ | `""` | Spotify Client Secret |
 | `E2B_API_KEY` | optionnel ⚪ | `""` | Sandbox cloud E2B (sinon : local) |
+| `E2B_TEMPLATE` | optionnel ⚪ | `""` | Template E2B perso (vide = défaut) |
 | `E2B_TIMEOUT_SEC` | optionnel ⚪ | `30` | Plafond E2B en secondes (5–120) |
+| `YT_COOKIES_FILE` | optionnel ⚪ | `""` | Fichier cookies YouTube (seulement si bot-check) |
 | `ENABLE_FINANCIAL_SYNC` | optionnel ⚪ | `1` | Sync cours en fond (`0` = off, économise le quota KV) |
 
 ---
@@ -389,6 +402,10 @@ Avant de déployer, contrôle des modules et outils :
 ```bash
 # audit registre + outils offline
 python tests/test_master.py
+
+# bilinguisme + sandbox (offline, sans clés)
+python tests/test_i18n.py
+python tests/test_e2b.py
 
 # éval multi + stress
 python tests/run_test_battery.py

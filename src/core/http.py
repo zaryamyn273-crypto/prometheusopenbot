@@ -8,7 +8,7 @@ Profiles:
 """
 import httpx
 import threading
-from typing import Dict, Optional
+from typing import Dict
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

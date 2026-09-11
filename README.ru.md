@@ -25,6 +25,7 @@
   - [7. Токен GitHub (GITHUB_TOKEN)](#7-токен-github-github_token)
   - [8. Ключи Spotify (SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET)](#8-ключи-spotify-spotify_client_id-и-spotify_client_secret)
   - [9. Облачная песочница E2B (E2B_API_KEY)](#9-облачная-песочница-e2b-e2b_api_key)
+  - [10. Куки YouTube (YT_COOKIES_FILE)](#10-куки-youtube-yt_cookies_file)
 - [Переменные окружения](#переменные-окружения)
 - [Пошаговая установка](#пошаговая-установка)
 - [Деплой в облаке](#деплой-в-облаке)
@@ -64,6 +65,7 @@ prometheusopenbot/
 │   │   ├── config.py          # Загрузка env, политика безопасности, системный промпт
 │   │   ├── database.py        # Многоуровневое облачное хранилище (Cloudflare D1 и KV)
 │   │   ├── http.py            # Управление асинхронными HTTP-сессиями
+│   │   ├── i18n.py            # Определение языка пользователя + двуязычные строки
 │   │   └── security.py        # Проверка команд, rate limit, защита от вторжений
 │   ├── tools/                 # ~90 точечных инструментов (лишнее удалено)
 │   │   ├── admin/             # Управление группами и модерация
@@ -76,6 +78,7 @@ prometheusopenbot/
 │   │   ├── media/             # Загрузка музыки, метаданные, тексты песен, войсы
 │   │   ├── scientific/        # Математика, статистика, конвертер единиц
 │   │   ├── system/            # Телеметрия сервера, песочница E2B, безопасный shell админа
+│   │   │   └── e2b_sandbox.py   # Опциональные облачные запуски E2B (локальный fallback)
 │   │   ├── web_network/       # Живые поисковики (Tavily, Bing, Brave, Digikala)
 │   │   └── registry.py        # Авторегистрация схем инструментов + диспетчер
 │   ├── ui/                    # Внутричатовая админ-панель Telegram (кнопки)
@@ -83,6 +86,8 @@ prometheusopenbot/
 │
 ├── tests/                     # Тесты
 │   ├── test_master.py         # Сквозная проверка системы и инструментов
+│   ├── test_e2b.py            # Тест песочницы E2B (офлайн-путь без ключа)
+│   ├── test_i18n.py           # Двуязычие, EN/FA-триггеры, fallback перевода
 │   ├── run_test_battery.py    # Симуляция поведения бота, БД и стресс
 │   ├── test_stress.py         # Устойчивость инструментов под нагрузкой
 │   ├── run_rigorous_tests.py  # Проверка живых веб/сетевых инструментов
@@ -233,6 +238,12 @@ prometheusopenbot/
   2. Ключ из [дашборда E2B](https://e2b.dev/dashboard?tab=keys) (начинается с `e2b_`).
   3. Положите в `E2B_API_KEY`. (Опционально: `E2B_TEMPLATE` для своего шаблона, `E2B_TIMEOUT_SEC` для лимита времени.)
 
+### 10. Куки YouTube (YT_COOKIES_FILE) — [опционально ⚪]
+- **Зачем:** нужно, только если YouTube считает IP сервера ботом и загрузка музыки падает с `Sign in to confirm you're not a bot`. Иначе оставьте пустым.
+- **Как получить:**
+  1. Выгрузите Netscape-файл куки с youtube.com расширением браузера (например, Get cookies.txt).
+  2. Положите файл рядом с ботом (на Railway: Volume) и укажите путь в `YT_COOKIES_FILE`.
+
 ---
 
 ## Переменные окружения
@@ -256,7 +267,9 @@ prometheusopenbot/
 | `SPOTIFY_CLIENT_ID` | опционально ⚪ | `""` | Spotify Client ID |
 | `SPOTIFY_CLIENT_SECRET` | опционально ⚪ | `""` | Spotify Client Secret |
 | `E2B_API_KEY` | опционально ⚪ | `""` | Облачная песочница E2B (иначе: локально) |
+| `E2B_TEMPLATE` | опционально ⚪ | `""` | Свой шаблон E2B (пусто = по умолчанию) |
 | `E2B_TIMEOUT_SEC` | опционально ⚪ | `30` | Лимит выполнения E2B в секундах (5–120) |
+| `YT_COOKIES_FILE` | опционально ⚪ | `""` | Файл куки YouTube (только если загрузки упираются в бот-чек) |
 | `ENABLE_FINANCIAL_SYNC` | опционально ⚪ | `1` | Фоновый синк курсов (`0` = выкл, экономит KV-квоту) |
 
 ---
@@ -389,6 +402,10 @@ sudo systemctl enable --now prometheus
 ```bash
 # аудит реестра + офлайн-инструментов
 python tests/test_master.py
+
+# двуязычие + песочница (офлайн, без ключей)
+python tests/test_i18n.py
+python tests/test_e2b.py
 
 # многомерная оценка + стресс
 python tests/run_test_battery.py

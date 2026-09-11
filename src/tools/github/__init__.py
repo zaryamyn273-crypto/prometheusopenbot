@@ -1,11 +1,10 @@
-import httpx
 from src.core.http import shared_client_ctx
 import logging
 import base64
 import re
 import urllib.parse
 from bs4 import BeautifulSoup
-from typing import Dict, Any, Optional, List
+from typing import Dict
 from src.tools.registry import register_tool
 from src.core.config import GITHUB_TOKEN
 from src.core import database

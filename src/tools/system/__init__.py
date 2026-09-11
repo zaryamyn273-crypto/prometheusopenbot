@@ -5,17 +5,15 @@ import re
 import ast
 import json
 import time
-import asyncio
 import platform
 import psutil
-import subprocess
 import logging
-from typing import Dict, Any, Optional
+from typing import Optional
 
 from src.tools.registry import register_tool
 from src.core import database
 from src.core.config import ADMIN_ID
-from src.core.security import validate_python_code, sanitize_output as _sanitize_secrets
+from src.core.security import validate_python_code
 
 # E2B cloud sandbox tools (e2b_run_code / e2b_run_command / e2b_status).
 # Imported for side-effect registration only; module itself is fully lazy
@@ -591,7 +589,7 @@ async def ban_user_tool(
         source_chat_title=source_chat_title or ""
     )
 
-    out = [f"🚫 *کاربر هدف با موفقیت در دیتابیس ابدی Cloudflare D1 مسدود گردید:*"]
+    out = ["🚫 *کاربر هدف با موفقیت در دیتابیس ابدی Cloudflare D1 مسدود گردید:*"]
     if uid:
         out.append(f"• *شناسه عددی (User ID):* `{uid}`")
     if uname:
@@ -633,7 +631,7 @@ async def unban_user_tool(
     uid, uname = await database.resolve_target_identifier(clean_t)
     await database.unban_target_async(clean_t)
 
-    out = [f"✅ *کاربر هدف با موفقیت در دیتابیس Cloudflare D1 رفع مسدودیت گردید:*"]
+    out = ["✅ *کاربر هدف با موفقیت در دیتابیس Cloudflare D1 رفع مسدودیت گردید:*"]
     if uid:
         out.append(f"• *شناسه عددی (User ID):* `{uid}`")
     if uname:

@@ -25,6 +25,7 @@
   - [۷. توکن دسترسی گیت‌هاب (GITHUB_TOKEN)](#۷-توکن-دسترسی-گیت‌هاب-github_token)
   - [۸. کلیدهای اسپاتیفای (SPOTIFY_CLIENT_ID & SPOTIFY_CLIENT_SECRET)](#۸-کلیدهای-اسپاتیفای-spotify_client_id--spotify_client_secret)
   - [۹. سندباکس ابری E2B (E2B_API_KEY)](#۹-سندباکس-ابری-e2b-e2b_api_key)
+  - [۱۰. کوکی یوتیوب (YT_COOKIES_FILE)](#۱۰-کوکی-یوتیوب-yt_cookies_file)
 - [جدول متغیرهای محیطی (.env)](#-جدول-متغیرهای-محیطی-env)
 - [نصب و راه‌اندازی گام‌به‌گام (Step-by-Step Installation)](#-نصب-و-راه‌اندازی-گام‌به‌گام-step-by-step-installation)
 - [استقرار در محیط پروداکشن و کلود (Cloud Deployment)](#-استقرار-در-محیط-پروداکشن-و-کلود-cloud-deployment)
@@ -64,6 +65,7 @@ prometheusopenbot/
 │   │   ├── config.py          # بارگذاری متغیرهای محیطی، سیاست‌های امنیتی و پرامپت سیستم
 │   │   ├── database.py        # لایه ذخیره‌سازی ابری چندسطحی (Cloudflare D1 & KV)
 │   │   ├── http.py            # مدیریت نشست‌های HTTP ناهمگام
+│   │   ├── i18n.py            # تشخیص زبان کاربر + رشته‌های دوزبانه ربات
 │   │   └── security.py        # اعتبارسنجی فرامین، ریت‌لیمیت و محافظت در برابر نفوذ
 │   ├── tools/                 # حدود ۹۰ ابزار تخصصی (هر کدوم یه کار مشخص می‌کنه، اضافه‌ها حذف شدن)
 │   │   ├── admin/             # ابزارهای حاکمیتی و مدیریت گروه‌ها
@@ -76,6 +78,7 @@ prometheusopenbot/
 │   │   ├── media/             # دانلود استودیویی موزیک، متادیتا، استخراج لیریکس و وویس
 │   │   ├── scientific/        # محاسبات ریاضی، آماری و تبدیل واحدها
 │   │   ├── system/            # تله‌متری سرور، سندباکس E2B و اجرای ایمن شل تحت کنترل ادمین
+│   │   │   └── e2b_sandbox.py   # اجرای ایزوله ابری E2B (اختیاری، fallback لوکال)
 │   │   ├── web_network/       # موتورهای جستجوی زنده (Tavily, Bing, Brave, Digikala)
 │   │   └── registry.py        # ثبت خودکار اسکیمای ابزارها و هماهنگ‌کننده اجرای ابزارها
 │   ├── ui/                    # پنل مدیریتی درون‌برنامه‌ای تلگرام (Inline Keyboards)
@@ -83,6 +86,8 @@ prometheusopenbot/
 │
 ├── tests/                     # مجموعه آزمون‌های سیستم و ارزیابی کیفیت
 │   ├── test_master.py         # تست اعتبارسنجی جامع سیستم و ابزارها
+│   ├── test_e2b.py            # تست سندباکس E2B (بدون کلید، فقط مسیر آفلاین)
+│   ├── test_i18n.py           # تست دوزبانگی، تریگرهای EN/FA و fallback ترجمه
 │   ├── run_test_battery.py    # شبیه‌سازی رفتار ربات، دیتابیس و تست فشار
 │   ├── test_stress.py         # آزمون پایداری ابزارها در بار کاری بالا
 │   ├── run_rigorous_tests.py  # ارزیابی ابزارهای وب، شبکه و اینترنت زنده
@@ -244,6 +249,12 @@ prometheusopenbot/
   2. دریافت کلید از [داشبورد E2B](https://e2b.dev/dashboard?tab=keys) (با `e2b_` شروع می‌شود).
   3. قرار دادن در `E2B_API_KEY`. (اختیاری: `E2B_TEMPLATE` برای تمپلیت سفارشی، `E2B_TIMEOUT_SEC` برای سقف اجرا.)
 
+### ۱۰. کوکی یوتیوب (YT_COOKIES_FILE) — [اختیاری ⚪]
+- **کاربرد:** فقط وقتی لازم می‌شود که یوتیوب IP سرور شما را بات تشخیص دهد و دانلود موزیک با خطای `Sign in to confirm you're not a bot` fail شود. در حالت عادی خالی بگذارید.
+- **نحوه تهیه:**
+  1. با افزونه مرورگر (مثل Get cookies.txt) از youtube.com خروجی Netscape بگیرید.
+  2. فایل را کنار ربات بگذارید (در Railway: Volume) و مسیرش را در `YT_COOKIES_FILE` ست کنید.
+
 ---
 
 ## ⚙️ جدول متغیرهای محیطی (.env)
@@ -267,7 +278,9 @@ prometheusopenbot/
 | `SPOTIFY_CLIENT_ID` | اختیاری ⚪ | `""` | شناسه کلاینت اسپاتیفای |
 | `SPOTIFY_CLIENT_SECRET` | اختیاری ⚪ | `""` | سکرت کلاینت اسپاتیفای |
 | `E2B_API_KEY` | اختیاری ⚪ | `""` | سندباکس ابری E2B برای اجرای ایزوله کد (بدون آن: لوکال) |
+| `E2B_TEMPLATE` | اختیاری ⚪ | `""` | تمپلیت سفارشی E2B (خالی = پیش‌فرض) |
 | `E2B_TIMEOUT_SEC` | اختیاری ⚪ | `30` | سقف اجرای E2B به ثانیه (۵ تا ۱۲۰) |
+| `YT_COOKIES_FILE` | اختیاری ⚪ | `""` | فایل کوکی یوتیوب (فقط اگه دانلود موزیک بات‌چک خورد) |
 | `ENABLE_FINANCIAL_SYNC` | اختیاری ⚪ | `1` | سینک پس‌زمینه قیمت‌ها (`0` = خاموش، برای صرفه‌جویی سهمیه KV) |
 
 ---
@@ -357,7 +370,7 @@ sudo systemctl enable --now prometheus
    - جستجوی وب هوشمند با موتور Tavily AI و موتورهای ترکیبی (`tavily_search`, `web_search`, `deep_search_and_read`).
    - اخبار زنده در حوزه‌های سیاسی، اقتصادی، فناوری و ورزشی (`live_news`).
    - استعلام کالا و قیمت‌ها از دیجی‌کالا (`digikala_search`).
-   - ابزارهای شبکه: `ip_lookup`, `dns_lookup`, `ssl_certificate_checker`.
+   - ابزارهای شبکه: `check_website_status`، `resolve_dns`، `check_ssl_certificate`، `get_ip_info`.
    - پیش‌بینی آب و هوا به همراه جزئیات رطوبت و کیفیت هوا (`get_weather`).
 
 3. **🎵 موتور چندرسانه‌ای و صوت (`src/tools/media/`):**
@@ -371,7 +384,7 @@ sudo systemctl enable --now prometheus
    - ماشین‌حساب پیشرفته ریاضی و عبارات علمی (`calculate_math_expression`).
    - تحلیل‌های آماری (`statistics_summary`).
    - تبدیل زمان، تقویم و ساعت دقیق رسمی (`get_current_datetime_info`).
-   - تبدیل واحدهای فیزیکی و تولید انواع هش (`hash_generator`, `unit_converter`).
+   - تبدیل واحدهای فیزیکی و تولید انواع هش (`convert_units`، `generate_hash_digest` و...).
 
 5. **🛡️ ابزارهای سیستم، امنیت و مدیریت ادمین (`src/tools/admin/` & `src/tools/system/`):**
    - اجرای کدهای پایتون در محیط ایزوله و سندباکس ویژه ادمین (`execute_python_code`).
@@ -400,6 +413,10 @@ sudo systemctl enable --now prometheus
 ```bash
 # ارزیابی یکپارچگی ابزارها و ماژول‌های سیستم
 python tests/test_master.py
+
+# تست دوزبانگی و سندباکس (آفلاین، بدون کلید)
+python tests/test_i18n.py
+python tests/test_e2b.py
 
 # اجرای ارزیابی چندبعدی و استرس‌تست
 python tests/run_test_battery.py

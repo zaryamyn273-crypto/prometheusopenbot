@@ -1,11 +1,10 @@
 import httpx
 import logging
 import asyncio
-import re
 import json
 import time
 from bs4 import BeautifulSoup
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 from src.tools.registry import register_tool
 from src.core import database
@@ -502,7 +501,7 @@ async def get_price(symbol: str, force_refresh: bool = False) -> str:
     if isinstance(n_res, dict) and n_res:
         ch_sign = "+" if n_res['change'] >= 0 else ""
         lines.append(
-            f"\n🇮🇷 *نرخ تومانی در صرافی نوبیتکس*:\n"
+            f"\n🇮🇷 *نرخ تومانی {clean_sym} در صرافی نوبیتکس*:\n"
             f"• *آخرین معامله*: *{n_res['toman']:,} تومان* ({ch_sign}{n_res['change']:.2f}%)\n"
             f"• *پیشنهاد خرید*: *{n_res['best_buy']:,} تومان* | *فروش*: *{n_res['best_sell']:,} تومان*"
         )
@@ -549,6 +548,22 @@ async def get_crypto_overview(force_refresh: bool = False) -> str:
             sign = "+" if res['change'] >= 0 else ""
             lines.append(f"• *{s}*: *${res['price']:,.2f}* ({sign}{res['change']:.2f}%) | سقف: `${res['high']:,.0f}`")
 
+    # Geo-block resilience: if Binance is unreachable from this region (HTTP 451),
+    # fall back to Nobitex toman quotes so the board is never an empty header.
+    if len(lines) == 1:
+        try:
+            nb_tasks = [_get_nobitex_price(s) for s in symbols]
+            nb_results = await asyncio.gather(*nb_tasks, return_exceptions=True)
+            nb_lines = ["📊 *تابلوی بازار کریپتو (نوبیتکس — بایننس از این منطقه در دسترس نیست)*:\n"]
+            for s, res in zip(symbols, nb_results):
+                if isinstance(res, dict) and res and res.get("toman"):
+                    ch = "+" if res.get("change", 0) >= 0 else ""
+                    nb_lines.append(f"• *{s}*: *{res['toman']:,} تومان* ({ch}{res.get('change', 0):.2f}%)")
+            if len(nb_lines) > 1:
+                lines = nb_lines
+        except Exception:
+            pass
+
     out_text = "\n".join(lines)
     await _put_cached(cache_key, out_text, ttl=300)
     return _with_fresh_label(out_text)
@@ -587,14 +602,14 @@ async def get_gold_and_coin_price(force_refresh: bool = False) -> str:
             abshodeh = get_val("mesghal")
             ons = get_val("ons")
 
-            # Prefer the live pre-synced dashboard for any missing field
+            # Prefer the live pre-synced dashboard for any missing field.
+            # NOTE: never hardcode a fallback price here — a stale number shown
+            # as "live" is worse than omitting the line (p_ons > 0 guards display).
             dash = await _read_dashboard()
             if geram18 is None and dash.get("gold_18k_toman"):
                 geram18 = str(int(dash["gold_18k_toman"]) * 10)
             if sekkeh is None and dash.get("emami_coin_toman"):
                 sekkeh = str(int(dash["emami_coin_toman"]) * 10)
-            if ons is None:
-                ons = "2480"
 
             p_18 = _safe_toman(geram18)
             p_sekkeh = _safe_toman(sekkeh)

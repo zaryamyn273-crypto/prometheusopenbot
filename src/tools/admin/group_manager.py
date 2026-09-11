@@ -260,13 +260,11 @@ async def leave_group_by_admin_tool(
 
     # Perform Telegram API leave chat
     bot_inst = get_bot_instance()
-    leave_status = "انجام شد"
     if bot_inst:
         try:
             await bot_inst.leave_chat(target_chat_id)
         except Exception as e:
             logger.warning(f"Could not leave chat {target_chat_id} directly: {e}")
-            leave_status = f"درخواست ارسال شد ({e})"
 
     # Remove from D1 database tracking
     await database.remove_group_presence_async(target_chat_id)

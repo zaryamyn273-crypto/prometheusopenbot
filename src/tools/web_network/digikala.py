@@ -1,9 +1,8 @@
 import urllib.parse
-import httpx
 import time
 import re
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Tuple
 from src.core.http import shared_client_ctx
 from src.tools.registry import register_tool
 from src.core import database
@@ -43,6 +42,10 @@ async def digikala_search(query: str, max_results: int = 5) -> str:
         ts, val = _L1_DIGIKALA_CACHE[cache_key]
         if (now - ts) < _L1_TTL_SECONDS:
             return val
+    # Bounded L1: drop oldest 50 entries past 400 so long uptimes never leak RAM.
+    if len(_L1_DIGIKALA_CACHE) >= 400:
+        for _k in list(_L1_DIGIKALA_CACHE.keys())[:50]:
+            _L1_DIGIKALA_CACHE.pop(_k, None)
 
     cached = await database.kv_get_cache_async(cache_key)
     if cached:
@@ -60,7 +63,7 @@ async def digikala_search(query: str, max_results: int = 5) -> str:
         async with shared_client_ctx("web") as client:
             encoded_q = urllib.parse.quote(clean_q)
             url = "https://api.digikala.com/v1/search/?q=" + encoded_q
-            r = await client.get(url)
+            r = await client.get(url, headers=headers)
             if r.status_code == 200:
                 data = r.json().get("data", {})
                 products = data.get("products", [])
@@ -73,6 +76,8 @@ async def digikala_search(query: str, max_results: int = 5) -> str:
                     if count >= max(1, min(10, max_results)):
                         break
                     title = p.get("title_fa") or p.get("title_en") or "محصول"
+                    if not p.get("id"):
+                        continue
                     pid = str(p.get("id"))
                     product_url = "https://www.digikala.com/product/dkp-" + pid
 

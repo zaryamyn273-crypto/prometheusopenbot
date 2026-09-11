@@ -714,7 +714,6 @@ async def live_news(topic: str = "general") -> str:
     if cached:
         return cached
 
-    client = get_async_client()
     query_map = {
         "general": "اخبار فوری جهان و ایران",
         "crypto": "crypto news bitcoin ethereum",
@@ -849,7 +848,7 @@ async def resolve_dns(domain: str, record_type: str = "A") -> str:
             return f"رکوردی از نوع `{clean_type}` برای دامنه `{clean_d}` یافت نشد."
     except Exception as e:
         return f"خطا در استعلام DNS: {str(e)}"
-    return f"استعلام رکورد DNS ناموفق بود."
+    return "استعلام رکورد DNS ناموفق بود."
 
 @register_tool(
     name="get_ip_info",
@@ -1113,4 +1112,4 @@ async def twitter_search(query: str, max_results: int = 6) -> str:
     return res_str
 
 # Auto-register Digikala Tool
-from src.tools.web_network.digikala import digikala_search
+from src.tools.web_network.digikala import digikala_search  # noqa: F401

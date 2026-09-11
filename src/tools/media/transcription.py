@@ -1,12 +1,11 @@
 import io
 import logging
 import os
-import httpx
-from src.core.http import shared_client_ctx, get_http_client
-from typing import Optional
+import urllib.parse
+from src.core.http import shared_client_ctx
 
 from src.tools.registry import register_tool
-from src.core.config import ROUTER_BASE_URL, ROUTER_API_KEY
+from src.core import config as _config
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +31,19 @@ async def transcribe_audio_tool(audio_url_or_path: str) -> str:
         mime = "audio/mpeg"
         low = clean_target.lower()
         if low.startswith("http://") or low.startswith("https://"):
-            # SSRF guard: block internal/metadata targets
-            blocked_hosts = ("127.", "localhost", "169.254.", "10.", "192.168.", "172.16.", "0.0.0.0", "[::")
-            if any(h in low for h in blocked_hosts):
+            # SSRF guard: block internal/metadata targets (match HOST only —
+            # substring match on the full URL false-blocked legit paths).
+            try:
+                _host = (urllib.parse.urlsplit(clean_target).hostname or "").lower()
+            except Exception:
+                return "⛔ آدرس صوتی نامعتبر است."
+            _blocked = (
+                _host in ("localhost", "metadata.google.internal")
+                or _host.startswith(("127.", "10.", "192.168.", "169.254.", "0.0.0.0", "[::"))
+                or _host.startswith(tuple(f"172.{i}." for i in range(16, 32)))
+                or _host.endswith((".internal", ".local", ".lan", ".home.arpa"))
+            )
+            if _blocked:
                 return "⛔ آدرس داخلی/غیرمجاز مسدود شد."
             if low.endswith(".ogg") or low.endswith(".oga") or "ogg" in low or "opus" in low:
                 mime = "audio/ogg"
@@ -57,14 +66,13 @@ async def transcribe_audio_tool(audio_url_or_path: str) -> str:
                         chunks.append(chunk)
                     audio_bytes = b"".join(chunks)
         else:
-            # Local path: strict sandbox — only inside /tmp and uploads, allowlisted ext
-            if not ROUTER_API_KEY:
+            # Local path: strict sandbox — only inside /tmp (Telegram voice
+            # arrives in memory; nothing legit reads audio from the repo dir).
+            if not (_config.ROUTER_API_KEY or "").strip():
                 return "❌ سرویس رونویسی بدون کلید AI در دسترس نیست."
             real = os.path.realpath(clean_target)
-            allowed_dirs = [os.path.realpath("/tmp")]
-            cwd = os.path.realpath(os.getcwd())
-            allowed_dirs.append(cwd)
-            if not any(real == d or real.startswith(d + os.sep) for d in allowed_dirs):
+            _tmp = os.path.realpath("/tmp")
+            if not (real == _tmp or real.startswith(_tmp + os.sep)):
                 return "⛔ دسترسی به این مسیر فایل مجاز نیست."
             if os.path.splitext(real)[1].lower() not in _ALLOWED_AUDIO_EXT:
                 return "⛔ فرمت صوتی پشتیبانی نمی‌شود."
@@ -83,16 +91,18 @@ async def transcribe_audio_tool(audio_url_or_path: str) -> str:
         if not audio_bytes:
             return "فایل صوتی خالی است."
 
-        # Send to Whisper Transcription endpoint
-        if not ROUTER_API_KEY:
+        # Send to Whisper Transcription endpoint (fresh key each call; no
+        # forced "language" so Whisper auto-detects — the bot serves all languages).
+        _rkey = (_config.ROUTER_API_KEY or "").strip()
+        if not _rkey:
             return "❌ سرویس رونویسی بدون کلید AI در دسترس نیست."
-        headers = {"Authorization": f"Bearer {ROUTER_API_KEY}"}
+        headers = {"Authorization": f"Bearer {_rkey}"}
         files = {"file": ("audio.mp3", io.BytesIO(audio_bytes), mime)}
-        data = {"model": "whisper-1", "language": "fa"}
+        data = {"model": "whisper-1"}
 
         async with shared_client_ctx("web") as client:
             r = await client.post(
-                f"{ROUTER_BASE_URL}/audio/transcriptions",
+                f"{_config.ROUTER_BASE_URL.rstrip('/')}/audio/transcriptions",
                 headers=headers,
                 data=data,
                 files=files

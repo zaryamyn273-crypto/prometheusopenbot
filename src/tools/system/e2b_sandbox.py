@@ -17,8 +17,7 @@ Design notes for Railway-simple deploys:
 """
 import asyncio
 import logging
-import re
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from src.tools.registry import register_tool
 from src.core.config import ADMIN_ID
