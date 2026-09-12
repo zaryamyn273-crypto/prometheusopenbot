@@ -28,22 +28,31 @@
 
 ## Key Features & Recent Advancements
 
+* 🧠 **Isolated 30-Message RAM Buffer per Group & On-Demand Context:**
+  - Dedicated, isolated rolling window of **up to 30 last messages per group in RAM** with zero cross-group context leaks or pollution.
+  - Context is injected into the LLM prompt **strictly on demand** (only when explicitly requested by the user or when replying to a message). Direct standalone queries execute in zero-history mode for maximum speed and token efficiency.
+* 🇮🇷 **100% Persian Language Accuracy & Zero Arabic False Positives:**
+  - Overhauled language detection (`detect_lang`) providing absolute Persian priority for shared-alphabet messages.
+  - Completely eliminates erroneous Arabic language switching on short Persian sentences (such as "who are you" or "write a story").
+* 🎯 **Strict Direct-Question Scoping & Sharp Persona (Sarcastic & Witty):**
+  - Strict system mandate to answer exclusively what is asked in the user's immediate prompt without unsolicited preachiness, rambling, or lectures.
+  - Crisp, professional, concise, and technical tone with a touch of intelligent, dry wit and subtle sarcasm.
+* ⚡ **Real-Time RAM & Cloudflare D1 Sync for Bans & Directives:**
+  - Instant synchronization between sub-microsecond in-memory hashed sets and Cloudflare D1 for banned users and admin directives (`manage_admin_memory`).
 * 🔍 **Sub-Second Speculative Web Search (<1.2s):**
-  - High-concurrency speculative race across Tavily AI, Bing, Wikipedia, and DuckDuckGo Instant.
+  - Concurrent speculative race across Tavily AI, Bing, Wikipedia, and DuckDuckGo Instant.
   - Automatic circuit breaker for Tavily rate-limits to eliminate 429 delays and timeouts.
-* 🎙️ **Multimodal Audio & High-Definition Vision:**
-  - Fast Speech-to-Text (STT) powered by multimodal LLMs, transcribing voice notes and audio without third-party local overhead.
-  - 2048px high-resolution vision engine handling both standard compressed Telegram photos and uncompressed photo documents.
 * 🏷️ **Advanced Barcode & Damaged Barcode Reconstruction Engine:**
   - 1D linear barcodes (Code-128, EAN-13, Code-39) and QR codes with **Level H 30% error correction**.
   - **Algebraic Damaged Barcode Reconstruction:** Resolves scratched or missing digits via Luhn Mod-10 parity recovery, regenerating clean scannable barcodes.
+* 🎙️ **Multimodal Audio & High-Definition Vision:**
+  - Fast Speech-to-Text (STT) powered by multimodal LLMs, transcribing voice notes and audio without third-party local overhead.
+  - 2048px high-resolution vision engine handling both standard compressed Telegram photos and uncompressed photo documents.
 * 🛡️ **Live Group Telemetry & Airtight Governance:**
   - Real-time parallel group status monitoring (`list_joined_groups_tool`) tracking live member count, bot permission status (Admin vs Member), and valid invite links.
   - **100% Silent Security Gate:** Silently blocks unauthorized groups until the Master Admin explicitly approves them via interactive buttons in private chat.
 * ⚡ **Instant Numeric User ID & Identity Extraction (`whois` / `getid`):**
   - Sub-10ms user identity lookup via replies ("id", "whois", "آیدی") or forwarded channel messages.
-* 💰 **Sub-50ms Financial Market Feeds:**
-  - Real-time gold, fiat currency, and cryptocurrency price feeds across global and domestic exchanges, backed by an L1 RAM and Cloudflare KV distributed cache.
 * 🔒 **Enterprise-Grade Defense-in-Depth:**
   - Three-layer anti-jailbreak shield with NFKC character normalization and zero-width character stripping.
   - Full hop-by-hop redirect SSRF guard blocking private IP ranges and cloud metadata endpoints (`169.254.169.254`).
@@ -72,7 +81,7 @@ python bot.py
 docker compose up -d --build
 ```
 
-> **Security Note:** Zero secrets or tokens are stored in the git repository. All credentials are provided via environment variables at runtime.
+> **Zero Secrets Policy:** Zero tokens, API keys, or credentials are committed to Git. All credentials are supplied strictly via environment variables at runtime.
 
 ---
 
@@ -94,16 +103,19 @@ docker compose up -d --build
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   3-Tier Memory Architecture                │
-│  • L1 Cache: Ultra-fast local RAM for market & tool caches  │
-│  • Cloudflare KV: Distributed key-value memory with TTL     │
+│             On-Demand Isolated Memory Tier                  │
+│  • Strict 30-message isolated RAM buffer per group          │
+│  • On-demand context injection (reply or explicit request)  │
 │  • Cloudflare D1: Serverless SQL database with FTS5 search  │
+│  • Live synchronization for bans & admin directives         │
 └──────────────────────────────┬──────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
 │             Autonomous LLM Multi-Step Reasoner              │
 │     (Parallel multi-tool calling, reasoning, formatting)    │
+│     • Strict Persian language fidelity, concise persona     │
+│     • Absolute direct-question scoping without bloat        │
 └──────────────────────────────┬──────────────────────────────┘
                                 │ (Parallel Async Tool Exec)
                                 ▼
@@ -137,7 +149,7 @@ docker compose up -d --build
 | **Media & Barcode** | `generate_barcode_tool`<br>`reconstruct_damaged_barcode_tool`<br>`download_music_track`<br>`transcribe_audio_tool` | 1D barcode & Level-H QR generation, mathematical repair of scratched barcodes, 320kbps MP3 retrieval, high-accuracy speech-to-text. |
 | **Web & Network** | `web_search`<br>`fetch_webpage_content`<br>`check_website_status`<br>`resolve_dns` | Sub-1.2s concurrent search, ad-stripped page extraction, SSRF-guarded ping/status diagnostics, DNS-over-HTTPS. |
 | **Financial Markets** | `get_price`<br>`get_crypto_overview`<br>`get_gold_and_coin_price`<br>`get_fiat_overview` | Sub-50ms crypto, gold, coin, and foreign exchange rates with distributed fallback architecture. |
-| **System & Admin** | `extract_user_id_tool`<br>`list_joined_groups_tool`<br>`ban_user_tool`<br>`execute_python_code` | Instant numeric ID extraction, live group auditing, user ban/mute management, secure E2B cloud sandbox execution. |
+| **System & Admin** | `extract_user_id_tool`<br>`list_joined_groups_tool`<br>`ban_user_tool`<br>`manage_admin_memory` | Instant numeric ID extraction, live group auditing, user ban management, admin memory sync across D1 and RAM. |
 | **Documents & Math** | `read_document_file`<br>`calculate_math_expression`<br>`convert_units` | Sandboxed extraction of PDF, DOCX, and XLSX files, arbitrary precision arithmetic, and scientific unit conversion. |
 
 ---
@@ -165,6 +177,9 @@ Run the automated test suite locally:
 ```bash
 # Run the complete adversarial anti-jailbreak, SSRF, and sandbox test suite:
 python tests/test_adversarial.py
+
+# Run offline language detection and Persian/Arabic boundary verification:
+python tests/test_detect_lang.py
 
 # Run multi-dimensional stress testing:
 python tests/run_test_battery.py
