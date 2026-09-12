@@ -1115,7 +1115,8 @@ async def twitter_search(query: str, max_results: int = 6) -> str:
     await database.kv_set_cache_async(cache_key, res_str, expiration_ttl=300)
     return res_str
 
-# Auto-register Digikala Tool (re-exported below so linters stay green)
+# Auto-register Digikala & OSINT Tools (re-exported below so linters stay green)
 from src.tools.web_network.digikala import digikala_search
+from src.tools.web_network.osint import osint_person_dossier
 
-__all__ = ["digikala_search"]
+__all__ = ["digikala_search", "osint_person_dossier"]

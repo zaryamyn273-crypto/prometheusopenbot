@@ -143,9 +143,146 @@ def generate_barcode_tool(
     )
 
 
+GS1_PREFIX_TABLE: List[Tuple[int, int, str]] = [
+    (0, 139, "ایالات متحده و کانادا (USA & Canada - GS1 US)"),
+    (300, 379, "فرانسه (France)"),
+    (380, 380, "بلغارستان (Bulgaria)"),
+    (383, 383, "اسلوونی (Slovenia)"),
+    (385, 385, "کرواسی (Croatia)"),
+    (400, 440, "آلمان (Germany)"),
+    (450, 459, "ژاپن (Japan)"),
+    (460, 469, "روسیه (Russia)"),
+    (471, 471, "تایوان (Taiwan)"),
+    (474, 474, "استونی (Estonia)"),
+    (476, 476, "جمهوری آذربایجان (Azerbaijan)"),
+    (482, 482, "اوکراین (Ukraine)"),
+    (489, 489, "هنگ‌کنگ (Hong Kong)"),
+    (490, 499, "ژاپن (Japan)"),
+    (500, 509, "بریتانیا (United Kingdom)"),
+    (520, 521, "یونان (Greece)"),
+    (528, 528, "لبنان (Lebanon)"),
+    (540, 549, "بلژیک و لوکزامبورگ (Belgium & Luxembourg)"),
+    (560, 560, "پرتغال (Portugal)"),
+    (570, 579, "دانمارک (Denmark)"),
+    (590, 590, "لهستان (Poland)"),
+    (594, 594, "رومانی (Romania)"),
+    (599, 599, "مجارستان (Hungary)"),
+    (600, 601, "آفریقای جنوبی (South Africa)"),
+    (611, 611, "مراکش (Morocco)"),
+    (619, 619, "تونس (Tunisia)"),
+    (621, 621, "سوریه (Syria)"),
+    (622, 622, "مصر (Egypt)"),
+    (625, 625, "اردن (Jordan)"),
+    (626, 626, "ایران (Islamic Republic of Iran - IRANCODE)"),
+    (627, 627, "کویت (Kuwait)"),
+    (628, 628, "عربستان سعودی (Saudi Arabia)"),
+    (629, 629, "امارات متحده عربی (UAE)"),
+    (640, 649, "فنلاند (Finland)"),
+    (690, 699, "چین (China)"),
+    (700, 709, "نروژ (Norway)"),
+    (730, 739, "سوئد (Sweden)"),
+    (750, 750, "مکزیک (Mexico)"),
+    (760, 769, "سوئیس و لیختن‌اشتاین (Switzerland)"),
+    (779, 779, "آرژانتین (Argentina)"),
+    (789, 790, "برزیل (Brazil)"),
+    (800, 839, "ایتالیا (Italy)"),
+    (840, 849, "اسپانیا (Spain)"),
+    (868, 869, "ترکیه (Turkey)"),
+    (870, 879, "هلند (Netherlands)"),
+    (880, 880, "کره جنوبی (South Korea)"),
+    (885, 885, "تایلند (Thailand)"),
+    (888, 888, "سنگاپور (Singapore)"),
+    (890, 890, "هند (India)"),
+    (893, 893, "ویتنام (Vietnam)"),
+    (899, 899, "اندونزی (Indonesia)"),
+    (900, 919, "اتریش (Austria)"),
+    (930, 939, "استرالیا (Australia)"),
+    (955, 955, "مالزی (Malaysia)"),
+    (977, 977, "نشریات و مطبوعات دوره‌ای (ISSN)"),
+    (978, 979, "کتاب‌ها و نشریات مکتوب بین‌المللی (ISBN)"),
+]
+
+
+def lookup_gs1_origin(code: str) -> str:
+    """Returns the GS1 member country/region based on numeric prefix."""
+    clean = "".join(c for c in code if c.isdigit())
+    if len(clean) < 3:
+        return "نامشخص (ارقام ناکافی)"
+    prefix = int(clean[:3])
+    for start, end, country in GS1_PREFIX_TABLE:
+        if start <= prefix <= end:
+            return country
+    return "بین‌المللی / آزاد (GS1 Universal)"
+
+
+def compute_ean8_check_digit(digits7: str) -> int:
+    """Calculates standard EAN-8 check digit for 7 digits."""
+    clean = "".join(c for c in digits7 if c.isdigit())[:7]
+    if len(clean) != 7:
+        return -1
+    total = sum(int(clean[i]) * (3 if i % 2 == 0 else 1) for i in range(7))
+    return (10 - (total % 10)) % 10
+
+
+def compute_upca_check_digit(digits11: str) -> int:
+    """Calculates standard UPC-A check digit for 11 digits."""
+    clean = "".join(c for c in digits11 if c.isdigit())[:11]
+    if len(clean) != 11:
+        return -1
+    total = sum(int(clean[i]) * (3 if i % 2 == 0 else 1) for i in range(11))
+    return (10 - (total % 10)) % 10
+
+
+def compute_isbn10_check_digit(digits9: str) -> str:
+    """Calculates ISBN-10 modulo-11 check digit (returns '0'-'9' or 'X')."""
+    clean = "".join(c for c in digits9 if c.isdigit())[:9]
+    if len(clean) != 9:
+        return ""
+    total = sum(int(clean[i]) * (10 - i) for i in range(9))
+    rem = (11 - (total % 11)) % 11
+    return "X" if rem == 10 else str(rem)
+
+
+def recover_missing_ean13_multi(clean_pattern: str, max_candidates: int = 10) -> List[Tuple[str, str]]:
+    """
+    Solves 1 to 2 missing wildcard digits in EAN-13 algebraically using Modulo-10 parity.
+    Returns list of (full_candidate_13_digits, recovery_description).
+    """
+    if len(clean_pattern) != 13:
+        return []
+    missing_indices = [i for i, c in enumerate(clean_pattern) if c == "?"]
+    if not missing_indices or len(missing_indices) > 2:
+        return []
+
+    results = []
+    if len(missing_indices) == 1:
+        idx = missing_indices[0]
+        for digit in range(10):
+            cand = clean_pattern[:idx] + str(digit) + clean_pattern[idx + 1 :]
+            if compute_ean13_check_digit(cand[:12]) == int(cand[12]):
+                results.append((cand, f"موقعیت {idx + 1} = `{digit}`"))
+        return results
+
+    if len(missing_indices) == 2:
+        i1, i2 = missing_indices
+        for d1 in range(10):
+            for d2 in range(10):
+                chars = list(clean_pattern)
+                chars[i1] = str(d1)
+                chars[i2] = str(d2)
+                cand = "".join(chars)
+                if compute_ean13_check_digit(cand[:12]) == int(cand[12]):
+                    results.append((cand, f"موقعیت {i1 + 1} = `{d1}`، موقعیت {i2 + 1} = `{d2}`"))
+                    if len(results) >= max_candidates:
+                        return results
+        return results
+
+    return []
+
+
 @register_tool(
     name="reconstruct_damaged_barcode_tool",
-    description="بازسازی هوشمند و بازیابی تخصصی بارکدهای آسیب‌دیده، خط‌خورده، ساییده‌شده، پاره یا محوشده با استفاده از الگوریتم‌های بازیابی چک‌سام و تولید مجدد بارکد سالم و نو",
+    description="بازسازی هوشمند، رمزگشایی و ترمیم تخصصی بارکدهای آسیب‌دیده، خط‌خورده، ساییده‌شده، پاره یا ناقص (EAN-13, EAN-8, UPC-A, Code-128, ISBN) با الگوریتم‌های بازیابی چک‌سام جبری Modulo-10/11، استعلام کشور مبدأ GS1 و بازتولید تصویر باکیفیت",
     category="media",
 )
 def reconstruct_damaged_barcode_tool(
@@ -154,65 +291,119 @@ def reconstruct_damaged_barcode_tool(
     context_hint: Optional[str] = None,
 ) -> str:
     """
-    :param damaged_data: ارقام یا کاراکترهای باقیمانده از بارکد با استفاده از علامت '?' یا '_' برای بخش‌های خط‌خورده یا مفقود (مثال: '6260123?56789')
-    :param barcode_type: نوع بارکد: 'ean13' (کالایی)، 'code128'، 'qr' یا 'auto'
-    :param context_hint: توضیحات تکمیلی یا نام کالا جهت تایید صحت بازسازی
+    :param damaged_data: ارقام یا کاراکترهای باقیمانده از بارکد با استفاده از علامت '?' یا '_' برای بخش‌های خط‌خورده یا مفقود (مثال: '6260123?56789' یا '626012??56786')
+    :param barcode_type: نوع بارکد: 'ean13' (کالایی ۱۳ رقمی)، 'ean8' (۸ رقمی)، 'upca' (۱۲ رقمی)، 'code128' یا 'auto'
+    :param context_hint: توضیحات تکمیلی، نام کشور یا نام کالا جهت اولویت‌بندی کاندیداها
     """
     raw = str(damaged_data or "").strip()
     if not raw:
         return "❌ لطفاً کاراکترها، ارقام باقیمانده یا تصویر بارکد آسیب‌دیده را وارد کنید."
 
-    clean_digits = "".join(c for c in raw if c.isdigit() or c in "?_*xX")
-    # Normalize wildcard characters to '?'
-    normalized = re.sub(r"[_*xX]", "?", clean_digits)
+    clean_pattern = "".join(c for c in raw if c.isdigit() or c in "?_*xX")
+    normalized = re.sub(r"[_*xX]", "?", clean_pattern)
+    btype = str(barcode_type or "auto").strip().lower()
 
-    # Attempt EAN-13 single-digit algebraic reconstruction
-    if len(normalized) == 13 and normalized.count("?") == 1:
-        res = recover_missing_ean13_digit(normalized)
-        if res:
-            full_code, recovered_digit = res
+    # 1. Single or Multi-Wildcard EAN-13 Algebraic Reconstruction
+    if len(normalized) == 13 and "?" in normalized:
+        candidates = recover_missing_ean13_multi(normalized, max_candidates=10)
+        origin = lookup_gs1_origin(normalized)
+        if len(candidates) == 1:
+            full_code, rec_desc = candidates[0]
             new_bc = generate_barcode_tool(data=full_code, barcode_type="ean13")
             return (
-                f"🛠 *گزارش تخصصی بازسازی و ترمیم بارکد آسیب‌دیده:*\n\n"
-                f"• *کد مخدوش ورودی*: `{raw}`\n"
-                f"• *رقم بازیابی‌شده ریاضی*: `{recovered_digit}` (بر اساس توازن باقیمانده الگوریتم Luhn Mod-10)\n"
-                f"• *کد نهایی بازسازی‌شده و کامل*: `{full_code}`\n"
-                f"• *وضعیت اعتبار*: ✅ ۱۰۰٪ معتبر و دارای چک‌سام استاندارد جهانی\n\n"
+                f"🛠 *گزارش تخصصی بازسازی قطعی بارکد EAN-13:*\n\n"
+                f"• *کد ورودی مخدوش*: `{raw}`\n"
+                f"• *رقم بازیابی‌شده جبری*: {rec_desc} (توازن وزنی Modulo-10)\n"
+                f"• *کشور مبدأ / سازمان ثبت*: 🌍 *{origin}*\n"
+                f"• *کد کامل و استاندارد*: `{full_code}`\n"
+                f"• *وضعیت چک‌سام*: ✅ معتبر و ۱۰۰٪ اسکن‌پذیر جهانی\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"{new_bc}"
             )
+        elif len(candidates) > 1:
+            origin = lookup_gs1_origin(normalized)
+            cand_lines = [f"{idx+1}. `{c[0]}` ({c[1]})" for idx, c in enumerate(candidates)]
+            # Generate sample from 1st candidate
+            first_bc = generate_barcode_tool(data=candidates[0][0], barcode_type="ean13")
+            return (
+                f"🛠 *یافتن گزینه‌های محتمل با حل معادله چک‌سام چندمتغیره EAN-13:*\n\n"
+                f"• *کد ورودی با چندین بخش مخدوش*: `{raw}`\n"
+                f"• *کشور مبدأ استخراج‌شده*: 🌍 *{origin}*\n"
+                f"• *کاندیداهای دارای اعتبار ریاضی ({len(candidates)} مورد)*:\n"
+                + "\n".join(cand_lines)
+                + f"\n\n💡 *پیش‌نمایش گزینه اول (`{candidates[0][0]}`):*\n{first_bc}"
+            )
 
-    # If already a 12-digit without check digit, generate full
-    if len(clean_digits) == 12 and clean_digits.isdigit():
-        chk = compute_ean13_check_digit(clean_digits)
-        full_code = f"{clean_digits}{chk}"
+    # 2. 12-digit EAN-13 without check digit -> compute and append
+    if len(normalized) == 12 and normalized.isdigit():
+        chk = compute_ean13_check_digit(normalized)
+        full_code = f"{normalized}{chk}"
+        origin = lookup_gs1_origin(full_code)
         new_bc = generate_barcode_tool(data=full_code, barcode_type="ean13")
         return (
-            f"🛠 *بازیابی رقم کنترلی و تولید بارکد جدید:*\n\n"
-            f"• *ارقام اولیه*: `{clean_digits}`\n"
+            f"🛠 *محاسبه رقم کنترل و تکمیل بارکد EAN-13:*\n\n"
+            f"• *ارقام اولیه*: `{normalized}`\n"
             f"• *رقم کنترلی محاسبه‌شده (Check Digit)*: `{chk}`\n"
-            f"• *بارکد کامل EAN-13*: `{full_code}`\n\n"
+            f"• *کشور مبدأ*: 🌍 *{origin}*\n"
+            f"• *بارکد نهایی EAN-13*: `{full_code}`\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{new_bc}"
         )
 
-    # Multi-wildcard or Code-128 string recovery
+    # 3. 8-digit EAN-8 Recovery
+    if len(normalized) == 8 and "?" in normalized:
+        idx = normalized.index("?")
+        if normalized.count("?") == 1:
+            for digit in range(10):
+                test_code = normalized[:idx] + str(digit) + normalized[idx + 1 :]
+                if compute_ean8_check_digit(test_code[:7]) == int(test_code[7]):
+                    new_bc = generate_barcode_tool(data=test_code, barcode_type="code128")
+                    return (
+                        f"🛠 *بازسازی تخصصی بارکد EAN-8:*\n\n"
+                        f"• *کد مخدوش*: `{raw}`\n"
+                        f"• *رقم بازیابی‌شده*: موقعیت {idx+1} = `{digit}`\n"
+                        f"• *بارکد کامل سالم*: `{test_code}`\n\n"
+                        f"{new_bc}"
+                    )
+
+    # 4. 12-digit UPC-A Recovery
+    if len(normalized) == 12 and "?" in normalized:
+        if normalized.count("?") == 1:
+            idx = normalized.index("?")
+            for digit in range(10):
+                test_code = normalized[:idx] + str(digit) + normalized[idx + 1 :]
+                if compute_upca_check_digit(test_code[:11]) == int(test_code[11]):
+                    new_bc = generate_barcode_tool(data=test_code, barcode_type="code128")
+                    return (
+                        f"🛠 *بازسازی تخصصی بارکد UPC-A (آمریکا/کانادا):*\n\n"
+                        f"• *کد مخدوش*: `{raw}`\n"
+                        f"• *رقم بازیابی‌شده*: موقعیت {idx+1} = `{digit}`\n"
+                        f"• *کد کامل بازسازی‌شده*: `{test_code}`\n\n"
+                        f"{new_bc}"
+                    )
+
+    # 5. General Code-128 / Multi-wildcard structure
     if "?" in raw:
         clean_prefix = raw.split("?")[0].strip()
-        new_bc = generate_barcode_tool(data=raw.replace("?", "0"), barcode_type=barcode_type)
+        new_bc = generate_barcode_tool(data=raw.replace("?", "0"), barcode_type=btype)
         return (
-            f"🛠 *تحلیل ساختاری بارکد آسیب‌دیده:*\n\n"
+            f"🛠 *تحلیل ساختار و بازسازی مقدماتی بارکد:*\n\n"
             f"• *بخش خوانای کشف‌شده*: `{clean_prefix or raw}`\n"
             f"• *تعداد کاراکترهای مخدوش*: `{raw.count('?')}` موقعیت\n"
-            f"• *راهنما*: اگر تصویر بارکد را به عنوان عکس برای ربات بفرستید، موتور بینایی چندحالته به همراه این ابزار بافت میله‌ها را تطبیق داده و داده را ۱۰۰٪ استخراج می‌کند.\n\n"
+            f"• *نوع بارکد انتخابی*: `{btype}`\n"
+            f"• *راهنما*: اگر تصویر بارکد را به صورت عکس ارسال کنید، هوش مصنوعی تصویر را تحلیل و میله‌ها را مستقیماً می‌خواند.\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{new_bc}"
         )
 
-    # Full data provided -> Regenerate pristine barcode
-    new_bc = generate_barcode_tool(data=raw, barcode_type=barcode_type)
+    # 6. Full pristine data provided -> Regenerate with metadata
+    origin_txt = ""
+    if len(raw) in (12, 13) and raw.isdigit():
+        origin_txt = f"\n• *کشور مبدأ*: 🌍 *{lookup_gs1_origin(raw)}*"
+
+    new_bc = generate_barcode_tool(data=raw, barcode_type=btype)
     return (
-        f"✨ *بارکد تمیز، بدون خش و اسکن‌پذیر مجدد تولید شد:*\n\n"
-        f"• *داده اصلی*: `{raw}`\n\n"
+        f"✨ *بارکد کاملاً سالم و اسکن‌پذیر مجدد تولید گردید:*\n\n"
+        f"• *داده اصلی*: `{raw}`{origin_txt}\n\n"
         f"{new_bc}"
     )

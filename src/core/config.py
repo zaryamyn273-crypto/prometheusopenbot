@@ -66,6 +66,30 @@ try:
 except Exception:
     E2B_TIMEOUT_SEC = 30
 
+
+def get_e2b_api_key() -> str:
+    global E2B_API_KEY
+    return (E2B_API_KEY or os.getenv("E2B_API_KEY", "")).strip()
+
+
+def set_e2b_api_key(key: str) -> None:
+    global E2B_API_KEY
+    clean_k = (key or "").strip()
+    E2B_API_KEY = clean_k
+    os.environ["E2B_API_KEY"] = clean_k
+
+
+def get_github_token() -> str:
+    global GITHUB_TOKEN
+    return (GITHUB_TOKEN or os.getenv("GITHUB_TOKEN", "")).strip()
+
+
+def set_github_token(token: str) -> None:
+    global GITHUB_TOKEN
+    clean_t = (token or "").strip()
+    GITHUB_TOKEN = clean_t
+    os.environ["GITHUB_TOKEN"] = clean_t
+
 # --- YouTube cookies (OPTIONAL — دور زدن بات‌چک یوتیوب در IPهای دیتاسنتر) ---
 # اگه yt-dlp با خطای "Sign in to confirm you're not a bot" مواجه شد، یه فایل
 # کوکی Netscape (خروجی افزونه Get cookies.txt) رو mount کن و مسیرش رو اینجا بده.
@@ -162,6 +186,12 @@ SYSTEM_PROMPT = """شما «پرومته سوپر ایجنت» (Prometheus Super
    - اجرای ایزوله در سندباکس ابری E2B (نصب پکیج/pip، کدهای نیازمند اینترنت، جاوااسکریپت) ➔ `e2b_run_code` یا `e2b_run_command` (مختص فرمانده؛ بدون `E2B_API_KEY` غیرفعال است)
    - وضعیت اتصال E2B ➔ `e2b_status`
    - وضعیت سیستم و تله‌متری سرور ➔ `admin_system_diagnostics`
+   - کنترل و مدیریت اکانت گیت‌هاب (ساخت ریپازیتوری جدید) ➔ `github_create_repository`
+   - نوشتن، ذخیره و کامیت فایل‌ها (از جمله PKGBUILD، CMakeLists.txt، کدهای C++/پایتون یا README) درون مخزن گیت‌هاب ➔ `github_create_or_update_file`
+   - تولید فایل استاندارد ساخت بسته آرچ‌لینوکس ➔ `github_generate_pkgbuild`
+   - تولید فایل ساخت پروژه سی و سی‌پلاس‌پلاس ➔ `github_generate_cmake`
+   - ردیابی هویت عمومی، استخراج پرونده دیجیتال و شناسایی ردپای افراد (OSINT) ➔ `osint_person_dossier`
+   - بازسازی و ترمیم بارکدهای مخدوش و آسیب‌دیده یا استعلام کشور سازنده GS1 ➔ `reconstruct_damaged_barcode_tool`
 
 2. تعامل کامل و پیوسته با حافظه ابری Cloudflare (D1 SQL & KV):
    - هر زمان که کاربر صراحتاً درباره سوابق گذشته، پیام‌های قبلی گروه، یا محتوای ویس‌های دیروز/سابق سوال کرد ➔ از ابزار `search_conversation_history` برای واکشی اطلاعات از D1 استفاده کن.
@@ -208,8 +238,10 @@ SYSTEM_PROMPT = """شما «پرومته سوپر ایجنت» (Prometheus Super
     - هرگز و تحت هیچ شرایطی به زبان عربی پاسخ نده، مگر اینکه کاربر صراحتاً درخواست کرده باشد یا تمام متن پیام به زبان عربی اصیل نوشته شده باشد.
 
 6. سیستم زمان‌بندی و یادآوری بین‌المللی و مناطق زمانی (Multilingual & Timezone-Aware Scheduler):
+    - شما مجهز به یک سرور و ورکر زمان‌بندی بلادرنگ (Scheduler Daemon) هستید که به‌صورت دائمی و ۲۴ ساعته فعال است و در موعد مقرر پیام‌ها را در گروه یا پیوی ارسال می‌کند.
+    - بنابراین هرگز و تحت هیچ شرایطی ادعا نکن که فقط به‌صورت لحظه‌ای پاسخ می‌دهی یا قابلیت ارسال پیام زمان‌بندی‌شده در آینده نداری!
     - امکان تنظیم کرون‌جاب، ارسال پیام‌های زمان‌بندی‌شده و یادآوری در تمامی چت‌ها (شامل گروه‌ها، سوپرگروه‌ها و پیوی) به‌صورت ۱۰۰٪ فعال، مجاز و پشتیبانی‌شده است.
-    - هر زمان که کاربر در هر گروه یا چتی درخواست زمان‌بندی، کرون‌جاب یا ارسال پیام در آینده داشت (با هر لحنی: شوخی، طنز، عامیانه، رسمی)، مطلقاً و تحت هیچ شرایطی امتناع نکن و هرگز ادعا نکن که امکان تنظیم کرون‌جاب یا ارسال پیام در گروه‌ها وجود ندارد! بلافاصله ابزار `schedule_task_tool` را صدا بزن.
+    - هر زمان که کاربر در هر گروه یا چتی درخواست زمان‌بندی، کرون‌جاب یا ارسال پیام در آینده داشت (با هر لحنی: شوخی، طنز، عامیانه، رسمی)، مطلقاً امتناع نکن و فوراً ابزار `schedule_task_tool` را صدا بزن.
     - زمان‌بندی یادآوری، تسک یا کرون‌جاب ➔ `schedule_task_tool`.
     - تنظیم منطقه زمانی یا شهر کاربر ➔ `set_user_timezone_tool`.
     - مشاهده لیست تسک‌های زمان‌بندی‌شده ➔ `list_scheduled_tasks_tool`.

@@ -816,7 +816,9 @@ async def generate_response(
                 "tavily_search", "web_search", "deep_search_and_read", "live_news", "fetch_webpage_content", "transcribe_audio_tool",
                 "publish_telegraph_article", "check_ssl_certificate",
                 "e2b_run_code", "e2b_run_command", "e2b_status", "execute_python_code",
-                "schedule_task_tool", "set_user_timezone_tool", "list_scheduled_tasks_tool", "cancel_scheduled_task_tool"
+                "schedule_task_tool", "set_user_timezone_tool", "list_scheduled_tasks_tool", "cancel_scheduled_task_tool",
+                "github_create_repository", "github_create_or_update_file", "github_generate_pkgbuild", "github_generate_cmake",
+                "osint_person_dossier"
             }
             called_names = [tc.get("function", {}).get("name") for tc in tool_calls]
             all_self_contained = all(fn in direct_tools for fn in called_names if fn)

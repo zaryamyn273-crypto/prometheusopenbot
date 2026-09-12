@@ -941,6 +941,46 @@ async def e2bstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_safely(message, res)
 
 
+async def set_e2b_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Securely stores E2B_API_KEY into Cloudflare KV and RAM, then immediately deletes admin message."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not is_admin(user.id):
+        return
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    key = " ".join(context.args).strip() if context.args else ""
+    if not key or not key.startswith("e2b_"):
+        await reply_safely(message, "❌ فرمت کلید E2B نامعتبر است. فرمت صحیح: `/set_e2b e2b_...`")
+        return
+    from src.core import config as _cfg
+    _cfg.set_e2b_api_key(key)
+    await database.kv_set_cache_async("cfg:E2B_API_KEY", key)
+    await reply_safely(message, "✅ <b>کلید سندباکس ابری E2B با موفقیت ثبت و فعال گردید.</b>\nاکنون اجرای ایزوله کد پایتون و شل لینوکس فعال است. پیام حاوی کلید جهت حفظ امنیت بی‌درنگ حذف گردید.")
+
+
+async def set_github_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Securely stores GITHUB_TOKEN into Cloudflare KV and RAM, then immediately deletes admin message."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not is_admin(user.id):
+        return
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    token = " ".join(context.args).strip() if context.args else ""
+    if not token or len(token) < 10:
+        await reply_safely(message, "❌ توکن گیت‌هاب نامعتبر است. فرمت صحیح: `/set_github ghp_...`")
+        return
+    from src.core import config as _cfg
+    _cfg.set_github_token(token)
+    await database.kv_set_cache_async("cfg:GITHUB_TOKEN", token)
+    await reply_safely(message, "✅ <b>توکن گیت‌هاب با موفقیت ثبت و فعال گردید.</b>\nاکنون ربات می‌تواند مخازن جدید بسازد، فایل‌ها (مانند PKGBUILD و CMakeLists.txt) را کامیت کند و اکانت شما را مدیریت نماید. پیام حاوی توکن جهت حفظ امنیت بی‌درنگ حذف گردید.")
+
+
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Direct instant admin ban command: /ban <id|username> [reason] or replied to a target user"""
     user = update.effective_user
@@ -2862,6 +2902,21 @@ async def post_init_callback(application):
         logger.info(f"L1 cache warmed with {warmed} keys from Cloudflare KV.")
     except Exception as e:
         logger.warning(f"L1 warmup skipped: {e}")
+
+    # Dynamic Credentials Warmup from Cloudflare KV (E2B and GitHub tokens)
+    try:
+        e2b_kv = await database.kv_get_cache_async("cfg:E2B_API_KEY")
+        if e2b_kv and str(e2b_kv).strip():
+            from src.core import config as _cfg
+            _cfg.set_e2b_api_key(str(e2b_kv).strip())
+            logger.info("Restored E2B_API_KEY dynamically from Cloudflare KV.")
+        gh_kv = await database.kv_get_cache_async("cfg:GITHUB_TOKEN")
+        if gh_kv and str(gh_kv).strip():
+            from src.core import config as _cfg
+            _cfg.set_github_token(str(gh_kv).strip())
+            logger.info("Restored GITHUB_TOKEN dynamically from Cloudflare KV.")
+    except Exception as e:
+        logger.debug(f"KV credentials warmup skipped: {e}")
     async def first_financial_sync():
         try:
             from src.tools import financial
@@ -3042,6 +3097,10 @@ def build_application():
     app.add_handler(_pcmd("e2bsh_prometheus", e2bsh_command))
     app.add_handler(_pcmd("e2bstatus", e2bstatus_command))
     app.add_handler(_pcmd("e2bstatus_prometheus", e2bstatus_command))
+    app.add_handler(_pcmd("set_e2b", set_e2b_command))
+    app.add_handler(_pcmd("set_e2b_prometheus", set_e2b_command))
+    app.add_handler(_pcmd("set_github", set_github_command))
+    app.add_handler(_pcmd("set_github_prometheus", set_github_command))
     app.add_handler(_pcmd("net", net_command))
     app.add_handler(_pcmd("net_prometheus", net_command))
     app.add_handler(_pcmd("channels", channels_command))

@@ -200,7 +200,7 @@ def bot_tool_picker(query: str = "") -> str:
             "github": "github_search_repositories", "admin": "admin_system_diagnostics",
             "files": "create_and_upload_file", "math": "calculate_math_expression",
             "time": "get_current_datetime_info", "database": "search_conversation_history",
-            "dev": "reddit_search",
+            "dev": "reddit_search", "scheduler": "schedule_task_tool",
         }
         scored = []
         for _cat, _kws in _CKW.items():
@@ -219,7 +219,9 @@ def bot_tool_picker(query: str = "") -> str:
                 scored.append((_hits, _cat))
         scored.sort(reverse=True)
         picks = []
-        # Specific high-intent admin routing:
+        # Specific high-intent routing:
+        if any(w in q for w in ("کرون", "کرون‌جاب", "زمانبندی", "زمان‌بندی", "یادآوری", "یادم بنداز", "schedule", "remind", "cron", "تسک")):
+            picks.append("schedule_task_tool")
         if any(w in q for w in ("لیست گروه", "گروه ها", "گروه‌ها", "گروهها", "groups", "my groups", "کانال")):
             picks.append("list_joined_groups_tool")
         elif any(w in q for w in ("آیدی", "شناسه", "user id", "userid", "getid", "آیدیش")):
