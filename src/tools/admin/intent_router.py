@@ -37,8 +37,43 @@ _LIST_PHRASES = frozenset({
     "لیست گروه ها", "لیست گروهها", "لیست گروه",
     "گروه ها", "گروهها", "گروهام", "گروه هام",
     "نمایش گروه ها", "گروه ها کجان", "گروه ها را نشان بده",
+    "لیست گروه ها را بده", "لیست گروه ها رو بده", "لیست گروه ها رو بفرست",
+    "گروه ها را نشان بده", "گروه ها رو نشون بده", "گروه ها را نشون بده",
+    "گروه ها کجاست", "گروه ها کدامند", "کدام گروه ها", "کدوم گروه ها",
+    "چه گروه هایی", "چه گروه هایی داریم", "گروه های فعال", "گروه های من",
     "list groups", "show groups", "my groups", "groups list", "list my groups",
+    "show my groups", "show me my groups", "which groups", "what groups",
 })
+
+
+def _is_list_groups_intent(norm: str) -> bool:
+    """True when the admin asks for the joined-groups list, in any wording.
+
+    The old exact-phrase check missed natural variants («لیست گروه‌ها رو
+    بده»، «کدوم گروه‌ها عضوی؟»…), which fell through to the LLM — and the
+    model then hallucinated «tool not loaded in this session» instead of
+    calling the tool. Substring matching here closes that hole: the tool
+    itself is the single source of truth, so over-matching is safe (the
+    tool re-verifies membership live via Telegram).
+    """
+    try:
+        n = str(norm or "")
+    except Exception:
+        return False
+    if not n:
+        return False
+    if n in _LIST_PHRASES:
+        return True
+    has_list = (
+        "لیست" in n or "list" in n
+        or "نمایش" in n or "نشان" in n or "نشون" in n
+    )
+    has_group = ("گروه" in n or "group" in n)
+    if has_list and has_group:
+        return True
+    if n in ("گروهام", "گروه هام", "گروه هایم", "گروه های من", "my groups"):
+        return True
+    return False
 
 _QUOTA_PHRASES = frozenset({
     "سهمیه", "سهمیه من", "سهمیه ام", "لیمیت", "لیمیت من",
@@ -159,8 +194,8 @@ async def try_admin_intent_async(user_text: str, caller_id: int, current_chat_id
         from src.core.i18n import t as _t
         _nlang = "fa"
 
-    # 1) List groups (exact phrases only — never guess).
-    if norm in _LIST_PHRASES:
+    # 1) List groups (any natural wording — never guess, never hallucinate).
+    if _is_list_groups_intent(norm):
         try:
             from src.tools.admin import group_manager as _gm
             return await _gm.list_joined_groups_tool(caller_id=int(ADMIN_ID))

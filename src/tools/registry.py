@@ -236,7 +236,8 @@ CATEGORY_KEYWORDS = {
     ],
     "admin": [
         "بن", "آنبن", "مسدود", "لیست سیاه", "قانون ابدی", "دستور دائمی", "حافظه دائمی", "وضعیت سرور", "تله متری", "لینک گروه", "لینک گروه‌ها", "لینک گروهها", "سکوت", "میوت", "لغو سکوت", "رفع سکوت", "آنمیوت", "لیست سکوت", "mutelist",
-        "رم", "cpu", "گروه", "لفت", "خروج از گروه", "لیست گروه", "bangroup",
+        "رم", "cpu", "گروه", "گروه‌ها", "گروهها", "گروهم", "گروهام", "گروه هام", "گروه های من", "گروه های فعال", "لیست گروه", "لیست گروه‌ها", "لیست گروهها", "لفت", "خروج از گروه", "bangroup", "groups", "my groups", "list groups", "show groups", "group list",
+        "کانال", "کانال‌ها", "کانالها", "کانال های من", "channels", "public channels", "چت ها", "چت‌ها", "chats",
         "سرور", "سرورت", "هست", "حال", "سیستم", "سخت افزار", "حافظه", "آیدی", "شناسه", "user id", "userid", "getid",
     ],
     "files": [
@@ -481,6 +482,23 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
             if name not in selected_names:
                 selected_schemas.append(t["schema"])
                 selected_names.add(name)
+
+    # Guaranteed inclusion for admin group and identity governance:
+    if is_admin:
+        _admin_group_hints = ("گروه", "group", "کانال", "channel", "چت", "chat")
+        if any(_gh in prompt_lower for _gh in _admin_group_hints):
+            ensure_module("src.tools.admin.group_manager")
+            for _gt in ("list_joined_groups_tool", "list_public_channels_tool", "leave_group_by_admin_tool", "ban_group_by_name_or_id_tool"):
+                if _gt in REGISTRY and _gt not in selected_names:
+                    selected_schemas.append(REGISTRY[_gt]["schema"])
+                    selected_names.add(_gt)
+
+        _admin_id_hints = ("آیدی", "شناسه", "user id", "userid", "getid", "هویت", "استخراج آیدی", "مشخصات")
+        if any(_ih in prompt_lower for _ih in _admin_id_hints) and not exclude_extract_id:
+            ensure_module("src.tools.system")
+            if "extract_user_id_tool" in REGISTRY and "extract_user_id_tool" not in selected_names:
+                selected_schemas.append(REGISTRY["extract_user_id_tool"]["schema"])
+                selected_names.add("extract_user_id_tool")
 
     _SMART_FILTER_CACHE[cache_key] = selected_schemas
     _SMART_FILTER_ORDER.append(cache_key)

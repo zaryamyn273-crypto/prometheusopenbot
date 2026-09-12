@@ -119,17 +119,17 @@ def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str =
     is_fa = (lang == "fa")
     if t in ("سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood"):
         if int(user_id or 0) == int(ADMIN_ID):
-            return "👑 درود فرمانده! در خدمتم — بفرمایید." if is_fa else "👑 Hello commander! At your service."
-        return "سلام! 👋 چطور کمکتون کنم؟" if is_fa else "Hey! 👋 How can I help?"
+            return "👑 درود فرمانده! بفرمایید، در خدمتم." if is_fa else "👑 Hello commander! At your command."
+        return "سلام. بفرمایید، کارتان را خلاصه و دقیق مطرح کنید." if is_fa else "Hello. State your request clearly and concisely."
     if t in ("خوبی", "چطوری", "چه خبر", "خسته نباشی", "how are you", "how are u", "whats up", "what's up"):
-        return "ممنون، عالی‌ام! 💪 شما چطورید؟ چه کمکی از دستم برمیاد؟" if is_fa else "Doing great, thanks! 💪 How about you?"
+        return "سیستم‌ها کاملاً عملیاتی‌اند. اگر کار فنی دارید بفرمایید، اگر نه منابع پردازشی را بیهوده اشغال نکنید." if is_fa else "Fully operational. If you have an actual task, state it."
     if t in ("ممنون", "مرسی", "دمت گرم", "thanks", "thank you", "thx", "ty"):
-        return "خواهش می‌کنم! 🌹 در خدمتم." if is_fa else "You're welcome! 🌹"
+        return "خواهش می‌کنم. مورد دیگری هم هست یا برگردم سر کارهای اصلی؟" if is_fa else "You're welcome. Any other task, or can I get back to work?"
     if t in ("باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله", "yes", "yeah", "sure", "alright"):
-        return "حله! ✅" if is_fa else "Got it! ✅"
+        return "حله، هرچه کمتر حاشیه برویم سریع‌تر پیش می‌رویم." if is_fa else "Noted. Less talk, faster execution."
     if t in ("نه", "no", "nope"):
-        return "باشه، مشکلی نیست. 👍" if is_fa else "No problem. 👍"
-    return "جانم؟ 🙂" if is_fa else "Yes? 🙂"
+        return "بسیار عالی، حداقل یک پیام اضافه ذخیره نشد." if is_fa else "Fine. Less bandwidth wasted."
+    return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
 
 async def reply_safely(message, text: str, reply_markup=None):
     """Safely formats markdown to HTML and sends message with fallback + 4096-char chunking."""
@@ -945,12 +945,14 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_str = ""
     reason = "دستور مستقیم فرمانده"
     first_name = ""
+    target_uname = ""
 
     if target_user:
         target_str = str(target_user.id)
         if args:
             reason = " ".join(args).strip()
         first_name = target_user.first_name or ""
+        target_uname = target_user.username or ""
     elif args:
         target_str = args[0].strip()
         if len(args) > 1:
@@ -964,6 +966,7 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from src.tools import system
     res = await system.ban_user_tool(
         target=target_str,
+        username=target_uname,
         reason=reason,
         first_name=first_name,
         caller_id=user.id,
@@ -2256,14 +2259,6 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 _prefetch_hints["tool_hint"] = _internal.bot_tool_picker(rewritten)
             except Exception:
                 pass
-            try:
-                await _internal.bot_smart_cache_put(f"last_query_{chat.id}", rewritten[:300])
-            except Exception:
-                pass
-            try:
-                await _internal.bot_history_recall(rewritten.split(" ")[0][:40] if rewritten else "", chat_id=chat.id)
-            except Exception:
-                pass
             return _prefetch_hints["intent_block"]
         except Exception:
             return ""
@@ -2283,9 +2278,9 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     _INFLIGHT_TURNS[int(chat.id)] = asyncio.current_task()
 
     try:
-        # Collect prefetch (best-effort, 2s cap) and feed normalized query to AI
+        # Collect prefetch (ultra-fast sub-millisecond local CPU operations, 0.2s cap)
         try:
-            await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=2.0)
+            await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=0.2)
         except Exception:
             pass
         # Run AI Super Agent (numeric-ID admin check + Persian addressing hint + on-demand memory)

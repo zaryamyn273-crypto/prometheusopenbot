@@ -219,6 +219,12 @@ def bot_tool_picker(query: str = "") -> str:
                 scored.append((_hits, _cat))
         scored.sort(reverse=True)
         picks = []
+        # Specific high-intent admin routing:
+        if any(w in q for w in ("لیست گروه", "گروه ها", "گروه‌ها", "گروهها", "groups", "my groups", "کانال")):
+            picks.append("list_joined_groups_tool")
+        elif any(w in q for w in ("آیدی", "شناسه", "user id", "userid", "getid", "آیدیش")):
+            picks.append("extract_user_id_tool")
+
         for _hits, _cat in scored[:3]:
             _tool = _FLAGSHIP.get(_cat)
             if _tool and _tool not in picks:

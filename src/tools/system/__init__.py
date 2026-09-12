@@ -267,7 +267,7 @@ def admin_system_diagnostics(caller_id: int = 0) -> str:
 
 @register_tool(
     name="extract_user_id_tool",
-    description="فقط برای استعلام آیدی عددی کاربر (Numeric User ID) زمانی که ادمین صراحتاً درخواست استعلام یا آیدی کاربر را کرده باشد. برای دستورات بن از این ابزار استفاده نکنید!",
+    description="استعلام فوق‌پیشرفته و قدرتمند آیدی عددی (Numeric User ID)، یوزرنیم، نام و مشخصات کامل کاربر بر اساس شناسه، @username، نام یا متن پیام در دیتابیس و تلگرام (مختص فرمانده)",
     category="admin"
 )
 async def extract_user_id_tool(
@@ -288,39 +288,60 @@ async def extract_user_id_tool(
         return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
     raw_query = str(target or name or username or query or "").strip()
     if not raw_query:
-        return "❌ لطفاً نام نمایشی، یوزرنیم یا متنی از کاربر مورد نظر را مشخص فرمایید."
+        return "❌ لطفاً شناسه عددی، یوزرنیم (@username) یا نام نمایشی کاربر مورد نظر را مشخص فرمایید."
 
-    uid, resolved_label = await database.resolve_target_identifier(raw_query)
+    info = await database.resolve_target_full_identity(raw_query)
+    cands = info.get("candidates") or []
+
+    # Case A: Multiple candidates matched partial/display name search
+    if len(cands) > 1:
+        lines = [
+            f"🎯 <b>هویت و شناسه عددی کاربران منطبق با «{raw_query}» ({len(cands)} مورد یافت شد):</b>\n"
+        ]
+        for idx, c in enumerate(cands[:5]):
+            u_str = f"@{c['username']}" if c.get("username") else "بدون یوزرنیم"
+            c_name = c.get("first_name") or c.get("display_name") or "کاربر"
+            c_uid = c.get("user_id")
+            c_chat = f"{c.get('chat_title') or ''} (<code>{c.get('chat_id')}</code>)" if c.get('chat_id') else "نامشخص"
+            c_status = "🚫 مسدود" if c.get("is_banned") else ("🔇 در حال سکوت" if c.get("is_muted") else "🟢 فعال")
+            lines.append(
+                f"{idx+1}. <b>{c_name}</b> | یوزرنیم: <code>{u_str}</code>\n"
+                f"   • <b>شناسه عددی (Numeric ID):</b> <code>{c_uid}</code> | گروه: {c_chat}\n"
+                f"   • پیام‌ها: <code>{c.get('msg_count', 1)}</code> | آخرین حضور: <code>{c.get('last_seen', '—')}</code> | وضعیت: {c_status}\n"
+                f"   • اقدام سریع: <code>/ban {c_uid}</code> | <code>/mute {c_uid} 30m</code>\n"
+            )
+        return "\n".join(lines)
+
+    # Case B: Exactly one user resolved (or best single candidate)
+    uid = info.get("user_id")
     if uid:
-        details_sql = "SELECT user_name, username, chat_id, chat_title, msg_date, msg_time, created_at FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 1"
-        d_res = await database.execute_d1_query(details_sql, [uid])
-        disp_name = resolved_label or "کاربر بدون یوزرنیم"
-        uname_str = "ندارد"
-        last_chat = "نامشخص"
-        last_seen = "نامشخص"
-        if d_res.get("success") and d_res.get("results"):
-            row = d_res["results"][0]
-            disp_name = row.get("user_name") or disp_name
-            if row.get("username"):
-                uname_str = f"@{row['username'].lstrip('@')}"
-            last_chat = f"{row.get('chat_title') or ''} ({row.get('chat_id')})"
-            last_seen = f"{row.get('msg_date', '')} {row.get('msg_time', '')}".strip() or row.get("created_at", "")
+        disp_name = info.get("first_name") or info.get("display_name") or "کاربر بدون نام"
+        uname_str = f"@{info['username']}" if info.get("username") else "ندارد"
+        last_chat = f"{info.get('chat_title') or ''} ({info.get('chat_id')})" if info.get("chat_id") else "نامشخص"
+        last_seen = info.get("last_seen") or "نامشخص"
+        msg_cnt = info.get("msg_count", 1)
 
-        is_banned = database.is_user_banned(uid)
-        status_badge = "🚫 مسدود (Banned)" if is_banned else "🟢 فعال (Active)"
+        is_banned = info.get("is_banned") or database.is_user_banned(uid)
+        is_muted = info.get("is_muted") or (database.is_user_muted(uid) > 0)
+        status_badge = "🚫 مسدود (Banned)" if is_banned else ("🔇 در حال سکوت (Muted)" if is_muted else "🟢 فعال (Active)")
+
+        bio_line = f"• <b>بیوگرافی تلگرام:</b> <i>{info.get('bio')}</i>\n" if info.get("bio") else ""
 
         lines = [
             "🎯 <b>هویت و شناسه عددی با موفقیت استخراج شد:</b>",
             f"• <b>شناسه عددی (Numeric ID):</b> <code>{uid}</code>",
             f"• <b>نام نمایشی فرد:</b> <b>{disp_name}</b>",
             f"• <b>یوزرنیم تلگرام:</b> <code>{uname_str}</code>",
+            bio_line.rstrip("\n") if bio_line else "",
             f"• <b>آخرین حضور در گروه:</b> {last_chat}",
             f"• <b>زمان آخرین فعالیت:</b> <code>{last_seen}</code>",
+            f"• <b>تعداد پیام‌های ثبت‌شده:</b> <code>{msg_cnt} پیام</code>",
             f"• <b>وضعیت دسترسی:</b> {status_badge}",
             "",
-            f"<i>💡 برای بن کردن این کاربر:</i> <code>/ban {uid}</code>"
+            f"<i>💡 دستورات مدیریتی سریع:</i>",
+            f"<code>/ban {uid}</code>  |  <code>/mute {uid} 30m</code>  |  <code>/unban {uid}</code>"
         ]
-        return "\n".join(lines)
+        return "\n".join([line for line in lines if line])
 
     return f"❌ متأسفانه هیچ کاربری با مشخصه «{raw_query}» در حافظه و پیام‌های دیتابیس یافت نشد."
 
@@ -452,6 +473,10 @@ async def ban_user_tool(
         return "❌ لطفاً شناسه عددی یا نام کاربری فرد مورد نظر را مشخص فرمایید."
 
     uid, uname = await database.resolve_target_identifier(clean_t)
+    info = await database.resolve_target_full_identity(clean_t)
+    uid = uid or info.get("user_id")
+    uname = uname or info.get("username")
+    fname = first_name or info.get("first_name") or info.get("display_name") or ""
 
     if uid == ADMIN_ID:
         return "❌ ادمین ارشد مصونیت ابدی دارد و مسدود نمی‌شود."
@@ -459,7 +484,7 @@ async def ban_user_tool(
     src_id = int(source_chat_id or chat_id or 0)
     await database.ban_target_async(
         clean_t, reason,
-        first_name=first_name or "",
+        first_name=fname,
         banned_by=int(caller_id or 0),
         source_chat_id=src_id,
         source_chat_title=source_chat_title or ""
@@ -469,9 +494,9 @@ async def ban_user_tool(
     if uid:
         out.append(f"• *شناسه عددی (User ID):* `{uid}`")
     if uname:
-        out.append(f"• *نام کاربری (Username):* `@{uname}`")
-    if first_name:
-        out.append(f"• *نام:* *{first_name}*")
+        out.append(f"• *نام کاربری (Username):* `@{str(uname).lstrip('@')}`")
+    if fname:
+        out.append(f"• *نام:* *{fname}*")
     out.append(f"• *علت:* {reason}")
     if source_chat_title or src_id:
         out.append(f"• *محل تخلف:* *{source_chat_title or src_id}* (`{src_id}`)")

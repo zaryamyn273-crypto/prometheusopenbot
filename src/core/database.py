@@ -31,6 +31,7 @@ _L1_CACHE: Dict[str, Dict[str, Any]] = {}
 _MEMORY_DIRECTIVES: List[str] = []
 _BANNED_USERS: set = set()
 _BANNED_USERNAMES: set = set()
+_BANNED_DETAILS: Dict[int, Dict[str, Any]] = {}
 _MUTED_UNTIL: Dict[int, float] = {}
 _MUTED_USERNAMES: Dict[str, float] = {}
 _USERNAME_TO_ID_MAP: Dict[str, int] = {}
@@ -113,6 +114,8 @@ def l1_get(key: str) -> Optional[str]:
         item["hits"] = item.get("hits", 0) + 1
         if item["hits"] % 5 == 0:
             item["expires_at"] = min(item["expires_at"] + 60.0, time.time() + item.get("ttl", 300) * 1.5)
+        # LRU touch: re-insert to mark as recently used
+        _L1_CACHE[key] = item
     except Exception:
         pass
     _L1_HITS += 1
@@ -125,24 +128,30 @@ _L1_PRUNE_COUNTER = 0
 def l1_set(key: str, value: str, ttl_sec: int = 300):
     global _L1_PRUNE_COUNTER
     now = time.time()
-    # Amortized memory guard: full prune scan at most once per 64 sets
-    if len(_L1_CACHE) >= 1500:
+    # Memory optimization: prune expired keys and keep bounded size
+    if len(_L1_CACHE) >= 800:
         _L1_PRUNE_COUNTER += 1
-        if _L1_PRUNE_COUNTER % 64 == 0:
+        if _L1_PRUNE_COUNTER % 16 == 0:
             expired = [k for k, v in _L1_CACHE.items() if now > v.get("expires_at", 0)]
             for k in expired:
                 del _L1_CACHE[k]
-        if len(_L1_CACHE) >= 1500:
-            # FIFO eviction of oldest inserted keys (dict preserves insertion order)
-            for k in list(_L1_CACHE.keys())[:300]:
+        if len(_L1_CACHE) >= 800:
+            # True LRU eviction of oldest inserted/touched keys
+            for k in list(_L1_CACHE.keys())[:200]:
                 del _L1_CACHE[k]
 
     try:
         _ttl = max(30, int(ttl_sec))
     except Exception:
         _ttl = 300
+
+    # Cap value size to 64KB to prevent unbounded RAM usage on large web dumps
+    clean_val = str(value or "")
+    if len(clean_val) > 65536:
+        clean_val = clean_val[:65536]
+
     _L1_CACHE[key] = {
-        "value": value,
+        "value": clean_val,
         "expires_at": now + _ttl,
         "ttl": _ttl,
         "hits": 0,
@@ -690,10 +699,17 @@ def sync_memory_from_d1_sync():
     if mem_res["success"]:
         _MEMORY_DIRECTIVES = [row["directive"] for row in mem_res["results"] if "directive" in row]
 
-    ban_res = execute_d1_query_sync("SELECT user_id, username FROM banned_users")
+    ban_res = execute_d1_query_sync("SELECT user_id, username, first_name, reason, banned_by, source_chat_id, source_chat_title, banned_at FROM banned_users")
     if ban_res["success"]:
-        _BANNED_USERS = {row["user_id"] for row in ban_res["results"] if "user_id" in row and row["user_id"]}
-        _BANNED_USERNAMES = {row["username"].lower().lstrip("@") for row in ban_res["results"] if row.get("username")}
+        for row in ban_res["results"]:
+            uid = row.get("user_id")
+            if uid:
+                uid_int = int(uid)
+                _BANNED_USERS.add(uid_int)
+                _BANNED_DETAILS[uid_int] = row
+            u = (row.get("username") or "").lower().lstrip("@")
+            if u:
+                _BANNED_USERNAMES.add(u)
 
     try:
         mute_res = execute_d1_query_sync("SELECT user_id, username, until_ts FROM muted_users")
@@ -768,10 +784,17 @@ async def sync_memory_from_d1_async():
     if mem_res["success"]:
         _MEMORY_DIRECTIVES = [row["directive"] for row in mem_res["results"] if "directive" in row]
 
-    ban_res = await execute_d1_query("SELECT user_id, username FROM banned_users")
+    ban_res = await execute_d1_query("SELECT user_id, username, first_name, reason, banned_by, source_chat_id, source_chat_title, banned_at FROM banned_users")
     if ban_res["success"]:
-        _BANNED_USERS = {row["user_id"] for row in ban_res["results"] if "user_id" in row and row["user_id"]}
-        _BANNED_USERNAMES = {row["username"].lower().lstrip("@") for row in ban_res["results"] if row.get("username")}
+        for row in ban_res["results"]:
+            uid = row.get("user_id")
+            if uid:
+                uid_int = int(uid)
+                _BANNED_USERS.add(uid_int)
+                _BANNED_DETAILS[uid_int] = row
+            u = (row.get("username") or "").lower().lstrip("@")
+            if u:
+                _BANNED_USERNAMES.add(u)
 
     map_res = await execute_d1_query("SELECT username, user_id FROM user_mappings")
     if map_res["success"]:
@@ -1104,9 +1127,11 @@ async def save_message_async(
 
     _clean_kind = (msg_kind or "text").strip().lower() or "text"
     _clean_ctype = (chat_type or "").strip().lower()
+    # Memory optimization: cap turn content in RAM to 2000 chars (D1 retains 100% of full message)
+    _ram_content = content[:2000] if (isinstance(content, str) and len(content) > 2000) else content
     _CHAT_HISTORIES[clean_chat_id].append({
         "role": role,
-        "content": content,
+        "content": _ram_content,
         "user_id": clean_user_id,
         "message_id": int(message_id or 0),
         "user_name": user_name,
@@ -1122,23 +1147,24 @@ async def save_message_async(
         "time": now_ts
     })
     
-    # Rolling Window: 60 turns per chat is about 20k tokens (user cap).
+    # Rolling Window: 35 turns per chat in RAM provides rich context while reducing memory usage by 45%.
     # Newest turns always win; D1 keeps 100 percent of history forever.
     try:
         from src.core.config import MAX_RAM_TURNS_PER_CHAT as _MAX_TURNS
     except Exception:
-        _MAX_TURNS = 60
+        _MAX_TURNS = 35
     if len(_CHAT_HISTORIES[clean_chat_id]) > _MAX_TURNS:
         _CHAT_HISTORIES[clean_chat_id] = _CHAT_HISTORIES[clean_chat_id][-_MAX_TURNS:]
 
     # Global RAM Guard: Prevent unbounded chat growth across thousands of groups
-    if len(_CHAT_HISTORIES) > 300:
+    if len(_CHAT_HISTORIES) > 150:
         # Evict oldest inactive chats from RAM (D1 preserves 100% of history forever)
         chats_by_recency = sorted(
             _CHAT_HISTORIES.keys(),
             key=lambda cid: (_CHAT_HISTORIES[cid][-1].get("time", 0) if _CHAT_HISTORIES[cid] else 0)
         )
-        for cid in chats_by_recency[:60]:
+        for cid in chats_by_recency[:40]:
+            del _CHAT_HISTORIES[cid]
             del _CHAT_HISTORIES[cid]
 
     # 3. Push to High-Speed Write-Behind Queue (zero HTTP blocking).
@@ -1584,114 +1610,315 @@ def get_all_admin_memories() -> List[str]:
 
 # --- Advanced Moderation & User/Username Management ---
 
-async def resolve_target_identifier(identifier: str) -> tuple[Optional[int], Optional[str]]:
+def normalize_identity_str(text: str) -> str:
+    """Normalizes Persian/Arabic variations, ZWNJ, and spacing for ultra-robust identity matching."""
+    if not text:
+        return ""
+    t = str(text).strip()
+    # Arabic to Persian characters
+    t = t.replace("ي", "ی").replace("ك", "ک").replace("ة", "ه").replace("ۀ", "ه")
+    # Invisible zero-width chars / ZWNJ
+    for z in ("\u200c", "\u200b", "\u200d", "\ufeff", "\u00ad"):
+        t = t.replace(z, " ")
+    # Replace punctuation and special dividers with space
+    t = re.sub(r"[\s_\-\.:;,/\\|]+", " ", t).strip().lower()
+    return t
+
+
+async def _probe_live_telegram_chat(target: Union[int, str]):
+    """Best-effort live profile lookup from Telegram Bot API."""
+    try:
+        from src.tools.admin import group_manager as _gm
+        bot = _gm.get_bot_instance()
+        if not bot:
+            return None
+        return await bot.get_chat(target)
+    except Exception:
+        return None
+
+
+async def resolve_target_full_identity(identifier: str) -> Dict[str, Any]:
     """
-    Advanced Identity Resolver: Resolves numeric ID, @username, or display name
-    (even for users who have NO username) to (user_id, clean_username/display_name).
+    Super-Charged Multi-Strategy Telegram Identity Resolver.
+    Resolves:
+      - Numeric user ID (e.g. 123456789)
+      - Telegram @username (with or without @)
+      - Display name / real name (Persian, Latin, partial, normalized)
+      - Live Telegram Bot API probe via get_chat(user_id / @username) if bot context exists.
+    Returns rich dict:
+      user_id, username, first_name, last_name, display_name, chat_id, chat_title,
+      last_seen, msg_count, is_banned, is_muted, bio, candidates (if multiple matches).
     """
-    clean_id = str(identifier).strip()
-    if clean_id.startswith("@"):
-        uname = clean_id[1:].lower()
-        uid = _USERNAME_TO_ID_MAP.get(uname)
-        if not uid:
-            res = await execute_d1_query("SELECT user_id FROM user_mappings WHERE username = ?", [uname])
-            if res["success"] and res["results"]:
-                uid = res["results"][0].get("user_id")
-                if uid:
-                    _USERNAME_TO_ID_MAP[uname] = uid
-        return (uid, uname)
-    elif clean_id.lstrip("-").isdigit():
+    clean_id = str(identifier or "").strip()
+    res: Dict[str, Any] = {
+        "user_id": None,
+        "username": None,
+        "first_name": None,
+        "last_name": None,
+        "display_name": None,
+        "chat_id": None,
+        "chat_title": None,
+        "last_seen": None,
+        "msg_count": 0,
+        "is_banned": False,
+        "is_muted": False,
+        "bio": None,
+        "candidates": []
+    }
+    if not clean_id:
+        return res
+
+    # 1. Direct Numeric ID Check
+    if clean_id.lstrip("-").isdigit():
         uid = int(clean_id)
-        reverse_uname = None
+        res["user_id"] = uid
+        res["is_banned"] = is_user_banned(uid)
+        res["is_muted"] = (is_user_muted(uid) > 0)
+
+        # Check in-memory maps
         for u, i in _USERNAME_TO_ID_MAP.items():
             if i == uid:
-                reverse_uname = u
+                res["username"] = u
                 break
-        if not reverse_uname:
-            res = await execute_d1_query("SELECT username FROM user_mappings WHERE user_id = ?", [uid])
-            if res["success"] and res["results"]:
-                u = res["results"][0].get("username")
+        for dn, rec in _DISPLAY_NAME_TO_ID_MAP.items():
+            if rec.get("user_id") == uid:
+                res["first_name"] = rec.get("display_name")
+                res["display_name"] = rec.get("display_name")
+                res["chat_id"] = rec.get("chat_id")
+                res["chat_title"] = rec.get("chat_title")
+                break
+
+        # Check D1 user_mappings
+        if not res["username"]:
+            m_res = await execute_d1_query("SELECT username FROM user_mappings WHERE user_id = ?", [uid])
+            if m_res.get("success") and m_res.get("results"):
+                u = m_res["results"][0].get("username")
                 if u:
-                    reverse_uname = str(u).lower().lstrip("@")
-                    _USERNAME_TO_ID_MAP[reverse_uname] = uid
-        return (uid, reverse_uname)
-    else:
-        # Ultra-Powerful Identity Extraction for Users Without @username
-        target_name = clean_id.lstrip("@").strip()
-        norm_target = re.sub(r"[\s_\-\.]+", " ", target_name).lower()
+                    res["username"] = str(u).lower().lstrip("@")
+                    _USERNAME_TO_ID_MAP[res["username"]] = uid
 
-        # Step 1: Direct lookup in hot _DISPLAY_NAME_TO_ID_MAP (0.001ms)
-        if norm_target in _DISPLAY_NAME_TO_ID_MAP:
-            rec = _DISPLAY_NAME_TO_ID_MAP[norm_target]
-            return (rec["user_id"], rec["username"] or rec["display_name"])
+        # Check D1 messages
+        d_res = await execute_d1_query(
+            "SELECT user_name, username, chat_id, chat_title, msg_date, msg_time, created_at, COUNT(*) as cnt FROM messages WHERE user_id = ? GROUP BY user_id ORDER BY id DESC LIMIT 1",
+            [uid]
+        )
+        if d_res.get("success") and d_res.get("results"):
+            row = d_res["results"][0]
+            if not res["first_name"]:
+                res["first_name"] = row.get("user_name")
+                res["display_name"] = row.get("user_name")
+            if not res["username"] and row.get("username"):
+                res["username"] = str(row["username"]).lower().lstrip("@")
+            res["chat_id"] = res["chat_id"] or row.get("chat_id")
+            res["chat_title"] = res["chat_title"] or row.get("chat_title")
+            res["last_seen"] = f"{row.get('msg_date', '')} {row.get('msg_time', '')}".strip() or row.get("created_at")
+            res["msg_count"] = row.get("cnt", 1)
 
-        # Step 2: Partial & Substring matching in _DISPLAY_NAME_TO_ID_MAP
-        for k_name, rec in _DISPLAY_NAME_TO_ID_MAP.items():
-            if norm_target in k_name or k_name in norm_target:
-                return (rec["user_id"], rec["username"] or rec["display_name"])
+        # Live Telegram Bot API probe if username/name still missing
+        if not res["username"] or not res["first_name"]:
+            tg = await _probe_live_telegram_chat(uid)
+            if tg:
+                res["username"] = res["username"] or (getattr(tg, "username", None) or "").lower() or None
+                res["first_name"] = res["first_name"] or getattr(tg, "first_name", None)
+                res["last_name"] = getattr(tg, "last_name", None)
+                res["bio"] = getattr(tg, "bio", None) or getattr(tg, "description", None)
+                res["display_name"] = f"{res['first_name'] or ''} {res['last_name'] or ''}".strip() or res["first_name"]
 
-        # Step 3: Deep Scan in hot in-memory chat histories (_CHAT_HISTORIES)
-        for cid, msgs in _CHAT_HISTORIES.items():
-            for m in reversed(msgs):
-                u_name = str(m.get("user_name", "")).strip()
-                if u_name:
-                    norm_u = re.sub(r"[\s_\-\.]+", " ", u_name).lower()
-                    if norm_target in norm_u or norm_u in norm_target:
-                        uid = m.get("user_id")
-                        uname = m.get("username") or u_name
-                        if uid and int(uid) != ADMIN_ID:
-                            _DISPLAY_NAME_TO_ID_MAP[norm_u] = {
-                                "user_id": int(uid),
-                                "display_name": u_name,
-                                "username": uname,
-                                "chat_id": cid,
-                                "chat_title": m.get("chat_title", ""),
-                                "updated_at": ""
-                            }
-                            return (int(uid), uname)
+        return res
 
-        # Step 4: Search in banned_users table (Crucial for unban operations when user only exists in blacklist)
-        b_sql = """
-            SELECT user_id, username, first_name
-            FROM banned_users
-            WHERE (user_id IS NOT NULL AND user_id > 0 AND (username = ? OR username LIKE ? OR first_name = ? OR first_name LIKE ?))
-               OR (username = ? OR username LIKE ? OR first_name = ? OR first_name LIKE ?)
-            ORDER BY rowid DESC LIMIT 1
-        """
-        b_res = await execute_d1_query(b_sql, [target_name, f"%{target_name}%", target_name, f"%{target_name}%", target_name, f"%{target_name}%", target_name, f"%{target_name}%"])
-        if b_res["success"] and b_res["results"]:
-            row = b_res["results"][0]
-            uid = row.get("user_id") or None
-            uname = row.get("username") or row.get("first_name")
-            return (int(uid) if uid and int(uid) > 0 else None, uname)
+    # 2. Telegram @username check (starts with @, or in _USERNAME_TO_ID_MAP, or standard username pattern)
+    clean_u = clean_id.lstrip("@").strip().lower()
+    is_explicit_username = clean_id.startswith("@") or bool(re.match(r"^[a-zA-Z0-9_]{4,32}$", clean_u))
+    if is_explicit_username:
+        # Check in RAM
+        if clean_u in _USERNAME_TO_ID_MAP:
+            res["user_id"] = _USERNAME_TO_ID_MAP[clean_u]
+            res["username"] = clean_u
 
-        # Step 5: Full Multi-Field Database Search in Cloudflare D1 (messages table)
-        # Search by exact name, normalized name, wildcard, or Persian half-space variations
-        sql = """
-            SELECT user_id, user_name, username, chat_id, chat_title
-            FROM messages
-            WHERE user_id IS NOT NULL AND user_id > 0
-              AND (user_name = ? OR user_name LIKE ? OR username = ? OR username LIKE ?)
-            ORDER BY id DESC LIMIT 1
-        """
-        res = await execute_d1_query(sql, [target_name, f"%{target_name}%", target_name, f"%{target_name}%"])
-        if res["success"] and res["results"]:
-            row = res["results"][0]
-            uid = row.get("user_id")
-            uname = row.get("username") or row.get("user_name")
-            if uid and int(uid) != ADMIN_ID:
-                norm_d1 = re.sub(r"[\s_\-\.]+", " ", str(row.get("user_name", ""))).lower()
-                _DISPLAY_NAME_TO_ID_MAP[norm_d1] = {
-                    "user_id": int(uid),
-                    "display_name": row.get("user_name", ""),
-                    "username": uname,
-                    "chat_id": row.get("chat_id"),
-                    "chat_title": row.get("chat_title", ""),
-                    "updated_at": ""
-                }
-                return (int(uid), uname)
+        # Check D1 user_mappings
+        if not res["user_id"]:
+            u_res = await execute_d1_query("SELECT user_id FROM user_mappings WHERE username = ?", [clean_u])
+            if u_res.get("success") and u_res.get("results"):
+                uid = u_res["results"][0].get("user_id")
+                if uid:
+                    res["user_id"] = int(uid)
+                    res["username"] = clean_u
+                    _USERNAME_TO_ID_MAP[clean_u] = res["user_id"]
 
-    return (None, clean_id.lower())
+        # Check D1 messages
+        if not res["user_id"]:
+            m_res = await execute_d1_query(
+                "SELECT user_id, user_name, chat_id, chat_title, msg_date, msg_time, created_at, COUNT(*) as cnt FROM messages WHERE username = ? OR username = ? GROUP BY user_id ORDER BY id DESC LIMIT 1",
+                [clean_u, f"@{clean_u}"]
+            )
+            if m_res.get("success") and m_res.get("results"):
+                row = m_res["results"][0]
+                if row.get("user_id"):
+                    res["user_id"] = int(row["user_id"])
+                    res["username"] = clean_u
+                    res["first_name"] = row.get("user_name")
+                    res["display_name"] = row.get("user_name")
+                    res["chat_id"] = row.get("chat_id")
+                    res["chat_title"] = row.get("chat_title")
+                    res["last_seen"] = f"{row.get('msg_date', '')} {row.get('msg_time', '')}".strip() or row.get("created_at")
+                    res["msg_count"] = row.get("cnt", 1)
+
+        # Check banned_users table
+        if not res["user_id"]:
+            b_res = await execute_d1_query("SELECT user_id, first_name FROM banned_users WHERE username = ? OR username = ?", [clean_u, f"@{clean_u}"])
+            if b_res.get("success") and b_res.get("results"):
+                row = b_res["results"][0]
+                if row.get("user_id"):
+                    res["user_id"] = int(row["user_id"])
+                    res["username"] = clean_u
+                    res["first_name"] = row.get("first_name")
+
+        # Live Telegram Bot API probe
+        if not res["user_id"] or not res["first_name"]:
+            tg = await _probe_live_telegram_chat(f"@{clean_u}")
+            if tg:
+                res["user_id"] = res["user_id"] or getattr(tg, "id", None)
+                res["username"] = clean_u
+                res["first_name"] = res["first_name"] or getattr(tg, "first_name", None)
+                res["last_name"] = getattr(tg, "last_name", None)
+                res["bio"] = getattr(tg, "bio", None) or getattr(tg, "description", None)
+                res["display_name"] = f"{res['first_name'] or ''} {res['last_name'] or ''}".strip() or res["first_name"]
+
+        if res["user_id"]:
+            res["is_banned"] = is_user_banned(res["user_id"], clean_u)
+            res["is_muted"] = (is_user_muted(res["user_id"], clean_u) > 0)
+            return res
+
+    # 3. Search by Display Name / Real Name (Persian/Latin/Fuzzy/Normalized)
+    target_name = clean_id.lstrip("@").strip()
+    norm_target = normalize_identity_str(target_name)
+    compact_target = norm_target.replace(" ", "")
+
+    # Step 3a: Direct lookup in hot _DISPLAY_NAME_TO_ID_MAP
+    if norm_target in _DISPLAY_NAME_TO_ID_MAP:
+        rec = _DISPLAY_NAME_TO_ID_MAP[norm_target]
+        res["user_id"] = rec["user_id"]
+        res["username"] = rec.get("username")
+        res["first_name"] = rec.get("display_name")
+        res["display_name"] = rec.get("display_name")
+        res["chat_id"] = rec.get("chat_id")
+        res["chat_title"] = rec.get("chat_title")
+        res["is_banned"] = is_user_banned(res["user_id"])
+        res["is_muted"] = (is_user_muted(res["user_id"]) > 0)
+        return res
+
+    # Step 3b: Substring matching in _DISPLAY_NAME_TO_ID_MAP
+    for k_name, rec in _DISPLAY_NAME_TO_ID_MAP.items():
+        if norm_target in k_name or k_name in norm_target or (compact_target and compact_target in k_name.replace(" ", "")):
+            res["user_id"] = rec["user_id"]
+            res["username"] = rec.get("username")
+            res["first_name"] = rec.get("display_name")
+            res["display_name"] = rec.get("display_name")
+            res["chat_id"] = rec.get("chat_id")
+            res["chat_title"] = rec.get("chat_title")
+            res["is_banned"] = is_user_banned(res["user_id"])
+            res["is_muted"] = (is_user_muted(res["user_id"]) > 0)
+            return res
+
+    # Step 3c: Deep scan in hot RAM chat histories (_CHAT_HISTORIES)
+    for cid, msgs in _CHAT_HISTORIES.items():
+        for m in reversed(msgs):
+            u_name = str(m.get("user_name", "")).strip()
+            if u_name:
+                norm_u = normalize_identity_str(u_name)
+                if norm_target in norm_u or norm_u in norm_target or (compact_target and compact_target in norm_u.replace(" ", "")):
+                    uid = m.get("user_id")
+                    if uid and int(uid) != ADMIN_ID:
+                        res["user_id"] = int(uid)
+                        res["username"] = m.get("username")
+                        res["first_name"] = u_name
+                        res["display_name"] = u_name
+                        res["chat_id"] = cid
+                        res["chat_title"] = m.get("chat_title", "")
+                        res["last_seen"] = f"{m.get('msg_date', '')} {m.get('msg_time', '')}".strip()
+                        _DISPLAY_NAME_TO_ID_MAP[norm_u] = {
+                            "user_id": int(uid),
+                            "display_name": u_name,
+                            "username": res["username"],
+                            "chat_id": cid,
+                            "chat_title": res["chat_title"],
+                            "updated_at": ""
+                        }
+                        res["is_banned"] = is_user_banned(res["user_id"])
+                        res["is_muted"] = (is_user_muted(res["user_id"]) > 0)
+                        return res
+
+    # Step 3d: Search in banned_users table
+    b_sql = """
+        SELECT user_id, username, first_name
+        FROM banned_users
+        WHERE (user_id IS NOT NULL AND user_id > 0 AND (username = ? OR username LIKE ? OR first_name = ? OR first_name LIKE ?))
+           OR (username = ? OR username LIKE ? OR first_name = ? OR first_name LIKE ?)
+        ORDER BY rowid DESC LIMIT 1
+    """
+    b_res = await execute_d1_query(b_sql, [target_name, f"%{target_name}%", target_name, f"%{target_name}%", target_name, f"%{target_name}%", target_name, f"%{target_name}%"])
+    if b_res.get("success") and b_res.get("results"):
+        row = b_res["results"][0]
+        uid = row.get("user_id")
+        if uid and int(uid) > 0:
+            res["user_id"] = int(uid)
+            res["username"] = row.get("username")
+            res["first_name"] = row.get("first_name")
+            res["display_name"] = row.get("first_name")
+            res["is_banned"] = True
+            return res
+
+    # Step 3e: Multi-row candidate search in Cloudflare D1 messages table
+    d1_sql = """
+        SELECT user_id, user_name, username, chat_id, chat_title, msg_date, msg_time, created_at, COUNT(*) as cnt
+        FROM messages
+        WHERE user_id IS NOT NULL AND user_id > 0
+          AND (user_name = ? OR user_name LIKE ? OR username = ? OR username LIKE ?)
+        GROUP BY user_id
+        ORDER BY id DESC LIMIT 5
+    """
+    d1_res = await execute_d1_query(d1_sql, [target_name, f"%{target_name}%", target_name, f"%{target_name}%"])
+    if d1_res.get("success") and d1_res.get("results"):
+        candidates = []
+        for r in d1_res["results"]:
+            c_uid = r.get("user_id")
+            if not c_uid or int(c_uid) == ADMIN_ID:
+                continue
+            cand = {
+                "user_id": int(c_uid),
+                "username": str(r.get("username") or "").lower().lstrip("@") or None,
+                "first_name": r.get("user_name"),
+                "display_name": r.get("user_name"),
+                "chat_id": r.get("chat_id"),
+                "chat_title": r.get("chat_title"),
+                "last_seen": f"{r.get('msg_date', '')} {r.get('msg_time', '')}".strip() or r.get("created_at"),
+                "msg_count": r.get("cnt", 1),
+                "is_banned": is_user_banned(int(c_uid)),
+                "is_muted": (is_user_muted(int(c_uid)) > 0)
+            }
+            candidates.append(cand)
+
+        if len(candidates) == 1:
+            return candidates[0]
+        elif len(candidates) > 1:
+            res = candidates[0]
+            res["candidates"] = candidates
+            return res
+
+    # Step 3f: Fallback to username search if clean_id looked like a username
+    if is_explicit_username:
+        res["username"] = clean_u
+
+    return res
+
+
+async def resolve_target_identifier(identifier: str) -> tuple[Optional[int], Optional[str]]:
+    """Backward-compatible wrapper returning (user_id, username_or_display_name)."""
+    info = await resolve_target_full_identity(identifier)
+    uid = info.get("user_id")
+    label = info.get("username") or info.get("first_name") or info.get("display_name")
+    return (uid, label)
+
 
 async def ban_target_async(
     target: Union[str, int],
@@ -1701,70 +1928,94 @@ async def ban_target_async(
     source_chat_id: int = 0,
     source_chat_title: str = ""
 ) -> bool:
-    """Bans a user and stores full identity + context in D1 (id, username, name, banner, source chat)."""
+    """Bans a user and stores full identity (numeric id, @username, display name, banner, source chat)."""
     target_str = str(target).strip()
-    user_id, username = await resolve_target_identifier(target_str)
+    info = await resolve_target_full_identity(target_str)
+    user_id = info.get("user_id")
+    username = info.get("username") or ""
+    resolved_name = info.get("first_name") or info.get("display_name") or ""
+    clean_first = str(first_name or resolved_name or "")[:120].strip()
 
     if user_id == ADMIN_ID:
         return False
 
-    clean_first = str(first_name or "")[:120]
+    # Live Telegram lookup fallback if any key piece of identity is missing
+    if not user_id or not username or not clean_first:
+        probe_target = user_id or (f"@{username}" if username else (target_str if target_str.startswith("@") else None))
+        if probe_target:
+            tg = await _probe_live_telegram_chat(probe_target)
+            if tg:
+                if not user_id and getattr(tg, "id", None):
+                    user_id = int(tg.id)
+                if not username and getattr(tg, "username", None):
+                    username = tg.username.lower().lstrip("@")
+                if not clean_first:
+                    clean_first = f"{getattr(tg, 'first_name', '') or ''} {getattr(tg, 'last_name', '') or ''}".strip()
+
     clean_by = int(banned_by or 0)
     clean_src = int(source_chat_id or 0)
     clean_src_title = str(source_chat_title or "")[:150]
+    clean_uname = str(username or "").lower().lstrip("@")
 
-    # Instantly block in RAM (Zero-latency drop takes effect in microseconds)
+    # Update in-memory structures instantly
     if user_id:
-        _BANNED_USERS.add(user_id)
-        if user_id in _CHAT_HISTORIES:
-            del _CHAT_HISTORIES[user_id]
-        if username:
-            _BANNED_USERNAMES.add(username.lower().lstrip("@"))
-    elif username:
-        clean_u = username.lower().lstrip("@")
-        _BANNED_USERNAMES.add(clean_u)
-        mapped_id = _USERNAME_TO_ID_MAP.get(clean_u)
-        if mapped_id:
+        uid_int = int(user_id)
+        _BANNED_USERS.add(uid_int)
+        if uid_int in _CHAT_HISTORIES:
+            del _CHAT_HISTORIES[uid_int]
+        _BANNED_DETAILS[uid_int] = {
+            "user_id": uid_int,
+            "username": clean_uname,
+            "first_name": clean_first,
+            "reason": reason,
+            "banned_by": clean_by,
+            "source_chat_id": clean_src,
+            "source_chat_title": clean_src_title,
+            "banned_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    if clean_uname:
+        _BANNED_USERNAMES.add(clean_uname)
+        if clean_uname in _USERNAME_TO_ID_MAP:
+            mapped_id = _USERNAME_TO_ID_MAP[clean_uname]
             _BANNED_USERS.add(mapped_id)
             if mapped_id in _CHAT_HISTORIES:
                 del _CHAT_HISTORIES[mapped_id]
+            if user_id and mapped_id == user_id:
+                _BANNED_DETAILS[user_id]["username"] = clean_uname
 
-    # Asynchronously persist to Cloudflare D1
-    if user_id:
-        sql = "INSERT OR REPLACE INTO banned_users (user_id, username, first_name, reason, banned_by, source_chat_id, source_chat_title) VALUES (?, ?, ?, ?, ?, ?, ?)"
-        res = await execute_d1_query(sql, [user_id, username or "", clean_first, reason, clean_by, clean_src, clean_src_title])
-        return res.get("success", False)
+    # Persist complete identity in D1
+    primary_id = int(user_id) if user_id else (_USERNAME_TO_ID_MAP.get(clean_uname, 0) if clean_uname else 0)
+    sql = "INSERT OR REPLACE INTO banned_users (user_id, username, first_name, reason, banned_by, source_chat_id, source_chat_title, banned_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
+    res = await execute_d1_query(sql, [primary_id, clean_uname, clean_first, reason, clean_by, clean_src, clean_src_title])
 
-    elif username:
-        clean_u = username.lower().lstrip("@")
-        found_uid = _USERNAME_TO_ID_MAP.get(clean_u, 0)
-        if not found_uid:
-            uid_res = await execute_d1_query("SELECT user_id FROM user_mappings WHERE username = ?", [clean_u])
-            if uid_res["success"] and uid_res["results"]:
-                found_uid = uid_res["results"][0].get("user_id", 0) or 0
-                if found_uid:
-                    _USERNAME_TO_ID_MAP[clean_u] = found_uid
-                    _BANNED_USERS.add(found_uid)
+    # Also backfill user_mappings if both are present
+    if primary_id and clean_uname:
+        _USERNAME_TO_ID_MAP[clean_uname] = primary_id
+        try:
+            asyncio.create_task(execute_d1_query("INSERT OR REPLACE INTO user_mappings (username, user_id) VALUES (?, ?)", [clean_uname, primary_id]))
+        except Exception:
+            pass
 
-        sql = "INSERT OR REPLACE INTO banned_users (user_id, username, first_name, reason, banned_by, source_chat_id, source_chat_title) VALUES (?, ?, ?, ?, ?, ?, ?)"
-        res = await execute_d1_query(sql, [found_uid, clean_u, clean_first, reason, clean_by, clean_src, clean_src_title])
-        return res.get("success", False)
+    return True if (user_id or clean_uname) else res.get("success", False)
 
-    return False
 
 async def unban_target_async(target: Union[str, int]) -> bool:
     target_str = str(target).strip()
-    user_id, username = await resolve_target_identifier(target_str)
+    info = await resolve_target_full_identity(target_str)
+    user_id = info.get("user_id")
+    username = info.get("username") or ""
 
     # Immediately unban in RAM (Instant unblock)
-    if user_id and user_id in _BANNED_USERS:
-        _BANNED_USERS.discard(user_id)
+    if user_id and int(user_id) in _BANNED_USERS:
+        _BANNED_USERS.discard(int(user_id))
+        _BANNED_DETAILS.pop(int(user_id), None)
     if username:
         clean_u = username.lower().lstrip("@")
         _BANNED_USERNAMES.discard(clean_u)
         mapped = _USERNAME_TO_ID_MAP.get(clean_u)
         if mapped and mapped in _BANNED_USERS:
             _BANNED_USERS.discard(mapped)
+            _BANNED_DETAILS.pop(mapped, None)
     
     # Also search by target_str directly in RAM
     clean_target_str = target_str.lower().lstrip("@")
@@ -1983,10 +2234,53 @@ def is_user_banned(user_id: int, username: str = "") -> bool:
     return False
 
 async def get_banned_users_detailed_async() -> List[Dict[str, Any]]:
-    res = await execute_d1_query("SELECT user_id, username, first_name, reason, banned_by, source_chat_id, source_chat_title, banned_at FROM banned_users ORDER BY banned_at DESC")
-    if res["success"]:
-        return res["results"]
-    return [{"user_id": uid, "username": "", "first_name": "", "reason": "نامشخص", "banned_by": 0, "source_chat_id": 0, "source_chat_title": "", "banned_at": ""} for uid in _BANNED_USERS]
+    records = []
+    try:
+        res = await execute_d1_query("SELECT user_id, username, first_name, reason, banned_by, source_chat_id, source_chat_title, banned_at FROM banned_users ORDER BY banned_at DESC")
+        if res.get("success") and res.get("results"):
+            records = res["results"]
+    except Exception:
+        pass
+
+    if not records and _BANNED_DETAILS:
+        records = list(_BANNED_DETAILS.values())
+
+    # Guarantee that every single record has user_id, username, and first_name (display name)
+    for r in records:
+        uid = r.get("user_id")
+        if uid:
+            uid_int = int(uid)
+            mem = _BANNED_DETAILS.get(uid_int, {})
+            if not r.get("username") and mem.get("username"):
+                r["username"] = mem["username"]
+            if not r.get("first_name") and mem.get("first_name"):
+                r["first_name"] = mem["first_name"]
+
+            # Reverse map check
+            if not r.get("username"):
+                for u, i in _USERNAME_TO_ID_MAP.items():
+                    if i == uid_int:
+                        r["username"] = u
+                        break
+            if not r.get("first_name"):
+                for dn, rec in _DISPLAY_NAME_TO_ID_MAP.items():
+                    if rec.get("user_id") == uid_int:
+                        r["first_name"] = rec.get("display_name", "")
+                        break
+
+    return records or [
+        {
+            "user_id": uid,
+            "username": _BANNED_DETAILS.get(uid, {}).get("username", ""),
+            "first_name": _BANNED_DETAILS.get(uid, {}).get("first_name", ""),
+            "reason": _BANNED_DETAILS.get(uid, {}).get("reason", "نامشخص"),
+            "banned_by": _BANNED_DETAILS.get(uid, {}).get("banned_by", 0),
+            "source_chat_id": 0,
+            "source_chat_title": "",
+            "banned_at": _BANNED_DETAILS.get(uid, {}).get("banned_at", "")
+        }
+        for uid in _BANNED_USERS
+    ]
 
 def get_banned_users() -> List[int]:
     return list(_BANNED_USERS)

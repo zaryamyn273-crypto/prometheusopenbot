@@ -423,7 +423,7 @@ async def generate_response(
         + f"\n\n[تاریخ امروز: {_today_j} (شمسی) — ساعت تهران: {_today_hm} — میلادی (ISO): {_today_iso}]"
         + "\n[دستور جستجوی زنده]: برای اخبار/حوادث روز/مقایسه نسخه‌ها از ابزار جستجوی زنده استفاده کن — اگر tavily_search در دسترس بود از آن، وگرنه از web_search رایگان. هرگز از داده‌های ذهنی بدون ابزار پاسخ نده.]"
         + "\n[قانون سهمیه]: سهمیه شخصی کاربر در ربات فقط با دستور /limit نمایش داده می‌شود — خودت هرگز عدد سهمیه شخصی اعلام نکن. سؤال درباره سهمیه موضوعات دیگر (بنزین، اینترنت و ...) سؤال عادی است: عادی جواب بده و اسمی از سهمیه کاربر در ربات نبر."
-        + "\n\nدستور قطعی لحن و تمرکز: لحن کاملاً جدی، رسمی، قاطع و فوق‌العاده خلاصه باشد. بدون سلام، بدون تعارف، بدون مقدمه و حاشیه. فقط و فقط دقیقاً به همان سؤالی که مستقیماً در این پیام پرسیده شده پاسخ بده و به هیچ موضوع دیگری وارد نشو مگر اینکه صراحتاً درخواست شده باشد."
+        + "\n\nدستور قطعی لحن و تمرکز: لحن کاملاً حرفه‌ای، مسلط، فوق‌العاده خلاصه‌گو، تیز و مقتدر باشد با چاشنی طعنه و کنایه ظریف و هوشمندانه (Sarcastic & Witty). بدون سلام، بدون تعارفات اضافه، بدون مقدمه و حاشیه‌پردازی. فقط و فقط دقیقاً به همان سؤالی که مستقیماً در این پیام پرسیده شده پاسخ بده و با کمترین واژگان ممکن اصل فکت‌ها، ارقام و داده‌ها را با کلمات کلیدی بولد ارائه کن."
     )
 
     # Ultra-Fast High Efficiency Memory Policy: Complete 100% background autosaving to D1
@@ -594,8 +594,11 @@ async def generate_response(
     # Claim-verify strict lane: recency/version questions go to web tools ONLY.
     # Mixing in clock/admin/DB tools lets the model answer from stale memory
     # instead of the live results (observed: datetime dump, wiki-based 3 Pro).
+    # NOTE: Never apply web-only restriction to internal admin commands (groups, bans, server stats).
     _cv_pl = (user_prompt or "").lower()
-    _claim_verify_q = any(_w in _cv_pl for _w in ["آخرین", "جدیدترین", "تازه", "نسل", "مدل", "نسخه", "پرچمدار", "پیشرفته", "معرفی", "latest", "newest", "version", "release", "pro", "flash", "ultra"])
+    _admin_query_markers = ["گروه", "group", "بن", "ban", "سرور", "server", "تله متری", "سکوت", "mute", "شناسه", "آیدی", "کانفیگ", "دیتابیس"]
+    _is_internal_admin_query = is_caller_admin and any(m in _cv_pl for m in _admin_query_markers)
+    _claim_verify_q = (not _is_internal_admin_query) and any(_w in _cv_pl for _w in ["آخرین", "جدیدترین", "تازه", "نسل", "مدل", "نسخه", "پرچمدار", "پیشرفته", "معرفی", "latest", "newest", "version", "release", "pro", "flash", "ultra"])
     if _claim_verify_q:
         _web_only = {"tavily_search", "web_search", "deep_search_and_read", "live_news", "fetch_webpage_content"}
         _filtered = [t for t in tools_schema if t.get("function", {}).get("name") in _web_only]
@@ -643,7 +646,7 @@ async def generate_response(
             "stream": False,
             "messages": messages,
             "temperature": 0.2,
-            "max_tokens": 1024
+            "max_tokens": 800
         }
         if active_schemas:
             payload["tools"] = active_schemas
