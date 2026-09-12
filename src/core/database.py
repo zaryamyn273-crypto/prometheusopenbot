@@ -1147,16 +1147,16 @@ async def save_message_async(
         "time": now_ts
     })
     
-    # Rolling Window: 35 turns per chat in RAM provides rich context while reducing memory usage by 45%.
-    # Newest turns always win; D1 keeps 100 percent of history forever.
+    # Rolling Window: Strictly up to 30 last messages per group in isolated RAM buffer.
+    # Newest messages always win; D1 keeps 100% of history forever.
     try:
         from src.core.config import MAX_RAM_TURNS_PER_CHAT as _MAX_TURNS
     except Exception:
-        _MAX_TURNS = 35
+        _MAX_TURNS = 30
     if len(_CHAT_HISTORIES[clean_chat_id]) > _MAX_TURNS:
         _CHAT_HISTORIES[clean_chat_id] = _CHAT_HISTORIES[clean_chat_id][-_MAX_TURNS:]
 
-    # Global RAM Guard: Prevent unbounded chat growth across thousands of groups
+    # Global RAM Guard: Prevent unbounded chat growth across hundreds of groups
     if len(_CHAT_HISTORIES) > 150:
         # Evict oldest inactive chats from RAM (D1 preserves 100% of history forever)
         chats_by_recency = sorted(
@@ -1164,8 +1164,7 @@ async def save_message_async(
             key=lambda cid: (_CHAT_HISTORIES[cid][-1].get("time", 0) if _CHAT_HISTORIES[cid] else 0)
         )
         for cid in chats_by_recency[:40]:
-            del _CHAT_HISTORIES[cid]
-            del _CHAT_HISTORIES[cid]
+            _CHAT_HISTORIES.pop(cid, None)
 
     # 3. Push to High-Speed Write-Behind Queue (zero HTTP blocking).
     # Every group/supergroup message carries its own chat_id + message_id,
@@ -2239,6 +2238,14 @@ async def get_banned_users_detailed_async() -> List[Dict[str, Any]]:
         res = await execute_d1_query("SELECT user_id, username, first_name, reason, banned_by, source_chat_id, source_chat_title, banned_at FROM banned_users ORDER BY banned_at DESC")
         if res.get("success") and res.get("results"):
             records = res["results"]
+            # Hot sync in-memory sets with freshly queried D1 records
+            for r in records:
+                u_id = r.get("user_id")
+                if u_id:
+                    _BANNED_USERS.add(int(u_id))
+                u_name = (r.get("username") or "").lower().lstrip("@")
+                if u_name:
+                    _BANNED_USERNAMES.add(u_name)
     except Exception:
         pass
 
