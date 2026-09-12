@@ -63,7 +63,7 @@ async def _live_membership(bot_inst, bot_me_id, cid: int):
 
 @register_tool(
     name="list_joined_groups_tool",
-    description="مشاهده لیست گروه‌هایی که ربات عضوشان است همراه با لینک عضویت هر گروه (لینک عمومی t.me یا دعوت‌نامه تازه؛ مختص فرمانده ارشد)",
+    description="مشاهده وضعیت زنده، تعداد اعضا، دسترسی و لینک تمام گروه‌هایی که ربات در آنها حضور فعال دارد (مختص فرمانده ارشد)",
     category="admin"
 )
 async def list_joined_groups_tool(caller_id: int = 0, is_private_chat: bool = False) -> str:
@@ -77,101 +77,132 @@ async def list_joined_groups_tool(caller_id: int = 0, is_private_chat: bool = Fa
 
     bot_inst, bot_me_id = await _resolve_live_bot()
 
-    truly_joined = []
-    pending_lines = []
-
-    for g in groups:
+    # Parallel Live Group Inspection Worker
+    async def _inspect_group(g: dict) -> Optional[dict]:
         cid = g.get("chat_id")
         if not cid:
-            continue
+            return None
         try:
             cid = int(cid)
         except Exception:
-            continue
+            return None
         if "channel" in str(g.get("chat_type", "")).lower():
-            continue
+            return None
         if database.is_user_banned(cid):
-            continue
+            return None
         status = str(g.get("status") or "active").lower()
 
         present, definitive = await _live_membership(bot_inst, bot_me_id, cid)
         if not present and definitive:
-            # Gone for real (kicked/left/banned) — mark inactive, KEEP the record.
             try:
                 await database.set_group_status_async(cid, "left")
             except Exception:
                 pass
-            continue
+            return None
+
         if status == "pending":
-            title = g.get("title") or "گروه"
-            added_by = g.get("added_by") or 0
-            inv = f" — اضافه کننده: `{added_by}`" if added_by else ""
-            pending_lines.append(f"• ⏳ *{title}* (`{cid}`){inv}")
-            continue
+            return {
+                "kind": "pending",
+                "chat_id": cid,
+                "title": g.get("title") or "گروه",
+                "added_by": g.get("added_by") or 0
+            }
         if status == "left":
-            continue
+            return None
 
         actual_title = g.get("title") or "گروه"
-        if present and definitive and bot_inst:
+        member_cnt = g.get("member_count") or 0
+        bot_role = "عضو عادی"
+        link = ""
+
+        if bot_inst:
             try:
                 chat_obj = await bot_inst.get_chat(cid)
-                if chat_obj and chat_obj.title:
-                    actual_title = chat_obj.title
+                if chat_obj:
+                    actual_title = chat_obj.title or actual_title
+                    if getattr(chat_obj, "username", None):
+                        link = f"https://t.me/{chat_obj.username}"
+                # Fetch live member count
+                try:
+                    live_cnt = await bot_inst.get_chat_member_count(cid)
+                    if live_cnt:
+                        member_cnt = live_cnt
+                except Exception:
+                    pass
+                # Check bot's role
+                if bot_me_id:
+                    try:
+                        m_obj = await bot_inst.get_chat_member(chat_id=cid, user_id=bot_me_id)
+                        from telegram.constants import ChatMemberStatus
+                        if m_obj.status == ChatMemberStatus.ADMINISTRATOR:
+                            bot_role = "🛡️ ادمین با دسترسی کامل"
+                        elif m_obj.status == ChatMemberStatus.OWNER:
+                            bot_role = "👑 مالک / سازنده"
+                        else:
+                            bot_role = "👤 عضو عادی"
+                    except Exception:
+                        pass
+                # Resolve link if not public
+                if not link:
+                    link = g.get("invite_link") or ""
+                if not link and bot_role.startswith("🛡️"):
+                    try:
+                        inv = await bot_inst.export_chat_invite_link(chat_id=cid)
+                        if inv:
+                            link = str(inv).strip()
+                            try:
+                                await database.track_group_presence_async(cid, actual_title, chat_type=g.get("chat_type", "supergroup"), invite_link=link)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
-        g["title"] = actual_title
-        truly_joined.append(g)
+
+        return {
+            "kind": "active",
+            "chat_id": cid,
+            "title": actual_title,
+            "member_count": member_cnt,
+            "bot_role": bot_role,
+            "link": link
+        }
+
+    # Concurrently inspect all groups in parallel for sub-second execution
+    tasks = [_inspect_group(g) for g in groups]
+    inspections = await asyncio.gather(*tasks, return_exceptions=True)
+
+    active_items = []
+    pending_items = []
+
+    for item in inspections:
+        if isinstance(item, dict):
+            if item.get("kind") == "active":
+                active_items.append(item)
+            elif item.get("kind") == "pending":
+                pending_items.append(item)
 
     lines = []
-    if truly_joined:
-        lines = ["👥 *لیست گروه‌هایی که ربات واقعاً در آنها حضور دارد:*\n"]
-    # Resolve a join link per group: public username first (t.me/xxx),
-    # else a fresh invite link minted live via Telegram (cached in D1).
-    # Needs a live Bot API client; without one we still list groups (no link).
-    async def _resolve_link(_cid: int, _known_user: str = "", _known_inv: str = "") -> str:
-        _uname = (_known_user or "").strip().lstrip("@")
-        if _uname:
-            return f"https://t.me/{_uname}"
-        if not bot_inst:
-            return _known_inv or ""
-        try:
-            _chat = await bot_inst.get_chat(_cid)
-            _cu = (getattr(_chat, "username", "") or "").strip()
-            if _cu:
-                try:
-                    await database.track_group_presence_async(_cid, g.get("title") or "گروه", chat_type=g.get("chat_type", "supergroup"), username=_cu, invite_link=_known_inv or "")
-                except Exception:
-                    pass
-                return f"https://t.me/{_cu}"
-        except Exception:
-            pass
-        if _known_inv:
-            return _known_inv
-        try:
-            _inv = await bot_inst.export_chat_invite_link(chat_id=_cid)
-            _inv_s = str(_inv or "").strip()
-            if _inv_s:
-                try:
-                    await database.track_group_presence_async(_cid, g.get("title") or "گروه", chat_type=g.get("chat_type", "supergroup"), username=_known_user or "", invite_link=_inv_s)
-                except Exception:
-                    pass
-                return _inv_s
-        except Exception as _e:
-            logger.debug(f"Invite export failed for {cid}: {_e}")
-        return ""
+    if active_items:
+        lines.append("👥 *لیست گروه‌های زنده و فعال پرومته (Live Telemetry):*\n")
+        for idx, act in enumerate(active_items, 1):
+            cid = act["chat_id"]
+            title = act["title"]
+            cnt_str = f"`{act['member_count']} نفر`" if act.get("member_count") else "`نامشخص`"
+            link_str = act["link"] if act.get("link") else "در دسترس نیست (لینک عمومی ندارد / ربات ادمین نیست)"
+            lines.append(
+                f"{idx}. 🌟 *{title}*\n"
+                f"   • شناسه عددی: `<code>{cid}</code>`\n"
+                f"   • اعضای فعال: {cnt_str}\n"
+                f"   • سطح دسترسی پرومته: `{act['bot_role']}`\n"
+                f"   • پیوند ورود: {link_str}\n"
+            )
 
-    for i, g in enumerate(truly_joined, 1):
-        cid = g.get("chat_id")
-        title = g.get("title") or "گروه"
-        _link = await _resolve_link(cid, g.get("username", "") or "", g.get("invite_link", "") or "")
-        if _link:
-            lines.append(f"{i}. 🌟 *{title}*\n   • شناسه عددی: `{cid}`\n   • لینک عضویت: {_link}\n")
-        else:
-            lines.append(f"{i}. 🌟 *{title}*\n   • شناسه عددی: `{cid}`\n   • لینک عضویت: در دسترس نیست (ربات ادمین گروه نیست)\n")
-
-    if pending_lines:
-        lines.append("\n⏳ *در انتظار تایید ادمین:*\n")
-        lines.extend(pending_lines)
+    if pending_items:
+        lines.append("\n⏳ *گروه‌های در انتظار تایید ادمین ارشد:*\n")
+        for p in pending_items:
+            inv = f" — اضافه کننده: `<code>{p['added_by']}</code>`" if p.get("added_by") else ""
+            lines.append(f"• ⏳ *{p['title']}* (`<code>{p['chat_id']}</code>`){inv}")
 
     if not lines:
         return "ربات در حال حاضر در هیچ گروه فعالی عضو نیست."

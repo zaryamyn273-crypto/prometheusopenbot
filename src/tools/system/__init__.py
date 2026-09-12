@@ -290,6 +290,15 @@ async def extract_user_id_tool(
     if not raw_query:
         return "❌ لطفاً شناسه عددی، یوزرنیم (@username) یا نام نمایشی کاربر مورد نظر را مشخص فرمایید."
 
+    # Smart Pre-cleaning: Extract usernames from t.me URLs, strip @, or extract standalone numeric IDs
+    tme_match = re.search(r'(?:https?://)?(?:www\.)?t\.me/([a-zA-Z0-9_]{3,32})', raw_query)
+    if tme_match:
+        raw_query = tme_match.group(1)
+    else:
+        num_match = re.search(r'\b(\d{5,15})\b', raw_query)
+        if num_match and not any(w in raw_query for w in ("@", "کاربر", "user")):
+            raw_query = num_match.group(1)
+
     info = await database.resolve_target_full_identity(raw_query)
     cands = info.get("candidates") or []
 

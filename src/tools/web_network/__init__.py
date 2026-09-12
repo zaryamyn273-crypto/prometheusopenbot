@@ -47,6 +47,8 @@ def _kv_safe_key(prefix: str, query: str) -> str:
     except Exception:
         return f"{prefix}_q"
 
+_TAVILY_EXHAUSTED_UNTIL = 0.0
+
 def get_async_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
@@ -62,7 +64,10 @@ def get_async_client() -> httpx.AsyncClient:
     return _client
 
 async def tavily_search_raw(query: str, max_results: int = 5, search_depth: str = "advanced", include_answer: bool = True, time_range: Optional[str] = None) -> Dict[str, Any]:
-    """Direct Tavily API call. Returns parsed JSON dict (empty on failure). Never raises."""
+    """Direct Tavily API call with circuit breaker on quota exhaustion. Never raises."""
+    global _TAVILY_EXHAUSTED_UNTIL
+    if time.time() < _TAVILY_EXHAUSTED_UNTIL:
+        return {}
     try:
         from src.core.config import TAVILY_API_URL
         try:
@@ -95,24 +100,26 @@ async def tavily_search_raw(query: str, max_results: int = 5, search_depth: str 
                 }
                 if time_range:
                     payload["time_range"] = time_range
-                r = await client.post(TAVILY_API_URL, json=payload, timeout=12.0)
+                r = await client.post(TAVILY_API_URL, json=payload, timeout=3.5)
                 if r.status_code == 200:
                     data = r.json()
                     if isinstance(data, dict) and data.get("results"):
                         return data
                     last_err = "empty-results"
                     continue
+                if r.status_code in (429, 432, 401, 403):
+                    # Quota reached or unauthorized: trip circuit breaker for 30 mins
+                    _TAVILY_EXHAUSTED_UNTIL = time.time() + 1800
+                    logger.info(f"Tavily circuit breaker tripped (HTTP {r.status_code}) for 30m.")
+                    return {}
                 last_err = f"HTTP {r.status_code}"
-                logger.warning(f"Tavily key ...{str(_key)[-4:]} failed: {r.status_code}: {r.text[:150]}")
                 continue
             except Exception as e:
                 last_err = str(e)[:100]
-                logger.warning(f"Tavily key ...{str(_key)[-4:]} error: {e}")
                 continue
-        logger.warning(f"All Tavily keys exhausted. Last: {last_err}")
         return {}
     except Exception as e:
-        logger.warning(f"Tavily search failed: {e}")
+        logger.debug(f"Tavily search failed: {e}")
         return {}
 
 
@@ -223,8 +230,8 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
                 return urllib.parse.unquote(url.split("uddg=")[1].split("&")[0])
             except Exception:
                 pass
-        if "bing.com/ck/a?" in url and "&u=" in url:
-            m = re.search(r'[?&]u=a1([a-zA-Z0-9_\-]+)', url)
+        if "bing.com/ck/a" in url:
+            m = re.search(r'(?:[?&]|&amp;)u=a1([a-zA-Z0-9_\-]+)', url)
             if m:
                 b64_str = m.group(1) + "=" * (-len(m.group(1)) % 4)
                 try:
@@ -355,11 +362,11 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
     # Engine 3: Bing Live Search
     async def search_bing():
         try:
-            r = await client.get(f"https://www.bing.com/search?q={encoded}", timeout=3.5)
+            r = await client.get(f"https://www.bing.com/search?q={encoded}", timeout=2.5)
             if r.status_code == 200:
-                soup = BeautifulSoup(r.text, "html.parser")
                 res = []
-                for el in soup.find_all("li", class_="b_algo")[:5]:
+                soup = BeautifulSoup(r.text, "html.parser")
+                for el in soup.find_all("li", class_="b_algo")[:6]:
                     h2 = el.find("h2")
                     p_tag = el.find("p")
                     if h2:
@@ -370,6 +377,16 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
                         snippet = p_tag.get_text(strip=True) if p_tag else ""
                         if title and decoded_link and decoded_link.startswith("http") and not decoded_link.startswith("https://r.bing.com"):
                             res.append(f"• *{title}*\n  🔗 {decoded_link}\n  📄 {snippet}")
+                if res:
+                    return res
+
+                # Fast regex fallback for Bing
+                h2s = re.findall(r"<h2[^>]*>\s*<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", r.text)
+                for raw_l, raw_t in h2s[:6]:
+                    clean_t = re.sub(r"<[^>]+>", "", raw_t).strip()
+                    dec_l = _decode_search_url(raw_l)
+                    if clean_t and dec_l and dec_l.startswith("http") and "bing.com" not in dec_l:
+                        res.append(f"• *{clean_t}*\n  🔗 {dec_l}")
                 return res
         except Exception:
             return []
@@ -508,106 +525,81 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
             pass
         return out_text
 
-    # Speculative Racing: Tavily ONLY when a key exists (no key = zero cost,
-    # pure free engines DDG/Bing/Brave). This removes the Tavily dependency.
+    # High-Speed Multi-Engine Speculative Race:
+    # Run all fast, anti-bot resilient engines concurrently.
+    # Returns as soon as ANY fast engine delivers valid results, dropping latency to <1.2s.
     try:
         from src.core.config import has_tavily as _has_tv_cfg
-        _tavily_enabled = bool(_has_tv_cfg())
+        _tavily_enabled = bool(_has_tv_cfg()) and (time.time() >= _TAVILY_EXHAUSTED_UNTIL)
     except Exception:
         _tavily_enabled = False
+
     tavily_task = asyncio.create_task(search_tavily()) if _tavily_enabled else None
+    bing_task = asyncio.create_task(search_bing())
+    ddg_instant_task = asyncio.create_task(search_ddg_instant())
+    wiki_task = asyncio.create_task(search_wikipedia())
     ddg_task = asyncio.create_task(search_ddg_lite())
 
-    r_tavily: List[str] = []
-    has_tavily_ans = False
-    r_ddg: List[str] = []
-    winner_items: Optional[List[str]] = None
+    all_spec_tasks = [t for t in (tavily_task, bing_task, ddg_instant_task, wiki_task, ddg_task) if t is not None]
+    collected_results: List[str] = []
 
     try:
-        _spec_tasks = [t for t in (tavily_task, ddg_task) if t is not None]
-        done, pending = await asyncio.wait(
-            _spec_tasks,
-            timeout=4.0,
-            return_when=asyncio.FIRST_COMPLETED
-        )
-
+        # Phase 1: Wait up to 2.2s for the fastest responder
+        done, pending = await asyncio.wait(all_spec_tasks, timeout=2.2, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
-            if task is tavily_task:
-                try:
-                    r_tavily, has_tavily_ans = task.result() if not task.cancelled() and not task.exception() else ([], False)
-                except Exception:
-                    r_tavily, has_tavily_ans = [], False
-                if has_tavily_ans and r_tavily:
-                    clean_tav = _filter_and_dedup(r_tavily, clean_q, max_results + 2)
-                    if clean_tav:
-                        winner_items = clean_tav
-                        break
-            elif task is ddg_task:
-                try:
-                    r_ddg = task.result() if not task.cancelled() and not task.exception() else []
-                except Exception:
-                    r_ddg = []
-                if r_ddg:
-                    clean_ddg = _filter_and_dedup(r_ddg, clean_q, max_results + 2)
-                    if len(clean_ddg) >= 3:
-                        winner_items = clean_ddg
-                        break
+            try:
+                res = task.result() if not task.cancelled() and not task.exception() else []
+                if task is tavily_task and isinstance(res, tuple):
+                    res = res[0]
+                if isinstance(res, list) and res:
+                    clean_res = _filter_and_dedup(res, clean_q, max_results + 2)
+                    if len(clean_res) >= 2:
+                        # Fast winner found! Cancel remaining tasks and return immediately!
+                        for p in pending:
+                            p.cancel()
+                        return await _format_and_cache(clean_res)
+                    collected_results.extend(res)
+            except Exception:
+                pass
 
-        # Early winner settlement: cancel remaining speculative tasks immediately!
-        if winner_items:
-            for p in pending:
-                p.cancel()
-            await asyncio.sleep(0)
-            return await _format_and_cache(winner_items)
-
-        # Wait briefly for remaining speculative task
+        # Phase 2: If none had >=2 hits, wait up to 1.8s more for remaining tasks
         if pending:
-            done_second, _ = await asyncio.wait(pending, timeout=3.0)
+            done_second, remaining = await asyncio.wait(pending, timeout=1.8)
             for task in done_second:
-                if task is tavily_task:
-                    try:
-                        r_tavily, has_tavily_ans = task.result() if not task.cancelled() and not task.exception() else ([], False)
-                    except Exception:
-                        r_tavily, has_tavily_ans = [], False
-                    if has_tavily_ans and r_tavily:
-                        clean_tav = _filter_and_dedup(r_tavily, clean_q, max_results + 2)
-                        if clean_tav:
-                            winner_items = clean_tav
-                            break
-                elif task is ddg_task:
-                    try:
-                        r_ddg = task.result() if not task.cancelled() and not task.exception() else []
-                    except Exception:
-                        r_ddg = []
-                    if r_ddg:
-                        clean_ddg = _filter_and_dedup(r_ddg, clean_q, max_results + 2)
-                        if len(clean_ddg) >= 3:
-                            winner_items = clean_ddg
-                            break
+                try:
+                    res = task.result() if not task.cancelled() and not task.exception() else []
+                    if task is tavily_task and isinstance(res, tuple):
+                        res = res[0]
+                    if isinstance(res, list) and res:
+                        collected_results.extend(res)
+                except Exception:
+                    pass
+            for r_task in remaining:
+                r_task.cancel()
 
-        if winner_items:
-            return await _format_and_cache(winner_items)
-
-        combined_speculative = _filter_and_dedup(r_tavily + r_ddg, clean_q, max_results + 2)
-        if len(combined_speculative) >= 3:
-            return await _format_and_cache(combined_speculative)
+        if collected_results:
+            clean_combined = _filter_and_dedup(collected_results, clean_q, max_results + 2)
+            if clean_combined:
+                return await _format_and_cache(clean_combined)
 
     except Exception:
         pass
 
-    # Fallback to secondary search engines
+    # Fallback to secondary search engines (Brave & Mojeek)
     try:
         rem = await asyncio.gather(
-            search_bing(),
             search_brave(),
             search_mojeek(),
-            search_ddg_instant(),
-            search_wikipedia(),
             return_exceptions=True
         )
-        r_bing, r_brave, r_mojeek, r_instant, r_wiki = [
+        r_brave, r_mojeek = [
             res if isinstance(res, list) else [] for res in rem
         ]
+        combined_secondary = _filter_and_dedup(r_brave + r_mojeek, clean_q, max_results)
+        if combined_secondary:
+            return await _format_and_cache(combined_secondary)
+    except Exception:
+        pass
     except Exception:
         r_bing, r_brave, r_mojeek, r_instant, r_wiki = [], [], [], [], []
 

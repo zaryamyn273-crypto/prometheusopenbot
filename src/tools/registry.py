@@ -219,7 +219,8 @@ CATEGORY_KEYWORDS = {
     "media": [
         "آهنگ", "اهنگ", "موزیک", "ترانه", "خواننده", "دانلود", "ویس", "صدا", "وویس", "تلگراف", "telegraph",
         "بارکد", "qr", "lyrics", "متن شعر", "شعر", "صوت", "پادکست", "مقاله", "کیوآر", "متن آهنگ",
-        "لیریکس", "تایم دار", "lrc", "synced lyrics", "متن ترانه"
+        "لیریکس", "تایم دار", "lrc", "synced lyrics", "متن ترانه", "بارکد میله‌ای", "qrcode", "barcode",
+        "خط خورده", "آسیب دیده", "مخدوش", "پاره شده", "بازسازی بارکد", "ساخت بارکد", "تولید بارکد", "ean13", "code128"
     ],
     "security": [
         "امنیت", "هش", "hash", "رمزنگاری", "base64", "uuid",
@@ -563,7 +564,9 @@ TOOL_FALLBACKS: Dict[str, List[str]] = {
     "check_ssl_certificate": ["check_website_status", "quick_http_inspect_tool"],
     "publish_telegraph_article": ["create_and_upload_file", "bot_file_fallback_publish"],
     "create_and_upload_file": ["publish_telegraph_article", "bot_file_fallback_publish"],
-    "generate_qr_code_tool": ["bot_qr_fallback"],
+    "generate_barcode_tool": ["generate_qr_code_tool", "bot_qr_fallback"],
+    "reconstruct_damaged_barcode_tool": ["generate_barcode_tool", "generate_qr_code_tool"],
+    "generate_qr_code_tool": ["generate_barcode_tool", "bot_qr_fallback"],
     "search_conversation_history": ["cloudflare_d1_search_records", "cloudflare_d1_list_records"],
     "cloudflare_d1_search_records": ["cloudflare_d1_list_records", "search_conversation_history"],
     "cloudflare_kv_retrieve": ["cloudflare_d1_retrieve_record"],

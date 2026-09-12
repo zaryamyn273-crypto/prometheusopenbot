@@ -1518,6 +1518,21 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
         if _norm in ["تاریخ", "امروز چندمه", "تاریخ امروز", "امروز چندم است", "امروز چندمه؟", "date", "what date is it", "todays date", "today's date", "current date"]:
             _iso, _, _j = database.get_tehran_timestamps()
             return t(ulang, "date_today", jalali=_j, iso=_iso), None
+
+        # Admin Fast Path: Instant Live Group Listing & Public Channels without LLM delay
+        if is_admin(user.id) and _norm in [
+            "لیست گروه", "لیست گروه‌ها", "لیست گروهها", "گروه هام", "گروه های من", "گروه ها", "گروه‌ها", "groups", "my groups", "list groups", "show groups", "group list"
+        ]:
+            from src.tools.admin import group_manager as _gm_fast
+            res_g = await _gm_fast.list_joined_groups_tool(caller_id=user.id)
+            return res_g, None
+
+        if _norm in [
+            "کانال", "کانال‌ها", "کانالها", "کانال های من", "لیست کانال", "لیست کانال‌ها", "channels", "public channels"
+        ]:
+            from src.tools.admin import group_manager as _gm_fast
+            res_c = await _gm_fast.list_public_channels_tool()
+            return res_c, None
     except Exception:
         pass
     # Tier 0b: pingpong (same deterministic rewriter the prefetch uses)
@@ -1610,13 +1625,76 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await reply_safely(message, t(ulang_pv, "pv_locked"))
         return
 
-    # PENDING GROUPS: the bot stays silent until the Master Admin approves.
-    try:
-        _pending_here = (not is_pv) and bool(database.is_group_pending(chat.id))
-    except Exception:
-        _pending_here = False
-    if _pending_here:
-        return
+    # SERVICE MESSAGE: Bot added to group via new_chat_members
+    if message.new_chat_members:
+        for new_member in message.new_chat_members:
+            if new_member.id == context.bot.id:
+                chat_title = chat.title or "گروه"
+                inviter_id = user.id if user else 0
+                inviter_name = (user.first_name or "") if user else ""
+                if inviter_id and is_admin(inviter_id):
+                    await database.track_group_presence_async(chat.id, chat_title, chat_type=str(chat.type), added_by=inviter_id, status="active")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat.id,
+                            text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_hello")),
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception:
+                        pass
+                else:
+                    await database.track_group_presence_async(chat.id, chat_title, chat_type=str(chat.type), added_by=inviter_id, status="pending")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat.id,
+                            text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_pending")),
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await context.bot.send_message(
+                            chat_id=ADMIN_ID,
+                            text=telegram_formatter.markdown_to_telegram_html(
+                                t("fa", "pv_group_request", title=chat_title, cid=chat.id, inviter=inviter_name or inviter_id)
+                            ),
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=admin_panel.get_group_approval_keyboard(chat.id)
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not notify admin of pending group {chat.id}: {e}")
+                return
+
+    # PENDING & UNAPPROVED GROUPS: the bot stays 100% silent until the Master Admin approves.
+    if not is_pv:
+        if database.is_group_pending(chat.id):
+            return
+        # If the group is completely untracked and sender is not admin, auto-register pending & alert admin
+        if chat.id not in database._ACTIVE_GROUPS:
+            if is_admin(user.id):
+                await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="active")
+            else:
+                await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="pending")
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat.id,
+                        text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_pending")),
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+                try:
+                    await context.bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=telegram_formatter.markdown_to_telegram_html(
+                            t("fa", "pv_group_request", title=chat.title or "گروه", cid=chat.id, inviter=user.first_name or user.id)
+                        ),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=admin_panel.get_group_approval_keyboard(chat.id)
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not notify admin of pending group {chat.id}: {e}")
+                return
 
     ulang, ulang_name = _ulang_of(update)
     user_text = message.text or message.caption or ""
@@ -1744,6 +1822,21 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 await database.unmute_target_async("@" + target_user.username)
             await reply_safely(message, t(ulang, "unmute_done"))
             return
+
+        # 3d. Direct Reply User ID & Identity Extraction ("آیدی", "شناسه", "آیدیش چنده", "getid", "whois", "استعلام")
+        elif any(clean_cmd == kw or clean_cmd.startswith(kw) for kw in [
+            "آیدی", "شناسه", "آیدیش چنده", "آیدی عددی", "getid", "whois", "/id", "استعلام", "کیه", "who is", "اطلاعات"
+        ]):
+            replied = message.reply_to_message
+            fwd_user = getattr(replied, "forward_from", None)
+            fwd_chat = getattr(replied, "forward_from_chat", None)
+
+            target_uid = (fwd_user.id if fwd_user else None) or (fwd_chat.id if fwd_chat else None) or (target_user.id if target_user else None)
+            if target_uid:
+                from src.tools.system import extract_user_id_tool
+                res_id = await extract_user_id_tool(target=str(target_uid), caller_id=user.id)
+                await reply_safely(message, res_id, parse_mode=ParseMode.HTML)
+                return
 
         # 3d. Direct Reply Quota (admin sets/shows/adjusts/clears the replied user's daily limit)
         elif (clean_cmd == "سهمیه" or clean_cmd.startswith("سهمیه ") or clean_cmd == "quota" or clean_cmd.startswith("quota ")) and target_user:

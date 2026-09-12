@@ -11,8 +11,9 @@ from src.tools.registry import register_tool
 from src.core import database
 from src.core.http import shared_client_ctx
 from src.tools.media import transcription  # noqa - side effect: registers transcribe_audio_tool
+from src.tools.media import barcode  # noqa - side effect: registers generate_barcode_tool & reconstruct_damaged_barcode_tool
 
-__all__ = ["transcription"]
+__all__ = ["transcription", "barcode"]
 
 logger = logging.getLogger(__name__)
 
@@ -555,13 +556,8 @@ def generate_qr_code_tool(
     :param text_or_url: متن یا آدرس URL برای تبدیل به کد QR
     """
     raw_val = text_or_url or text or url or data or "https://t.me"
-    encoded = urllib.parse.quote(str(raw_val).strip())
-    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={encoded}"
-    return (
-        f"🔳 *بارکد دوبعدی QR Code اختصاصی*:\n\n"
-        f"• *داده رمزگذاری‌شده*: `{raw_val}`\n\n"
-        f"🔗 [مشاهده و دانلود تصویر QR Code با کیفیت بالا]({qr_url})"
-    )
+    from src.tools.media.barcode import generate_barcode_tool
+    return generate_barcode_tool(data=raw_val, barcode_type="qr")
 
 # =========================================================================
 # 4. Song Lyrics Retriever
