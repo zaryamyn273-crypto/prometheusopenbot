@@ -108,6 +108,21 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "stopped": "🤐 چشم — تا اطلاع بعدی ساکت می‌مونم. (ادامه: «پرومته ادامه»)",
         "resumed": "🎙 برگشتم — در خدمتم.",
         "voice_failed": "🎤 ویست رسید ولی تبدیل به متن نشد. یه کم دیگه دوباره بفرست یا متنش رو بنویس.",
+        "group_pending": (
+            "⏳ *پرومته اضافه شد ولی هنوز فعال نیست.*\n"
+            "منتظر تایید ادمین ارشد هستیم؛ تا اون موقع جوابی نمی‌دم.\n\n"
+            "⏳ *Prometheus was added but is not active yet.*\n"
+            "Waiting for the super-admin's approval; silent until then."
+        ),
+        "pv_group_request": (
+            "🆕 *درخواست فعال‌سازی گروه جدید*\n\n"
+            "• *گروه:* {title}\n"
+            "• *شناسه:* `{cid}`\n"
+            "• *اضافه‌کننده:* {inviter}\n\n"
+            "با دکمه زیر فعال یا رد کن:"
+        ),
+        "group_approved_ok": "✅ گروه *{title}* (`{cid}`) فعال شد.",
+        "group_rejected_ok": "🚫 گروه *{title}* (`{cid}`) رد شد؛ ربات خارج شد.",
         "group_hello": (
             "👋 *پرومته فعال شد.*\n"
             "برای حرف زدن باهام: پیامم رو ریپلای کن، منشنم کن، یا اسم «پرومته» رو بیار.\n\n"
@@ -183,6 +198,21 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "stopped": "🤐 Got it — silent until further notice. (Resume: «Prometheus continue»)",
         "resumed": "🎙 I'm back — at your service.",
         "voice_failed": "🎤 Got your voice note but transcription failed. Try again in a bit or type it out.",
+        "group_pending": (
+            "⏳ *پرومته اضافه شد ولی هنوز فعال نیست.*\n"
+            "منتظر تایید ادمین ارشد هستیم؛ تا اون موقع جوابی نمی‌دم.\n\n"
+            "⏳ *Prometheus was added but is not active yet.*\n"
+            "Waiting for the super-admin's approval; silent until then."
+        ),
+        "pv_group_request": (
+            "🆕 *New group activation request*\n\n"
+            "• *Group:* {title}\n"
+            "• *ID:* `{cid}`\n"
+            "• *Added by:* {inviter}\n\n"
+            "Approve or reject below:"
+        ),
+        "group_approved_ok": "✅ Group *{title}* (`{cid}`) activated.",
+        "group_rejected_ok": "🚫 Group *{title}* (`{cid}`) rejected; bot left.",
         "group_hello": (
             "👋 *پرومته فعال شد.*\n"
             "برای حرف زدن باهام: پیامم رو ریپلای کن، منشنم کن، یا اسم «پرومته» رو بیار.\n\n"

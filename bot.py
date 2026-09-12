@@ -1041,8 +1041,9 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def track_chat_member_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Guardian: If the bot is added to any group by anyone OTHER than the Master Admin (ADMIN_ID),
-    it sends an unauthorized notice and immediately leaves the group.
+    Guardian: bot added by the Master Admin -> tracked ACTIVE + hello.
+    Added by anyone else -> tracked PENDING (NO auto-leave): the group sees
+    a waiting notice and the admin gets a PV approval request with buttons.
     """
     result = update.my_chat_member
     if not result:
@@ -1054,24 +1055,47 @@ async def track_chat_member_updates(update: Update, context: ContextTypes.DEFAUL
 
     # When bot is added or promoted in group / supergroup
     if new_status in [constants.ChatMemberStatus.MEMBER, constants.ChatMemberStatus.ADMINISTRATOR]:
-        # The bot is now permitted to join and serve in ALL groups without restriction!
         chat_title = chat.title or "گروه"
-        inviter_id = inviter.id if inviter else ADMIN_ID
-        await database.track_group_presence_async(chat.id, chat_title, chat_type=str(chat.type), added_by=inviter_id)
-        logger.info(f"Bot added/promoted in group {chat.id} ({chat_title}) by user {inviter_id}. Tracked in D1.")
-        try:
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_hello")),
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
+        inviter_id = inviter.id if inviter else 0
+        inviter_name = (inviter.first_name or "") if inviter else ""
+        if inviter_id and is_admin(inviter_id):
+            await database.track_group_presence_async(chat.id, chat_title, chat_type=str(chat.type), added_by=inviter_id, status="active")
+            logger.info(f"Bot added/promoted in group {chat.id} ({chat_title}) by admin {inviter_id}. Active.")
+            try:
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_hello")),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+        else:
+            await database.track_group_presence_async(chat.id, chat_title, chat_type=str(chat.type), added_by=inviter_id, status="pending")
+            logger.info(f"Bot added to group {chat.id} ({chat_title}) by non-admin {inviter_id}. Pending approval.")
+            try:
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_pending")),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=telegram_formatter.markdown_to_telegram_html(
+                        t("fa", "pv_group_request", title=chat_title, cid=chat.id, inviter=inviter_name or inviter_id)
+                    ),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=admin_panel.get_group_approval_keyboard(chat.id)
+                )
+            except Exception as e:
+                logger.warning(f"Could not notify admin of pending group {chat.id}: {e}")
 
     # When bot is removed/kicked from group
     elif new_status in [constants.ChatMemberStatus.LEFT, constants.ChatMemberStatus.BANNED]:
         await database.remove_group_presence_async(chat.id)
-        logger.info(f"Bot left/kicked from group {chat.id}. Removed from D1 tracking.")
+        logger.info(f"Bot left/kicked from group {chat.id}. Marked left, record kept.")
 
 # ==========================================
 # 3. Inline Callback Query Router
@@ -1088,6 +1112,52 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer()
         except Exception:
             pass
+        return
+
+    # Group join approval (admin PV only)
+    if data.startswith("approve_group:") or data.startswith("reject_group:"):
+        if not is_admin(user.id):
+            await query.answer("مختص ادمین ارشد است.", show_alert=True)
+            return
+        try:
+            _cid = int(data.split(":", 1)[1])
+        except Exception:
+            await query.answer("شناسه نامعتبر است.", show_alert=True)
+            return
+        _gtitle = str(_cid)
+        try:
+            for _g in (await database.get_all_tracked_groups_async()):
+                if int(_g.get("chat_id") or 0) == _cid:
+                    _gtitle = _g.get("title") or _gtitle
+                    break
+        except Exception:
+            pass
+        if data.startswith("approve_group:"):
+            await database.set_group_status_async(_cid, "active")
+            try:
+                await context.bot.send_message(
+                    chat_id=_cid,
+                    text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_hello")),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+            await query.answer("گروه فعال شد.")
+            try:
+                await query.edit_message_text(t("fa", "group_approved_ok", title=_gtitle, cid=_cid))
+            except Exception:
+                pass
+        else:
+            await database.set_group_status_async(_cid, "left")
+            try:
+                await context.bot.leave_chat(_cid)
+            except Exception:
+                pass
+            await query.answer("رد شد و ربات خارج شد.")
+            try:
+                await query.edit_message_text(t("fa", "group_rejected_ok", title=_gtitle, cid=_cid))
+            except Exception:
+                pass
         return
 
     # Admin actions
@@ -1330,6 +1400,14 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if is_pv and not is_admin(user.id):
         ulang_pv, _ = _ulang_of(update)
         await reply_safely(message, t(ulang_pv, "pv_locked"))
+        return
+
+    # PENDING GROUPS: the bot stays silent until the Master Admin approves.
+    try:
+        _pending_here = (not is_pv) and bool(database.is_group_pending(chat.id))
+    except Exception:
+        _pending_here = False
+    if _pending_here:
         return
 
     ulang, ulang_name = _ulang_of(update)

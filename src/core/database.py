@@ -36,6 +36,9 @@ _USERNAME_TO_ID_MAP: Dict[str, int] = {}
 _DISPLAY_NAME_TO_ID_MAP: Dict[str, Dict[str, Any]] = {}
 _CHAT_HISTORIES: Dict[int, List[Dict[str, Any]]] = {}
 _ACTIVE_GROUPS: Dict[int, Dict[str, Any]] = {}
+# Chats awaiting admin activation (bot was added by a non-admin).
+# Mirrored from D1 `tracked_groups.status == 'pending'` at startup.
+_PENDING_GROUPS: set = set()
 
 # Asynchronous Write-Behind Batch Message Queue & Worker Guard
 _D1_WRITE_QUEUE: Optional[asyncio.Queue] = None
@@ -599,7 +602,8 @@ def init_db():
         added_by INTEGER,
         added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         username TEXT DEFAULT '',
-        invite_link TEXT DEFAULT ''
+        invite_link TEXT DEFAULT '',
+        status TEXT DEFAULT 'active'
     );
     CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_search ON messages(chat_id, content);
@@ -641,10 +645,11 @@ def init_db():
             if _s:
                 execute_d1_query_sync(_s)
 
-    # Migrate DBs created before username/invite_link existed (no-op if present).
+    # Migrate DBs created before username/invite_link/status existed (no-op if present).
     for _mig in (
         "ALTER TABLE tracked_groups ADD COLUMN username TEXT DEFAULT ''",
         "ALTER TABLE tracked_groups ADD COLUMN invite_link TEXT DEFAULT ''",
+        "ALTER TABLE tracked_groups ADD COLUMN status TEXT DEFAULT 'active'",
     ):
         try:
             execute_d1_query_sync(_mig)
@@ -700,7 +705,7 @@ def sync_memory_from_d1_sync():
             if r.get("username") and r.get("user_id"):
                 _USERNAME_TO_ID_MAP[r["username"].lower().lstrip("@")] = r["user_id"]
 
-    group_res = execute_d1_query_sync("SELECT chat_id, title, chat_type, member_count, added_by, added_at, username, invite_link FROM tracked_groups")
+    group_res = execute_d1_query_sync("SELECT chat_id, title, chat_type, member_count, added_by, added_at, username, invite_link, status FROM tracked_groups")
     if group_res.get("success"):
         for g in group_res["results"]:
             try:
@@ -708,6 +713,8 @@ def sync_memory_from_d1_sync():
                 if _cid is None:
                     continue
                 _ACTIVE_GROUPS[int(_cid)] = g
+                if str(g.get("status") or "active") == "pending":
+                    _PENDING_GROUPS.add(int(_cid))
             except Exception:
                 continue
 
@@ -732,7 +739,7 @@ async def sync_memory_from_d1_async():
             if r.get("username") and r.get("user_id"):
                 _USERNAME_TO_ID_MAP[r["username"].lower().lstrip("@")] = r["user_id"]
 
-    group_res = await execute_d1_query("SELECT chat_id, title, chat_type, member_count, added_by, added_at, username, invite_link FROM tracked_groups")
+    group_res = await execute_d1_query("SELECT chat_id, title, chat_type, member_count, added_by, added_at, username, invite_link, status FROM tracked_groups")
     if group_res.get("success"):
         for g in group_res["results"]:
             try:
@@ -740,51 +747,93 @@ async def sync_memory_from_d1_async():
                 if _cid is None:
                     continue
                 _ACTIVE_GROUPS[int(_cid)] = g
+                if str(g.get("status") or "active") == "pending":
+                    _PENDING_GROUPS.add(int(_cid))
             except Exception:
                 continue
 
 # --- Tracked Groups Management ---
 
-async def track_group_presence_async(chat_id: int, title: str, chat_type: str = "supergroup", added_by: int = 0, username: str = "", invite_link: str = ""):
+async def track_group_presence_async(chat_id: int, title: str, chat_type: str = "supergroup", added_by: int = 0, username: str = "", invite_link: str = "", status: str = "active"):
     clean_chat_id = int(chat_id)
+    clean_status = (status or "active").strip().lower() or "active"
+    if clean_status not in ("active", "pending", "left"):
+        clean_status = "active"
     _ACTIVE_GROUPS[clean_chat_id] = {
         "chat_id": clean_chat_id,
         "title": title,
         "chat_type": chat_type,
         "username": username or "",
         "invite_link": invite_link or "",
+        "status": clean_status,
         "added_at": time.strftime("%Y-%m-%d %H:%M:%S")
     }
+    if clean_status == "pending":
+        _PENDING_GROUPS.add(clean_chat_id)
+    else:
+        _PENDING_GROUPS.discard(clean_chat_id)
     await execute_d1_query(
-        "INSERT OR REPLACE INTO tracked_groups (chat_id, title, chat_type, added_by, username, invite_link) VALUES (?, ?, ?, ?, ?, ?)",
-        [clean_chat_id, title, chat_type, added_by, username or "", invite_link or ""]
+        "INSERT OR REPLACE INTO tracked_groups (chat_id, title, chat_type, added_by, username, invite_link, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [clean_chat_id, title, chat_type, added_by, username or "", invite_link or "", clean_status]
     )
 
-async def remove_group_presence_async(chat_id: int, purge_messages: bool = True):
+async def set_group_status_async(chat_id: int, status: str) -> bool:
+    """Mark a tracked group active/pending/left in RAM + D1. Never deletes."""
+    try:
+        clean_chat_id = int(chat_id)
+    except Exception:
+        return False
+    clean_status = (status or "").strip().lower()
+    if clean_status not in ("active", "pending", "left"):
+        return False
+    rec = _ACTIVE_GROUPS.get(clean_chat_id) or {"chat_id": clean_chat_id, "title": ""}
+    rec["status"] = clean_status
+    _ACTIVE_GROUPS[clean_chat_id] = rec
+    if clean_status == "pending":
+        _PENDING_GROUPS.add(clean_chat_id)
+    else:
+        _PENDING_GROUPS.discard(clean_chat_id)
+    res = await execute_d1_query(
+        "UPDATE tracked_groups SET status = ? WHERE chat_id = ?", [clean_status, clean_chat_id]
+    )
+    if res.get("success"):
+        return True
+    # Row may not exist yet (RAM-only tracking) — insert a minimal row instead.
+    ins = await execute_d1_query(
+        "INSERT OR IGNORE INTO tracked_groups (chat_id, title, status) VALUES (?, ?, ?)",
+        [clean_chat_id, str(rec.get("title") or ""), clean_status]
+    )
+    return bool(ins.get("success"))
+
+def is_group_pending(chat_id: int) -> bool:
+    """Sync RAM check: is this chat awaiting admin activation?"""
+    try:
+        return int(chat_id) in _PENDING_GROUPS
+    except Exception:
+        return False
+
+async def remove_group_presence_async(chat_id: int, purge_messages: bool = False):
     """
-    Cleans up group presence from memory and D1 tracked_groups.
-    Optionally purges all stored messages and RAM context for complete privacy on exit.
+    Mark a group as LEFT on exit/kick. Group info and message history are
+    PRESERVED in D1 by design (purge_messages defaults to False; pass True
+    only for an explicit privacy wipe).
     """
     clean_chat_id = int(chat_id)
-    if clean_chat_id in _ACTIVE_GROUPS:
-        del _ACTIVE_GROUPS[clean_chat_id]
-    
-    # 1. Remove from active tracked_groups table
-    await execute_d1_query("DELETE FROM tracked_groups WHERE chat_id = ?", [clean_chat_id])
+    await set_group_status_async(clean_chat_id, "left")
 
-    # 2. Wipe RAM context history for this group
+    # Wipe RAM context history for this group (memory only, D1 untouched)
     for k in (clean_chat_id, chat_id, str(chat_id), str(clean_chat_id)):
         if k in _CHAT_HISTORIES:
             del _CHAT_HISTORIES[k]
 
-    # 3. If purge_messages is enabled, permanently delete all stored chat records from D1
+    # 3. Only on explicit request: permanently delete stored chat records from D1
     if purge_messages:
         await execute_d1_query("DELETE FROM messages WHERE chat_id = ?", [clean_chat_id])
-        logger.info(f"Group {clean_chat_id} messages and presence purged from Cloudflare D1 and RAM.")
+        logger.info(f"Group {clean_chat_id} messages purged from Cloudflare D1 and RAM.")
 
 async def get_all_tracked_groups_async() -> List[Dict[str, Any]]:
     try:
-        res = await execute_d1_query("SELECT chat_id, title, chat_type, added_at, username, invite_link FROM tracked_groups ORDER BY added_at DESC")
+        res = await execute_d1_query("SELECT chat_id, title, chat_type, added_at, username, invite_link, status FROM tracked_groups ORDER BY added_at DESC")
     except Exception:
         res = {"success": False, "results": []}
     if not res.get("success"):

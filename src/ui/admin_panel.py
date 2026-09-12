@@ -143,6 +143,17 @@ def get_network_tools_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def get_group_approval_keyboard(chat_id: int) -> InlineKeyboardMarkup:
+    """Approve / reject buttons for a pending group join (admin PV only)."""
+    cid = str(int(chat_id))
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ فعال‌سازی گروه", callback_data=f"approve_group:{cid}"),
+            InlineKeyboardButton("❌ رد و خروج", callback_data=f"reject_group:{cid}"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 async def get_system_status_text_async() -> str:
     from src.tools import system
     base = system.admin_system_diagnostics()

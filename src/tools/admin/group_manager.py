@@ -17,6 +17,50 @@ def set_bot_instance(bot):
 def get_bot_instance():
     return _TELEGRAM_BOT_INSTANCE
 
+async def _resolve_live_bot():
+    """Return (bot_client, bot_id) for live membership checks, or (None, None)."""
+    bot_inst = get_bot_instance()
+    if not bot_inst:
+        try:
+            from telegram import Bot
+            from src.core.config import TELEGRAM_BOT_TOKEN
+            bot_inst = Bot(token=TELEGRAM_BOT_TOKEN)
+        except Exception:
+            bot_inst = None
+    if not bot_inst:
+        return None, None
+    try:
+        me = await bot_inst.get_me()
+        return bot_inst, me.id
+    except Exception:
+        return bot_inst, None
+
+
+async def _live_membership(bot_inst, bot_me_id, cid: int):
+    """Live check via Telegram: returns (present, definitive).
+
+    present=True  -> bot is verifiably (or assumably, on transient error) in.
+    definitive=False means the check itself failed -> keep current status.
+    Only definitive LEFT/BANNED/kicked signals flip a group to inactive.
+    """
+    from telegram.constants import ChatMemberStatus
+    if not bot_inst:
+        return True, False
+    try:
+        if bot_me_id:
+            member = await bot_inst.get_chat_member(chat_id=cid, user_id=bot_me_id)
+            if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
+                return False, True
+            return True, True
+        # No bot id (token-only client that can't get_me): probe the chat itself.
+        await bot_inst.get_chat(cid)
+        return True, True
+    except Exception as e:
+        err_str = str(e).lower()
+        if any(k in err_str for k in ["chat not found", "bot was kicked", "bot is not a member", "forbidden", "chat_admin_required", "kicked"]):
+            return False, True
+        return True, False
+
 @register_tool(
     name="list_joined_groups_tool",
     description="مشاهده لیست گروه‌هایی که ربات عضوشان است همراه با لینک عضویت هر گروه (لینک عمومی t.me یا دعوت‌نامه تازه؛ مختص فرمانده ارشد)",
@@ -31,65 +75,56 @@ async def list_joined_groups_tool(caller_id: int = 0, is_private_chat: bool = Fa
     if not groups:
         return "ربات در حال حاضر در هیچ گروهی عضو نیست."
 
-    bot_inst = get_bot_instance()
-    if not bot_inst:
-        try:
-            from telegram import Bot
-            from src.core.config import TELEGRAM_BOT_TOKEN
-            bot_inst = Bot(token=TELEGRAM_BOT_TOKEN)
-        except Exception:
-            bot_inst = None
+    bot_inst, bot_me_id = await _resolve_live_bot()
 
-    bot_me_id = None
-    if bot_inst:
-        try:
-            me = await bot_inst.get_me()
-            bot_me_id = me.id
-        except Exception:
-            bot_me_id = None
-
-    from telegram.constants import ChatMemberStatus
     truly_joined = []
+    pending_lines = []
 
     for g in groups:
         cid = g.get("chat_id")
         if not cid:
             continue
+        try:
+            cid = int(cid)
+        except Exception:
+            continue
         if "channel" in str(g.get("chat_type", "")).lower():
             continue
         if database.is_user_banned(cid):
-            await database.remove_group_presence_async(cid)
+            continue
+        status = str(g.get("status") or "active").lower()
+
+        present, definitive = await _live_membership(bot_inst, bot_me_id, cid)
+        if not present and definitive:
+            # Gone for real (kicked/left/banned) — mark inactive, KEEP the record.
+            try:
+                await database.set_group_status_async(cid, "left")
+            except Exception:
+                pass
+            continue
+        if status == "pending":
+            title = g.get("title") or "گروه"
+            added_by = g.get("added_by") or 0
+            inv = f" — اضافه کننده: `{added_by}`" if added_by else ""
+            pending_lines.append(f"• ⏳ *{title}* (`{cid}`){inv}")
+            continue
+        if status == "left":
             continue
 
-        is_present = True
         actual_title = g.get("title") or "گروه"
-
-        if bot_inst and bot_me_id:
+        if present and definitive and bot_inst:
             try:
-                member = await bot_inst.get_chat_member(chat_id=cid, user_id=bot_me_id)
-                if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
-                    is_present = False
-                    await database.remove_group_presence_async(cid)
-                else:
-                    try:
-                        chat_obj = await bot_inst.get_chat(cid)
-                        if chat_obj and chat_obj.title:
-                            actual_title = chat_obj.title
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_str = str(e).lower()
-                if any(k in err_str for k in ["chat not found", "bot was kicked", "bot is not a member", "forbidden", "chat_admin_required"]):
-                    is_present = False
-                    await database.remove_group_presence_async(cid)
+                chat_obj = await bot_inst.get_chat(cid)
+                if chat_obj and chat_obj.title:
+                    actual_title = chat_obj.title
+            except Exception:
+                pass
+        g["title"] = actual_title
+        truly_joined.append(g)
 
-        if is_present:
-            g["title"] = actual_title
-            truly_joined.append(g)
-
-    if not truly_joined:
-        return "ربات در حال حاضر در هیچ گروه فعالی عضو نیست."
-
+    lines = []
+    if truly_joined:
+        lines = ["👥 *لیست گروه‌هایی که ربات واقعاً در آنها حضور دارد:*\n"]
     # Resolve a join link per group: public username first (t.me/xxx),
     # else a fresh invite link minted live via Telegram (cached in D1).
     # Needs a live Bot API client; without one we still list groups (no link).
@@ -125,7 +160,6 @@ async def list_joined_groups_tool(caller_id: int = 0, is_private_chat: bool = Fa
             logger.debug(f"Invite export failed for {cid}: {_e}")
         return ""
 
-    lines = ["👥 *لیست گروه‌هایی که ربات واقعاً در آنها حضور دارد:*\n"]
     for i, g in enumerate(truly_joined, 1):
         cid = g.get("chat_id")
         title = g.get("title") or "گروه"
@@ -134,6 +168,13 @@ async def list_joined_groups_tool(caller_id: int = 0, is_private_chat: bool = Fa
             lines.append(f"{i}. 🌟 *{title}*\n   • شناسه عددی: `{cid}`\n   • لینک عضویت: {_link}\n")
         else:
             lines.append(f"{i}. 🌟 *{title}*\n   • شناسه عددی: `{cid}`\n   • لینک عضویت: در دسترس نیست (ربات ادمین گروه نیست)\n")
+
+    if pending_lines:
+        lines.append("\n⏳ *در انتظار تایید ادمین:*\n")
+        lines.extend(pending_lines)
+
+    if not lines:
+        return "ربات در حال حاضر در هیچ گروه فعالی عضو نیست."
 
     return "\n".join(lines)
 
@@ -270,4 +311,4 @@ async def leave_group_by_admin_tool(
     await database.remove_group_presence_async(target_chat_id)
 
     name_str = f"«{target_title}» " if target_title else ""
-    return f"🚪 *فرمان خروج اجرا شد:*\nربات با موفقیت از گروه {name_str}(شناسه: `{target_chat_id}`) خارج گردید و تمامی سوابق پیام‌ها و حضور آن از دیتابیس D1 و حافظه RAM پاکسازی شد."
+    return f"🚪 *فرمان خروج اجرا شد:*\nربات از گروه {name_str}(شناسه: `{target_chat_id}`) خارج شد. رکورد گروه به صورت غیرفعال در دیتابیس نگه داشته شد."
