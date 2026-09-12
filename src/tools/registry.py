@@ -272,9 +272,12 @@ CATEGORY_KEYWORDS = {
         "ساعت", "تاریخ", "تقویم", "امروز چندمه", "ساعت چنده", "time", "date"
     ],
     "scheduler": [
-        "یادآوری", "یادم بنداز", "زمانبندی", "زمان‌بندی", "کرون", "کرون‌جاب", "cron", "remind", "reminder", "schedule",
+        "یادآوری", "یادم بنداز", "زمانبندی", "زمان‌بندی", "کرون", "کرون‌جاب", "کرون جاب", "cron", "cronjob", "remind", "reminder", "schedule", "scheduler",
         "تسک", "هر روز ساعت", "دقیقه دیگه", "ساعت بعد", "تسک زمان‌بندی‌شده", "لیست یادآوری", "لغو یادآوری",
-        "فردا ساعت", "پس فردا ساعت", "ساعت دیگه"
+        "فردا ساعت", "پس فردا ساعت", "ساعت دیگه", "پیام زمان‌بندی", "پیام زمانبندی", "پیام زمان‌بندی‌شده",
+        "پیام زمانبندی شده", "تنظیم پیام", "ارسال پیام", "بفرست به گروه", "بفرست تو گروه", "فرستادن پیام",
+        "تسک گروه", "زمانبندی گروه", "تایم زون", "منطقه زمانی", "timezone", "tz",
+        "هر روز", "روزانه", "daily", "every"
     ],
     "database": [
         "سوابق", "پیام های قبلی", "تاریخچه", "قبلا", "دیروز", "چت", "دیتابیس", "ذخیره در دیتابیس", "کانفیگ",
@@ -407,6 +410,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         "admin": ["چطوره", "خوبه", "سالمه", "وضعیت"],
         "time": ["امروز", "فردا", "دیروز", "الان", "فعلا", "کی"],
         "database": ["یادداشت", "یادم", "ذخیره", "بنویس", "ثبت"],
+        "scheduler": ["یادآوری", "یادم", "کرون", "تسک", "زمانبندی", "زمان‌بندی", "remind", "schedule", "cron", "تنظیم کن"],
     }
     for cat, hints in _implicit.items():
         if any(h in prompt_lower for h in hints):
@@ -439,6 +443,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         "github": {"search"},
         "security": {"network"},
         "database": {"time"},
+        "scheduler": {"time"},
     }
     for cat in list(relevant_categories):
         relevant_categories.update(_coactivate.get(cat, set()))

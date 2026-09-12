@@ -606,7 +606,7 @@ async def get_banned_users_list_tool(caller_id: int = 0, is_private_chat: bool =
 @register_tool(
     name="schedule_task_tool",
     description="زمان‌بندی یادآوری، تسک یا گزارش‌های خودکار (کرون جاب) با پشتیبانی چندزبانه و بین‌المللی از ساعت شهرها و مناطق زمانی مختلف (تهران، لندن، نیویورک، دبی، برلین، توکیو یا UTC)، زمان نسبی (۱۰ دقیقه دیگه)، ساعت دقیق (فردا ساعت ۱۲:۰۰) یا الگوهای تکرارشونده",
-    category="system"
+    category="scheduler"
 )
 async def schedule_task_tool(
     title: str,
@@ -658,7 +658,7 @@ async def schedule_task_tool(
 @register_tool(
     name="set_user_timezone_tool",
     description="تنظیم یا تغییر منطقه زمانی (تایم‌زون) کاربر برای زمان‌بندی دقیق تسک‌ها و یادآوری‌ها بر اساس ساعت شهر یا کشور دلخواه (مانند تهران، لندن، برلین، نیویورک، دبی، توکیو یا UTC)",
-    category="system"
+    category="scheduler"
 )
 async def set_user_timezone_tool(
     timezone_or_city: str,
@@ -686,7 +686,7 @@ async def set_user_timezone_tool(
 @register_tool(
     name="list_scheduled_tasks_tool",
     description="مشاهده فهرست تسک‌ها و یادآوری‌های زمان‌بندی‌شده فعال در چت یا برای کاربر",
-    category="system"
+    category="scheduler"
 )
 async def list_scheduled_tasks_tool(
     chat_id: int = 0,
@@ -714,7 +714,7 @@ async def list_scheduled_tasks_tool(
 @register_tool(
     name="cancel_scheduled_task_tool",
     description="لغو و حذف یک تسک یا یادآوری زمان‌بندی‌شده بر اساس شناسه عددی آن",
-    category="system"
+    category="scheduler"
 )
 async def cancel_scheduled_task_tool(
     task_id: int,

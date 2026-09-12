@@ -71,11 +71,60 @@ _PATTERNS_EXTRA = [
 ]
 
 
+def deduplicate_repeated_text(text: str) -> str:
+    """Eliminates LLM stutter/loop repetitions, doubled sentences, or identical consecutive halves."""
+    if not text or not isinstance(text, str) or len(text) < 10:
+        return text
+    t = text.strip()
+
+    # Never tamper with markdown code blocks
+    if "```" in t:
+        return text
+
+    # 1. Exact halving (e.g. "در خدمتم. درخواستت رو مستقیم مطرح کن.در خدمتم. درخواستت رو مستقیم مطرح کن.")
+    n = len(t)
+    if n >= 12 and n % 2 == 0:
+        half = n // 2
+        if t[:half] == t[half:]:
+            return deduplicate_repeated_text(t[:half])
+
+    # 2. Exact chunk repetition: (chunk)(chunk)+ or (chunk)\s+(chunk)+
+    m = re.match(r"^(.{8,}?)(?:[\s\n]*)\1+$", t, re.DOTALL)
+    if m:
+        return deduplicate_repeated_text(m.group(1))
+
+    # 3. Sentence-level consecutive duplicate removal (e.g. "A. A. B.")
+    parts = re.split(r"([.!?؟\n]+)", t)
+    if len(parts) >= 4:
+        deduped = []
+        i = 0
+        while i < len(parts):
+            chunk = parts[i]
+            delim = parts[i + 1] if i + 1 < len(parts) else ""
+            unit = (chunk + delim).strip()
+
+            next_chunk = parts[i + 2] if i + 2 < len(parts) else ""
+            next_delim = parts[i + 3] if i + 3 < len(parts) else ""
+            next_unit = (next_chunk + next_delim).strip()
+
+            if unit and unit == next_unit and len(unit) >= 8:
+                deduped.append(chunk + delim)
+                i += 4  # skip duplicated unit
+            else:
+                deduped.append(chunk + delim)
+                i += 2
+        res = "".join(deduped).strip()
+        if res != t:
+            return deduplicate_repeated_text(res)
+
+    return text
+
+
 def sanitize_output(text: str) -> str:
-    """Scrub all sensitive keys, tokens, and credentials from outgoing text."""
+    """Scrub all sensitive keys, tokens, credentials, and stutter loops from outgoing text."""
     if not text:
         return text
-    sanitized = text
+    sanitized = deduplicate_repeated_text(text)
 
     # Exact match from active configuration
     for sec in _build_secrets_list():

@@ -139,6 +139,11 @@ async def reply_safely(message, text: str, reply_markup=None):
     """Safely formats markdown to HTML and sends message with fallback + 4096-char chunking."""
     if not text or not str(text).strip():
         return None
+    try:
+        from src.core.security import deduplicate_repeated_text
+        text = deduplicate_repeated_text(text)
+    except Exception:
+        pass
     formatted = telegram_formatter.markdown_to_telegram_html(text)
 
     async def _send_one(chunk: str, markup=None):
