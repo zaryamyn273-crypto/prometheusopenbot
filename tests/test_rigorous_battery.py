@@ -336,7 +336,8 @@ async def run_tool_test(tool_name, case, sem):
             return {"tool": tool_name, "case": case, "status": "ERROR", "reason": f"{type(e).__name__}: {str(e)}", "duration": time.time() - t0}
 
 async def main():
-    import src.tools  # Ensure all tools registered
+    from src.tools.registry import ensure_all
+    ensure_all()  # lazy registry: load the full cabinet explicitly for stress
     sem = asyncio.Semaphore(8)  # High concurrency
     tasks = []
     

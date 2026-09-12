@@ -22,7 +22,16 @@ from src.core.config import (
     has_e2b,
 )
 from src.core import database
-from src.core import ai_service
+# NOTE: ai_service is intentionally NOT imported here — it pulls PIL/httpx and
+# is only needed for full AI turns. Access via `from src.core import ai_service`
+# (lazy __getattr__ below) or `from src.core.ai_service import …` directly.
+import importlib as _importlib
+
+
+def __getattr__(name: str):
+    if name == "ai_service":
+        return _importlib.import_module("src.core.ai_service")
+    raise AttributeError(f"module 'src.core' has no attribute {name!r}")
 
 __all__ = [
     "TELEGRAM_BOT_TOKEN",

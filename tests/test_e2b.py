@@ -31,8 +31,10 @@ def _has_pkg() -> bool:
 
 
 async def _run():
-    import src.tools  # noqa: ensure registration (system -> e2b_sandbox)
-    from src.tools.registry import REGISTRY, execute_registered_tool
+    # Lazy registry: nothing is registered on plain import anymore —
+    # tests needing the full cabinet call ensure_all() explicitly.
+    from src.tools.registry import REGISTRY, execute_registered_tool, ensure_all
+    ensure_all()
 
     # NOTE: caller_id must be passed as kwarg — execute_registered_tool injects
     # it into the tool call from there, NOT from the args dict.

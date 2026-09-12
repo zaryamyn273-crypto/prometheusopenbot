@@ -1,7 +1,7 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from src.core import database
-from src.tools import system
-from src.tools.admin import group_manager
+# NOTE: system + group_manager are imported lazily inside functions (psutil and
+# friends stay unloaded until an admin actually opens telemetry/groups).
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
@@ -144,6 +144,7 @@ def get_network_tools_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 async def get_system_status_text_async() -> str:
+    from src.tools import system
     base = system.admin_system_diagnostics()
     try:
         health = await database.get_cache_health_async()
@@ -200,6 +201,7 @@ async def get_banned_users_text_async() -> str:
 
 async def get_connected_groups_text_async(bot=None) -> str:
     from src.core.config import ADMIN_ID
+    from src.tools.admin import group_manager
     res = await group_manager.list_joined_groups_tool(caller_id=ADMIN_ID, bot=bot)
     return res
 

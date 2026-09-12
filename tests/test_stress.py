@@ -176,7 +176,8 @@ async def run_one(name, sem):
 
 
 async def main():
-    import src.tools  # noqa: ensure all tool packages registered
+    from src.tools.registry import ensure_all
+    ensure_all()  # lazy registry: load the full cabinet explicitly for stress
     names = sorted(REGISTRY.keys())
     missing = [n for n in names if n not in CASES]
     sem = asyncio.Semaphore(6)  # heavy but bounded parallelism

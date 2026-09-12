@@ -1,13 +1,106 @@
 import inspect
 import functools
+import importlib
 import logging
 import re
+import threading
 from typing import Callable, Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Global registry of all executable tools
 REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+# =========================================================================
+# Lazy tool loading: tool modules are imported ONLY when actually needed.
+# Importing every module at startup (httpx pools, bs4, PIL, psutil, jdatetime…)
+# wastes RAM/time on Railway and pulls full power for trivial turns.
+# Keyword-category -> tool modules serving it. A category may map to several
+# modules (e.g. admin tools live in system + group_manager + database).
+# =========================================================================
+
+_CATEGORY_MODULES: Dict[str, List[str]] = {
+    "financial": ["src.tools.financial"],
+    "crypto": ["src.tools.financial"],
+    "weather": ["src.tools.web_network"],
+    "search": ["src.tools.web_network"],
+    "network": ["src.tools.web_network"],
+    "media": ["src.tools.media"],
+    "security": ["src.tools.scientific"],
+    "scientific": ["src.tools.scientific"],
+    "math": ["src.tools.scientific"],
+    "time": ["src.tools.scientific"],
+    "github": ["src.tools.github"],
+    "admin": ["src.tools.system", "src.tools.admin.group_manager", "src.tools.database"],
+    "files": ["src.tools.files"],
+    "database": ["src.tools.database"],
+    "dev": ["src.tools.dev", "src.tools.system"],
+    "internal": ["src.tools.internal"],
+}
+
+# Ordered unique module list (stable order => deterministic fallback behavior).
+_MODULE_PATHS: List[str] = []
+for _paths in _CATEGORY_MODULES.values():
+    for _p in _paths:
+        if _p not in _MODULE_PATHS:
+            _MODULE_PATHS.append(_p)
+
+_LOADED_MODULES: set = set()
+_LOAD_LOCK = threading.Lock()
+
+
+def ensure_module(path: str) -> bool:
+    """Import one tool module (idempotent, thread-safe). Returns True if loaded."""
+    with _LOAD_LOCK:
+        if path in _LOADED_MODULES:
+            return True
+    try:
+        importlib.import_module(path)
+    except Exception as e:
+        logger.warning(f"Lazy tool module failed to load ({path}): {e}")
+        return False
+    with _LOAD_LOCK:
+        _LOADED_MODULES.add(path)
+    return True
+
+
+def ensure_category(cat: str) -> bool:
+    """Ensure every module serving a keyword-category is loaded."""
+    ok = True
+    for path in _CATEGORY_MODULES.get(cat, []):
+        ok = ensure_module(path) and ok
+    return ok
+
+
+def ensure_categories(cats) -> None:
+    for cat in cats or []:
+        ensure_category(cat)
+
+
+def ensure_tool(name: str) -> bool:
+    """Ensure the module owning tool `name` is loaded (bounded scan, cached)."""
+    if name in REGISTRY:
+        return True
+    for path in _MODULE_PATHS:
+        with _LOAD_LOCK:
+            if path in _LOADED_MODULES:
+                continue
+        ensure_module(path)
+        if name in REGISTRY or _find_tool_fuzzy(name) is not None:
+            return True
+    return name in REGISTRY
+
+
+def ensure_all() -> None:
+    """Load every tool module (tests, stall-escalation, full-cabinet turns)."""
+    for path in _MODULE_PATHS:
+        ensure_module(path)
+
+
+def loaded_modules() -> List[str]:
+    """Loaded tool-module paths (introspection/testing)."""
+    with _LOAD_LOCK:
+        return sorted(_LOADED_MODULES)
 
 def _python_type_to_json_type(py_type: Any) -> str:
     """Map Python type annotations to JSON Schema primitive types."""
@@ -93,6 +186,7 @@ def register_tool(
 
 def get_all_tool_definitions(include_internal: bool = False) -> List[Dict[str, Any]]:
     """Return list of all tool schemas formatted for OpenAI tool calling."""
+    ensure_all()
     if include_internal:
         return [t["schema"] for t in REGISTRY.values()]
     return [t["schema"] for t in REGISTRY.values() if t.get("category") != "internal"]
@@ -321,10 +415,15 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     _intent_hits = len(relevant_categories - {"time"})
     _complex = _intent_hits >= 4 or len(prompt_lower) > 200
 
-    # Core bundle that are fast & frequently used
+    # Core bundle that are fast & frequently used (live in scientific).
     core_names = {
         "get_current_datetime_info", "calculate_math_expression"
     }
+    # The schemas below are read from REGISTRY, so their owner modules must be
+    # loaded first — but ONLY those modules (this is what keeps lazy loading lazy).
+    # scientific is near-free (stdlib + pytz/jdatetime, already pulled by database).
+    ensure_categories(relevant_categories)
+    ensure_category("scientific")
 
     # Pure casual conversation / greeting detector: zero tool overhead = ultra fast sub-second turn
     pure_conversational = [
@@ -340,6 +439,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
             _SMART_FILTER_CACHE[cache_key] = []
             return []  # No tools needed for pure greetings/chat: instant response!
         # For generic questions, provide only web_search & clock without clutter
+        ensure_categories({"search"})  # web_search/tavily live here
         core_names.update({"tavily_search", "web_search", "get_current_datetime_info"})
         out = [t["schema"] for name, t in REGISTRY.items() if name in core_names]
         _SMART_FILTER_CACHE[cache_key] = out
@@ -347,6 +447,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
 
     if _complex:
         # Complex prompt: give the model the whole cabinet, it decides.
+        ensure_all()
         out = [t["schema"] for t in REGISTRY.values() if t.get("category") != "internal" and (is_admin or t.get("category") != "admin")]
         _SMART_FILTER_CACHE[cache_key] = out
         return out
@@ -390,6 +491,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
 
 def get_tools_by_category(category: str) -> List[Dict[str, Any]]:
     """Return all tools belonging to a specific category."""
+    ensure_all()
     return [t for t in REGISTRY.values() if t["category"] == category]
 
 def _find_tool_fuzzy(name: str) -> Optional[Dict[str, Any]]:
@@ -506,6 +608,10 @@ async def execute_registered_tool(
     and structured error handling.
     """
     tool_meta = _find_tool_fuzzy(name)
+    if tool_meta is None:
+        # Lazy loading: the owner module may simply not be imported yet.
+        ensure_tool(name)
+        tool_meta = _find_tool_fuzzy(name)
     if not tool_meta:
         logger.warning(f"Tool not found in registry: {name}")
         return f"ابزار {name} یافت نشد."
@@ -597,6 +703,10 @@ async def execute_registered_tool(
     for fallback_name in TOOL_FALLBACKS.get(name, [])[:2]:
         try:
             fb_meta = REGISTRY.get(fallback_name)
+            if fb_meta is None:
+                # Fallback target may live in a not-yet-loaded module.
+                ensure_tool(fallback_name)
+                fb_meta = REGISTRY.get(fallback_name)
             if not fb_meta:
                 continue
             fb_kwargs: Dict[str, Any] = {}

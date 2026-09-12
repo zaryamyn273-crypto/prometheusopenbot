@@ -30,15 +30,10 @@ from src.core.config import (
     RATE_LIMIT_USER_MAX_REQUESTS,
     RATE_LIMIT_ADMIN_MAX_REQUESTS
 )
-from src.core import database, ai_service, config
+from src.core import database, config
 from src.core.i18n import normalize_lang, lang_name, t
-from src.tools import (
-    financial,
-    web_network,
-    scientific,
-    media,
-    system,
-)
+# NOTE: ai_service + tool modules are imported lazily inside handlers
+# (see _maybe_translate / triage) so trivial turns never load the full stack.
 from src.ui import admin_panel
 from src.utils import telegram_formatter
 from src.utils.display_name import username_to_persian_name
@@ -107,6 +102,7 @@ async def _maybe_translate(update, text: str) -> str:
         ulang, ulang_name = _ulang_of(update)
         if ulang == "fa" or not isinstance(text, str) or not text.strip():
             return text
+        from src.core import ai_service
         return await ai_service.translate_text(text, ulang_name)
     except Exception:
         return text
@@ -514,6 +510,7 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_VOICE)
+    from src.tools import media
     res = await media.download_music_track(query)
     if isinstance(res, dict) and res.get("caption"):
         # Same track, user's language on the caption (audio itself is universal).
@@ -590,17 +587,20 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     sym = " ".join(context.args).strip() if context.args else "BTC"
+    from src.tools import financial
     res = await financial.get_price(sym)
     await reply_safely(message, await _maybe_translate(update, res))
 
 async def gold_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
+    from src.tools import financial
     res = await financial.get_gold_and_coin_price()
     await reply_safely(message, await _maybe_translate(update, res))
 
 async def weather_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     city = " ".join(context.args).strip() if context.args else "Tehran"
+    from src.tools import web_network
     res = await web_network.get_weather(city)
     await reply_safely(message, await _maybe_translate(update, res))
 
@@ -611,6 +611,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ulang, _ = _ulang_of(update)
         await reply_safely(message, t(ulang, "search_usage"))
         return
+    from src.tools import web_network
     res = await web_network.web_search(q)
     res = await _maybe_translate(update, f"🔍 *نتایج جستجوی وب برای «{q}»:*\n\n{res}")
     await reply_safely(message, res)
@@ -622,6 +623,7 @@ async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ulang, _ = _ulang_of(update)
         await reply_safely(message, t(ulang, "calc_usage"))
         return
+    from src.tools import scientific
     res = scientific.calculate_math_expression(expr)
     await reply_safely(message, await _maybe_translate(update, res))
 
@@ -686,6 +688,7 @@ async def net_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ulang, _ = _ulang_of(update)
         await reply_safely(message, t(ulang, "net_usage"))
         return
+    from src.tools import web_network
     status = await web_network.check_website_status(target)
     dns = await web_network.resolve_dns(target)
     await reply_safely(message, await _maybe_translate(update, f"{status}\n\n{dns}"))
@@ -707,6 +710,7 @@ async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     caller_id = user.id if user else 0
     is_pv = (chat.type == ChatType.PRIVATE)
+    from src.tools import system
     res = await system.execute_python_code(code_text, caller_id=caller_id, is_private_chat=is_pv)
     await reply_safely(message, res)
 
@@ -726,6 +730,7 @@ async def sh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cmd_text = message.reply_to_message.text or ""
 
     # Red line 3: destructive shell stays blocked even for the Master Admin.
+    from src.tools import system
     if system.is_destructive_shell_command(cmd_text.strip()):
         await reply_safely(message, "⛔ این دستور شل مخرب/حساس است و هرگز اجرا نمی‌شود (حتی به دستور ادمین).")
         return
@@ -859,6 +864,7 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Call high-speed instant ban
+    from src.tools import system
     res = await system.ban_user_tool(
         target=target_str,
         reason=reason,
@@ -894,6 +900,7 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_safely(message, "⚠️ فرمت دستور:\n<code>/unban &lt;شناسه یا @username&gt;</code>\nیا روی پیام کاربر دستور /unban را ریپلای کنید.")
         return
 
+    from src.tools import system
     res = await system.unban_user_tool(
         target=target_str,
         caller_id=user.id
@@ -923,6 +930,7 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     secs = database.parse_mute_duration_to_sec(dur_text) if dur_text else 0
     if not secs:
         secs = 1800
+    from src.tools import system
     res = await system.mute_user_tool(target=target_str, duration_sec=secs, first_name=first_name, caller_id=user.id, chat_id=chat.id if chat else 0, source_chat_title=chat.title if chat else "")
     await reply_safely(message, res)
 
@@ -941,6 +949,7 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await reply_safely(message, "⚠️ فرمت: <code>/unmute &lt;شناسه یا @username&gt;</code> یا روی پیام کاربر ریپلای کنید.")
         return
+    from src.tools import system
     res = await system.unmute_user_tool(target=target_str, caller_id=user.id)
     await reply_safely(message, res)
 
@@ -950,6 +959,7 @@ async def mutelist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if not user or not message or not is_admin(user.id):
         return
+    from src.tools import system
     res = await system.get_muted_users_list_tool(caller_id=user.id)
     await reply_safely(message, res)
 
@@ -979,6 +989,7 @@ async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_safely(message, "⚠️ فرمت دستور:\n<code>/id &lt;نام فرد یا @username&gt;</code>\nیا روی پیام فرد ریپلای کنید.")
         return
 
+    from src.tools import system
     res = await system.extract_user_id_tool(target=query, caller_id=user.id)
     await reply_safely(message, res)
 
@@ -1124,7 +1135,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
         elif data == "admin_channels_list":
             await query.answer("استعلام کانال‌ها...")
-            ch_res = await system.list_public_channels_tool(caller_id=ADMIN_ID)
+            from src.tools import system as _sys_cb
+            ch_res = await _sys_cb.list_public_channels_tool(caller_id=ADMIN_ID)
             await query.edit_message_text(ch_res, reply_markup=admin_panel.get_admin_panel_keyboard(), parse_mode=ParseMode.HTML)
 
         elif data == "admin_d1_recent":
@@ -1150,7 +1162,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if data.startswith("qweather_"):
         await query.answer(t(normalize_lang(user.language_code), "loading"))
         city = data.replace("qweather_", "")
-        res = await web_network.get_weather(city)
+        from src.tools import web_network as _wn_qw
+        res = await _wn_qw.get_weather(city)
         await reply_safely(query.message, await _maybe_translate(update, res), reply_markup=admin_panel.get_weather_quick_keyboard())
         return
 
@@ -1161,15 +1174,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(telegram_formatter.markdown_to_telegram_html(t(ulang_tb, "toolbox_title")), reply_markup=admin_panel.get_tools_keyboard(), parse_mode=ParseMode.HTML)
     elif data == "tool_crypto":
         await query.answer(t(normalize_lang(user.language_code), "loading"))
-        res = await financial.get_crypto_overview()
+        from src.tools import financial as _fin_cb
+        res = await _fin_cb.get_crypto_overview()
         await reply_safely(query.message, await _maybe_translate(update, res))
     elif data == "tool_gold":
         await query.answer(t(normalize_lang(user.language_code), "loading"))
-        res = await financial.get_gold_and_coin_price()
+        res = await _fin_cb.get_gold_and_coin_price()
         await reply_safely(query.message, await _maybe_translate(update, res))
     elif data == "tool_news":
         await query.answer(t(normalize_lang(user.language_code), "loading"))
-        res = await web_network.live_news("general")
+        from src.tools import web_network as _wn_news
+        res = await _wn_news.live_news("general")
         await reply_safely(query.message, await _maybe_translate(update, f"📰 *اخبار فوری جهان:*\n\n{res}"))
     elif data == "tool_weather_menu":
         await query.answer()
@@ -1181,7 +1196,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await reply_safely(query.message, t(ulang_nm, "network_menu"), reply_markup=admin_panel.get_network_tools_keyboard())
     elif data == "tool_time":
         await query.answer(t(normalize_lang(user.language_code), "loading"))
-        t_info = scientific.get_current_datetime_info()
+        from src.tools import scientific as _sci_cb
+        t_info = _sci_cb.get_current_datetime_info()
         await reply_safely(query.message, await _maybe_translate(update, t_info))
     elif data in ["tool_net_ip_prompt", "tool_net_dns_prompt", "tool_net_ssl_prompt"]:
         await query.answer()
@@ -1205,6 +1221,70 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 # ==========================================
 # 4. Main Message & Vision Pipeline
 # ==========================================
+
+async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang, image_bytes, has_reply):
+    """Tier 0/1 triage: answer trivial turns with the minimum possible machinery.
+
+    Returns (text, extra_action) or None when a full Tier-2 AI turn is needed.
+    - Tier 0a (clock/date): database timestamps only, <1ms, zero imports.
+    - Tier 0b (social chatter): internal query-rewriter only, no network.
+    - Tier 1 (market boards): exactly ONE tool module (financial) is loaded.
+    Non-Persian market text gets one cheap translation call (still no
+    history, no tool loop, no reasoning rounds).
+    """
+    try:
+        _norm = re.sub(r"[!؟?،,.]+", "", user_text or "").strip().lower()
+    except Exception:
+        return None
+    if not _norm or len(_norm) >= 50 or image_bytes or has_reply:
+        return None
+    try:
+        # Tier 0a: time / date
+        if _norm in ["ساعت", "ساعت چنده", "ساعت چند است", "ساعت الان", "تایم", "time", "what time is it", "current time", "time now", "whats the time"]:
+            _, _hm, _ = database.get_tehran_timestamps()
+            return t(ulang, "time_is", hm=_hm), None
+        if _norm in ["تاریخ", "امروز چندمه", "تاریخ امروز", "امروز چندم است", "امروز چندمه؟", "date", "what date is it", "todays date", "today's date", "current date"]:
+            _iso, _, _j = database.get_tehran_timestamps()
+            return t(ulang, "date_today", jalali=_j, iso=_iso), None
+    except Exception:
+        pass
+    # Tier 0b: pingpong (same deterministic rewriter the prefetch uses)
+    try:
+        from src.tools import internal as _internal
+        _rw = _internal.bot_query_rewriter(user_text)
+        if isinstance(_rw, str) and _rw.startswith("__PINGPONG__"):
+            _pp = (_rw.replace("__PINGPONG__", "").strip() or (user_text or "").strip())
+            return _pingpong_reply(_pp, user_display, user.id, ulang), None
+    except Exception:
+        pass
+    # Tier 1: single-board market queries (financial module only)
+    try:
+        _fin_map = [
+            (["قیمت دلار", "دلار", "دلار چنده", "نرخ دلار", "دلار تهران", "دلار چند"], "get_dollar_price", ()),
+            (["قیمت طلا", "طلا", "سکه", "قیمت سکه", "طلا چنده", "سکه امامی"], "get_gold_and_coin_price", ()),
+            (["ارزها", "تابلوی ارز", "قیمت ارزها", "قیمت یورو", "درهم", "قیمت تتر", "تتر"], "get_fiat_overview", ()),
+            (["بیتکوین", "بیت کوین", "قیمت بیتکوین", "قیمت بیت کوین", "btc", "bitcoin"], "get_price", ("BTC",)),
+            (["اتریوم", "قیمت اتریوم", "eth", "ethereum"], "get_price", ("ETH",)),
+            (["سولانا", "sol", "قیمت سولانا"], "get_price", ("SOL",)),
+            (["کریپتو", "تابلوی رمزارز", "بازار کریپتو"], "get_crypto_overview", ()),
+        ]
+        for _triggers, _fname, _fargs in _fin_map:
+            if _norm in _triggers:
+                from src.tools import financial as _fin_mod
+                _fn = getattr(_fin_mod, _fname)
+                _out = await _fn(*_fargs)
+                if isinstance(_out, str) and _out.strip() and ulang != "fa":
+                    try:
+                        from src.core import ai_service as _ai_tr2
+                        _out = await _ai_tr2.translate_text(_out, lang_name(
+                            getattr(user, "language_code", "") or "fa"))
+                    except Exception:
+                        pass
+                return _out, None
+    except Exception:
+        pass
+    return None
+
 
 async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -1814,6 +1894,30 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # Zero-Wait Asynchronous Message Archiving (Fire-and-forget: does not block the critical response path)
     asyncio.create_task(database.save_message_async(chat.id, user.id, "user", user_text, user_name=user_display, username=user_uname, chat_title=chat_title, message_id=message.message_id or 0, chat_type=_save_ctype, msg_kind=_save_kind, reply_to_msg_id=_rq_mid, reply_to_user=_rq_user, reply_to_text=_rq_text))
 
+    # --- Tier 0/1 triage FIRST: trivial turns are answered here with minimal
+    # power (no prefetch tasks, no typing loop, no KV writes, no AI import).
+    # Only a miss falls through to the Tier-2 machinery below.
+    _tri_res = await _triage_fast_turn(
+        message, chat, user, user_text, user_display, ulang,
+        image_bytes, bool(message.reply_to_message))
+    if _tri_res is not None:
+        _tri_text, _tri_extra = _tri_res
+        try:
+            await database.save_message_async(chat.id, context.bot.id, "assistant", _tri_text, user_name="Prometheus", chat_title=chat_title, message_id=0)
+        except Exception:
+            pass
+        try:
+            _tri_ok = await _deliver_ai_turn(message, chat, context, _tri_text, _tri_extra, chat_title)
+        except Exception as _e:
+            logger.error(f"Fast-turn delivery crashed: {_e}")
+            _tri_ok = False
+        if not _tri_ok:
+            try:
+                await reply_safely(message, t(ulang, "delivery_failed"))
+            except Exception:
+                pass
+        return
+
     # Background self-use prefetch: rewrite + intent-tag + tool-hint while the
     # typing indicator runs, so the AI turn starts with hot context and the
     # model sees a concrete tool suggestion for the exact normalized query.
@@ -1865,66 +1969,25 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception:
             pass
         # Run AI Super Agent (numeric-ID admin check + Persian addressing hint + on-demand memory)
+        # NOTE: Tier 0/1 (clock, chatter, market boards) already returned above —
+        # this Tier-2 block is full-power only: prefetch hints + multi-round AI.
         has_reply = bool(message.reply_to_message)
-        # --- Sub-Millisecond Deterministic Fast-Path (Zero-LLM Latency Bypass) ---
-        # Deterministic single-intent requests (price, time, date, gold, crypto) bypass LLM inference entirely
-        # returning verified results in < 50ms without burning router tokens or adding network roundtrips.
-        _norm_user = re.sub(r"[!؟?،,.]+", "", user_text).strip().lower()
-        _fast_res = None
-        if not image_bytes and not bool(message.reply_to_message) and len(_norm_user) < 50:
-            # 1. Time / Date Fast Path (< 1ms)
-            if _norm_user in ["ساعت", "ساعت چنده", "ساعت چند است", "ساعت الان", "تایم", "time", "what time is it", "current time", "time now", "whats the time"]:
-                _t_iso, _t_hm, _t_j = database.get_tehran_timestamps()
-                _fast_res = t(ulang, "time_is", hm=_t_hm)
-            elif _norm_user in ["تاریخ", "امروز چندمه", "تاریخ امروز", "امروز چندم است", "امروز چندمه؟", "date", "what date is it", "todays date", "today's date", "current date"]:
-                _t_iso, _t_hm, _t_j = database.get_tehran_timestamps()
-                _fast_res = t(ulang, "date_today", jalali=_t_j, iso=_t_iso)
-            # 2. Dollar / Fiat Fast Path
-            elif _norm_user in ["قیمت دلار", "دلار", "دلار چنده", "نرخ دلار", "دلار تهران", "دلار چند"]:
-                from src.tools import financial as _fin
-                _fast_res = await _fin.get_dollar_price()
-            elif _norm_user in ["قیمت طلا", "طلا", "سکه", "قیمت سکه", "طلا چنده", "سکه امامی"]:
-                from src.tools import financial as _fin
-                _fast_res = await _fin.get_gold_and_coin_price()
-            elif _norm_user in ["ارزها", "تابلوی ارز", "قیمت ارزها", "قیمت یورو", "درهم", "قیمت تتر", "تتر"]:
-                from src.tools import financial as _fin
-                _fast_res = await _fin.get_fiat_overview()
-            # 3. Major Crypto Fast Path
-            elif _norm_user in ["بیتکوین", "بیت کوین", "قیمت بیتکوین", "قیمت بیت کوین", "btc", "bitcoin"]:
-                from src.tools import financial as _fin
-                _fast_res = await _fin.get_price("BTC")
-            elif _norm_user in ["اتریوم", "قیمت اتریوم", "eth", "ethereum"]:
-                from src.tools import financial as _fin
-                _fast_res = await _fin.get_price("ETH")
-            elif _norm_user in ["سولانا", "sol", "قیمت سولانا"]:
-                from src.tools import financial as _fin
-                _fast_res = await _fin.get_price("SOL")
-            elif _norm_user in ["کریپتو", "تابلوی رمزارز", "بازار کریپتو"]:
-                from src.tools import financial as _fin
-                _fast_res = await _fin.get_crypto_overview()
-
-        if _fast_res:
-            ai_response, extra_action = _fast_res, None
-        # Ping/pong fast-lane: pure social chatter answers instantly, no LLM burn.
-        elif _prefetch_hints.get("intent_block") == "__PINGPONG__" and not image_bytes:
-            _norm_pp = (_prefetch_hints.get("rewritten", "").replace("__PINGPONG__", "").strip() or user_text).strip()
-            ai_response, extra_action = _pingpong_reply(_norm_pp, user_display, user.id, ulang), None
-        else:
-            _tool_hint_suffix = ""
-            _hint = (_prefetch_hints.get("tool_hint") or "").strip()
-            if _hint:
-                _tool_hint_suffix = f"\n[پیشنهاد سیستمی ابزار (از تحلیل‌گر داخلی، با اطمینان بالا)]: {_hint}"
-            ai_response, extra_action = await ai_service.generate_response(
-                chat_id=chat.id,
-                user_prompt=user_text + address_hint + _tool_hint_suffix,
-                image_bytes=image_bytes,
-                caller_user_id=user.id,
-                caller_name=user_display,
-                caller_username=user_uname,
-                is_private_chat=is_pv,
-                has_reply_context=has_reply,
-                user_lang_code=(user.language_code or "fa"),
-            )
+        _tool_hint_suffix = ""
+        _hint = (_prefetch_hints.get("tool_hint") or "").strip()
+        if _hint:
+            _tool_hint_suffix = f"\n[پیشنهاد سیستمی ابزار (از تحلیل‌گر داخلی، با اطمینان بالا)]: {_hint}"
+        from src.core import ai_service
+        ai_response, extra_action = await ai_service.generate_response(
+            chat_id=chat.id,
+            user_prompt=user_text + address_hint + _tool_hint_suffix,
+            image_bytes=image_bytes,
+            caller_user_id=user.id,
+            caller_name=user_display,
+            caller_username=user_uname,
+            is_private_chat=is_pv,
+            has_reply_context=has_reply,
+            user_lang_code=(user.language_code or "fa"),
+        )
     finally:
         typing_active = False
         typing_task.cancel()
@@ -1971,7 +2034,8 @@ async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, ch
         if normalize_lang(_code) != "fa" and isinstance(extra_action, dict):
             _cap = extra_action.get("caption")
             if isinstance(_cap, str) and _cap.strip() and re.search(r"[\u0600-\u06FF]", _cap):
-                extra_action["caption"] = await ai_service.translate_text(_cap, lang_name(_code))
+                from src.core import ai_service as _ai_tr
+                extra_action["caption"] = await _ai_tr.translate_text(_cap, lang_name(_code))
     except Exception:
         pass
 
@@ -2140,6 +2204,7 @@ async def post_init_callback(application):
         logger.warning(f"L1 warmup skipped: {e}")
     async def first_financial_sync():
         try:
+            from src.tools import financial
             await financial.get_price("BTC", force_refresh=True)
             await financial.get_gold_and_coin_price(force_refresh=True)
             await financial.get_fiat_overview(force_refresh=True)
@@ -2147,7 +2212,11 @@ async def post_init_callback(application):
         except Exception as e:
             logger.warning(f"First financial sync skipped: {e}")
     asyncio.create_task(first_financial_sync())
-    asyncio.create_task(financial.background_sync_financial_cache())
+    try:
+        from src.tools import financial as _fin_bg
+        asyncio.create_task(_fin_bg.background_sync_financial_cache())
+    except Exception as e:
+        logger.warning(f"Financial background sync disabled: {e}")
 
     # Self-use background daemon: periodic tool-health snapshot into smart cache
     async def self_health_daemon():

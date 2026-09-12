@@ -1,3 +1,19 @@
+"""Lazy tool package: NOTHING heavy is imported at startup.
+
+Importing every tool module eagerly (httpx pools, bs4, PIL, psutil, …) wastes
+RAM/time on Railway and pulls full power for trivial turns. Tool modules are
+imported on demand instead:
+
+- ``from src.tools import financial`` (or any module below) still works —
+  :func:`__getattr__` imports the real submodule on first use.
+- Direct imports (``from src.tools.system import ban_user_tool``,
+  ``from src.tools.admin.group_manager import …``) always worked and keep working.
+- The registry (``src.tools.registry``) auto-loads owner modules when a tool
+  is looked up, executed, or schema-filtered — see ``ensure_tool`` /
+  ``ensure_categories`` / ``ensure_all`` there.
+"""
+import importlib
+
 from src.tools.registry import (
     register_tool,
     get_all_tool_definitions,
@@ -6,21 +22,29 @@ from src.tools.registry import (
     REGISTRY
 )
 
-# Import all category submodules to automatically register their tools
-from src.tools import financial
-from src.tools import web_network
-from src.tools import scientific
-from src.tools import media
-from src.tools import system
-from src.tools import github
-from src.tools import files
-from src.tools import database as database_tools
-from src.tools.admin import group_manager  # noqa: F401 (registers group tools)
-from src.tools import dev
-from src.tools import internal
+# Attribute name -> submodule path (mirrors the old eager imports).
+_LAZY_ATTRS = {
+    "financial": "src.tools.financial",
+    "web_network": "src.tools.web_network",
+    "scientific": "src.tools.scientific",
+    "media": "src.tools.media",
+    "system": "src.tools.system",
+    "github": "src.tools.github",
+    "files": "src.tools.files",
+    "database_tools": "src.tools.database",
+    "dev": "src.tools.dev",
+    "internal": "src.tools.internal",
+    # Convenient direct exposure of tool modules
+    "file_reader": "src.tools.files",
+}
 
-# Convenient direct exposure of tool modules
-file_reader = files
+
+def __getattr__(name: str):
+    path = _LAZY_ATTRS.get(name)
+    if path is None:
+        raise AttributeError(f"module 'src.tools' has no attribute {name!r}")
+    return importlib.import_module(path)
+
 
 __all__ = [
     "register_tool",
