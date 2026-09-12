@@ -613,6 +613,11 @@ def init_db():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (user_id, day)
     );
+    CREATE TABLE IF NOT EXISTS quota_overrides (
+        user_id INTEGER PRIMARY KEY,
+        limit_n INTEGER NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_search ON messages(chat_id, content);
     CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(chat_id, user_id, id DESC);
@@ -644,7 +649,7 @@ def init_db():
             _have = {str(r.get("name", "")) for r in (_probe.get("results") or [])}
             _need_ddl = not {"messages", "admin_memories", "custom_data_store",
                              "banned_users", "muted_users", "user_mappings",
-                             "tracked_groups", "daily_usage", "messages_fts"}.issubset(_have)
+                             "tracked_groups", "daily_usage", "quota_overrides", "messages_fts"}.issubset(_have)
     except Exception:
         _need_ddl = True
     if _need_ddl:
@@ -736,6 +741,20 @@ def sync_memory_from_d1_sync():
             try:
                 if _r.get("user_id") and int(_r.get("used") or 0) > 0:
                     _DAILY_RAM[(int(_r["user_id"]), _today_key())] = int(_r["used"])
+            except Exception:
+                continue
+
+    # Quota-override backfill: personal limits survive restarts too.
+    try:
+        _qo_res = execute_d1_query_sync("SELECT user_id, limit_n FROM quota_overrides")
+    except Exception:
+        _qo_res = {"success": False, "results": []}
+    if _qo_res.get("success"):
+        for _r in (_qo_res.get("results") or []):
+            try:
+                _n = int(_r.get("limit_n") or 0)
+                if _r.get("user_id") and 1 <= _n <= 10000:
+                    _QUOTA_OVERRIDES[int(_r["user_id"])] = _n
             except Exception:
                 continue
 
@@ -899,14 +918,14 @@ def get_daily_used(user_id: int) -> int:
 
 
 async def get_daily_usage_async(user_id: int) -> tuple:
-    """(used, limit) with D1 fallback when RAM missed (e.g. after restart)."""
+    """(used, effective_limit) with D1 fallback when RAM missed (e.g. restart)."""
     try:
         uid = int(user_id)
     except Exception:
         return 0, DAILY_USER_LIMIT
     used = get_daily_used(uid)
     if used:
-        return used, DAILY_USER_LIMIT
+        return used, get_user_limit(uid)
     try:
         res = await execute_d1_query(
             "SELECT used FROM daily_usage WHERE user_id = ? AND day = ?",
@@ -918,7 +937,7 @@ async def get_daily_usage_async(user_id: int) -> tuple:
                 _DAILY_RAM[(uid, _today_key())] = used
     except Exception:
         pass
-    return used, DAILY_USER_LIMIT
+    return used, get_user_limit(uid)
 
 
 async def bump_daily_usage_async(user_id: int) -> tuple:
@@ -935,6 +954,7 @@ async def bump_daily_usage_async(user_id: int) -> tuple:
     day = _today_key()
     used = get_daily_used(uid) + 1
     _DAILY_RAM[(uid, day)] = used
+    limit = get_user_limit(uid)
     try:
         await execute_d1_query(
             "INSERT INTO daily_usage (user_id, day, used, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
@@ -943,7 +963,71 @@ async def bump_daily_usage_async(user_id: int) -> tuple:
         )
     except Exception:
         pass
-    return used <= DAILY_USER_LIMIT, used, DAILY_USER_LIMIT
+    return used <= limit, used, limit
+
+
+# --- Per-user quota overrides (admin can raise/lower anyone's daily limit).
+# Same architecture as daily_usage: RAM hot path + D1 persistence + startup
+# backfill. Absent override => global DAILY_USER_LIMIT.
+_QUOTA_OVERRIDES: Dict[int, int] = {}
+
+
+def get_user_limit(user_id: int) -> int:
+    """Effective daily limit for a user: personal override or global default."""
+    try:
+        return int(_QUOTA_OVERRIDES.get(int(user_id), DAILY_USER_LIMIT))
+    except Exception:
+        return DAILY_USER_LIMIT
+
+
+async def set_user_quota_async(user_id: int, limit_n: int) -> bool:
+    """Admin sets a personal daily quota (1..10000)."""
+    try:
+        uid = int(user_id)
+        n = int(limit_n)
+    except Exception:
+        return False
+    if n < 1 or n > 10000:
+        return False
+    _QUOTA_OVERRIDES[uid] = n
+    try:
+        await execute_d1_query(
+            "INSERT INTO quota_overrides (user_id, limit_n, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(user_id) DO UPDATE SET limit_n = excluded.limit_n, updated_at = CURRENT_TIMESTAMP",
+            [uid, n],
+        )
+    except Exception:
+        pass
+    return True
+
+
+async def adjust_user_quota_async(user_id: int, delta: int):
+    """Admin nudges a personal quota by delta. Returns new limit or None."""
+    try:
+        d = int(delta)
+    except Exception:
+        return None
+    if d == 0:
+        return get_user_limit(user_id)
+    new_n = get_user_limit(user_id) + d
+    if new_n < 1 or new_n > 10000:
+        return None
+    ok = await set_user_quota_async(user_id, new_n)
+    return new_n if ok else None
+
+
+async def clear_user_quota_async(user_id: int) -> bool:
+    """Admin removes a personal override (back to global default)."""
+    try:
+        uid = int(user_id)
+    except Exception:
+        return False
+    _QUOTA_OVERRIDES.pop(uid, None)
+    try:
+        await execute_d1_query("DELETE FROM quota_overrides WHERE user_id = ?", [uid])
+    except Exception:
+        pass
+    return True
 
 
 async def get_all_tracked_groups_async() -> List[Dict[str, Any]]:

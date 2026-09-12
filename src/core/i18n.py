@@ -204,6 +204,12 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "⏳ *سهمیه روزانه تو تمام شد.*\n"
             "سقف {limit} پاسخ در روز؛ از {h} ساعت و {m} دقیقه دیگر دوباره در خدمتم. (ریست خودکار هر 24 ساعت)"
         ),
+        "quota_set": "✅ سهمیه {name} (`{uid}`) شد {limit} در روز.",
+        "quota_adjusted": "✅ سهمیه {name} (`{uid}`) {delta:+d} شد؛ حالا {limit} در روز.",
+        "quota_cleared": "♻️ سهمیه اختصاصی {name} (`{uid}`) حذف شد؛ برگشت به پیش‌فرض ({limit}).",
+        "quota_invalid": "❌ عدد نامعتبر است. بین 1 تا 10000 بگو.",
+        "quota_need_target": "❌ کاربر مشخص نیست. ریپلای کن، یا آیدی عددی / @یوزرنیم بده.",
+        "quota_show": "📊 سهمیه {name} (`{uid}`): {used} از {limit} استفاده شده.",
         "group_hello": (
             "👋 *پرومته فعال شد.*\n"
             "برای حرف زدن باهام: پیامم رو ریپلای کن، منشنم کن، یا اسم «پرومته» رو بیار.\n\n"
@@ -303,6 +309,12 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "⏳ *Your daily quota is over.*\n"
             "Cap is {limit} answers/day; back in {h}h {m}m. (auto-reset every 24h)"
         ),
+        "quota_set": "✅ Quota of {name} (`{uid}`) set to {limit}/day.",
+        "quota_adjusted": "✅ Quota of {name} (`{uid}`) {delta:+d}; now {limit}/day.",
+        "quota_cleared": "♻️ Custom quota of {name} (`{uid}`) cleared; back to default ({limit}).",
+        "quota_invalid": "❌ Invalid number. Use 1 to 10000.",
+        "quota_need_target": "❌ No user specified. Reply, or send a numeric ID / @username.",
+        "quota_show": "📊 Quota of {name} (`{uid}`): {used} of {limit} used.",
         "group_hello": (
             "👋 *پرومته فعال شد.*\n"
             "برای حرف زدن باهام: پیامم رو ریپلای کن، منشنم کن، یا اسم «پرومته» رو بیار.\n\n"

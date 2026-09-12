@@ -35,7 +35,7 @@
 - **En grupos no se mete donde no le llaman:** solo responde cuando se le habla (respuesta, mención o la palabra «Prometheus»). Lo demás se archiva en silencio.
 - **En el servidor no se ejecuta código:** el código del IA solo corre en el sandbox cloud de E2B; sin clave la herramienta está desactivada (sin fallback local por diseño). La shell destructiva nunca se ejecuta, ni siquiera por orden del admin.
 - **No solo persa:** detecta el idioma del texto (no solo el ajuste de Telegram) y responde en él — persa, inglés, ruso, árabe, turco...; las salidas se traducen cuando hace falta.
-- **Cuota diaria justa:** cada usuario recibe `DAILY_USER_LIMIT` (40 por defecto) respuestas completas de IA al día en todos los chats; reinicio automático cada 24 h (00:00 UTC), sin cron; admin ilimitado. `/limit` muestra el saldo.
+- **Cuota diaria justa:** cada usuario recibe `DAILY_USER_LIMIT` (40 por defecto) respuestas completas de IA al día en todos los chats; reinicio automático cada 24 h (00:00 UTC), sin cron; admin ilimitado y puede ajustar la cuota de cada uno (`/setquota`, `/resetquota`). `/limit` muestra el saldo.
 - **El admin no necesita slash:** las órdenes en lenguaje natural se ejecutan directamente («leave group X», lista de grupos...) — sin adivinar, con verificación en vivo.
 - **Seguridad de grupos:** entrar requiere aprobación del admin (botones en privado), lista en vivo desde Telegram, historial conservado al salir, y salidas siempre puntuales y verificadas.
 
@@ -88,6 +88,7 @@ python tests/test_leave_match.py    # salida puntual (offline)
 python tests/test_daily_limit.py    # cuota diaria (offline)
 python tests/test_intent_router.py  # órdenes del admin (offline)
 python tests/test_detect_lang.py    # detección de idioma (offline)
+python tests/test_quota_override.py # cuotas de admin (offline)
 ```
 Cada push lo verifica GitHub Actions (badge arriba).
 

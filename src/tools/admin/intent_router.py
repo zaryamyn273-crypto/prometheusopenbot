@@ -43,7 +43,7 @@ _LIST_PHRASES = frozenset({
 _QUOTA_PHRASES = frozenset({
     "سهمیه", "سهمیه من", "سهمیه ام", "لیمیت", "لیمیت من",
     "سهمیه چقدر است", "سهمیه چقدره", "چقدر سهمیه دارم",
-    "quota", "my quota", "my limit", "usage", "my usage",
+    "my quota", "my limit",
 })
 
 _LEAVE_RES = (
@@ -85,6 +85,62 @@ def _clean_target(raw: str) -> str:
     return t[:100]
 
 
+_FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def fa_digits_to_latin(s: object) -> str:
+    """Persian/Arabic-Indic digits -> Latin (users type ۱۲۳ as well as 123)."""
+    try:
+        return str(s or "").translate(_FA_DIGITS)
+    except Exception:
+        return ""
+
+
+def _strip_object_marker(t: str) -> str:
+    try:
+        return re.sub(r"\s+(رو|را)$", "", str(t or "").strip())
+    except Exception:
+        return str(t or "").strip()
+
+
+async def _resolve_quota_target(target: str):
+    """(uid, display_name) or (None, None) when the user is unresolvable."""
+    try:
+        from src.core import database as _db
+        clean = _strip_object_marker(fa_digits_to_latin(target))
+        if not clean:
+            return None, None
+        uid, uname = await _db.resolve_target_identifier(clean)
+        if not uid:
+            return None, None
+        return int(uid), (f"@{uname}" if uname else f"user {uid}")
+    except Exception:
+        return None, None
+
+
+# Set / adjust / clear a user's daily quota (admin only). Signed numbers
+# adjust, plain numbers set absolute. Targets: numeric ID, @username, name.
+_QUOTA_SET_RES = (
+    r"سهمیه\s+(.+?)\s+(?:رو|را)?\s*(?:بکن|کن|بذار|بشه)\s*(\d+)\s*$",
+    r"set\s+(?:the\s+)?quota\s+(?:for\s+|of\s+)?(.+?)\s+(?:to\s+|=\s*)?(\d+)\s*$",
+    r"set\s+(.+?)(?:'s)?\s+quota\s+(?:to\s+)?(\d+)\s*$",
+)
+_QUOTA_ADJ_SIGNED_RES = (
+    r"سهمیه\s+(.+?)\s*(?:رو|را)?\s*([+\-]\d+)\s*(?:تا\s*)?(?:زیاد|بیشتر|اضافه|کم|کمتر)?\s*(?:کن|بکن)?\s*$",
+    r"(.+?)(?:'s)?\s+quota\s*([+\-]\d+)\s*$",
+)
+_QUOTA_ADJ_VERB_FA_RES = (
+    r"سهمیه\s+(.+?)\s+(?:رو|را)?\s*(\d+)\s*تا\s*(زیاد|بیشتر|اضافه|کم|کمتر)\s*(?:کن|بکن)?\s*$",
+)
+_QUOTA_ADJ_VERB_EN_RES = (
+    r"(increase|decrease)\s+(.+?)(?:'s)?\s+quota\s+by\s+(\d+)\s*$",
+)
+_QUOTA_CLEAR_RES = (
+    r"سهمیه\s+(.+?)\s*(?:رو|را)?\s*(?:حذف|پاک|ریست|پیش.?فرض)\s*کن\s*$",
+    r"(?:clear|reset|remove)\s+(.+?)(?:'s)?\s+quota\s*$",
+)
+
+
 async def try_admin_intent_async(user_text: str, caller_id: int, current_chat_id=None):
     """Execute the admin's intent from natural text. Returns reply or None."""
     try:
@@ -92,9 +148,16 @@ async def try_admin_intent_async(user_text: str, caller_id: int, current_chat_id
             return None
     except Exception:
         return None
-    norm = _normalize(user_text)
+    norm = _normalize(fa_digits_to_latin(user_text))
     if not norm:
         return None
+    try:
+        from src.core.i18n import t as _t, detect_lang as _dl
+        _d = _dl(user_text)
+        _nlang = _d if _d in ("fa", "en") else "fa"
+    except Exception:
+        from src.core.i18n import t as _t
+        _nlang = "fa"
 
     # 1) List groups (exact phrases only — never guess).
     if norm in _LIST_PHRASES:
@@ -106,11 +169,135 @@ async def try_admin_intent_async(user_text: str, caller_id: int, current_chat_id
             return None
 
     # 2) Quota note (admin is unlimited; users have /limit).
+    # EXACT phrases only: asking about anyone/anything else's quota
+    # ("سهمیه بنزین چقدره؟") must NEVER show the user's bot quota.
     if norm in _QUOTA_PHRASES:
         try:
-            from src.core.i18n import t as _t
-            return _t("fa", "limit_admin")
+            return _t(_nlang, "limit_admin")
         except Exception:
+            return None
+
+    # 2b) Set a user's daily quota (admin raises/lowers per-user limits).
+    for pat in _QUOTA_SET_RES:
+        try:
+            m = re.search(pat, norm, flags=re.IGNORECASE)
+        except Exception:
+            continue
+        if not m:
+            continue
+        target = _strip_object_marker(_clean_target(m.group(1)))
+        try:
+            n = int(m.group(2))
+        except Exception:
+            continue
+        uid, name = await _resolve_quota_target(target)
+        if not uid:
+            return _t(_nlang, "quota_need_target")
+        try:
+            from src.core import database as _db
+            if await _db.set_user_quota_async(uid, n):
+                return _t(_nlang, "quota_set", name=name, uid=uid, limit=n)
+            return _t(_nlang, "quota_invalid")
+        except Exception as e:
+            logger.warning(f"intent quota-set failed: {e}")
+            return None
+
+    # 2c) Adjust a user's quota relatively (+N / -N / verb-based).
+    for pat in _QUOTA_ADJ_SIGNED_RES:
+        try:
+            m = re.search(pat, norm, flags=re.IGNORECASE)
+        except Exception:
+            continue
+        if not m:
+            continue
+        target = _strip_object_marker(_clean_target(m.group(1)))
+        try:
+            delta = int(m.group(2))
+        except Exception:
+            continue
+        if delta == 0:
+            continue
+        uid, name = await _resolve_quota_target(target)
+        if not uid:
+            return _t(_nlang, "quota_need_target")
+        try:
+            from src.core import database as _db
+            new_n = await _db.adjust_user_quota_async(uid, delta)
+            if new_n is not None:
+                return _t(_nlang, "quota_adjusted", name=name, uid=uid, delta=delta, limit=new_n)
+            return _t(_nlang, "quota_invalid")
+        except Exception as e:
+            logger.warning(f"intent quota-adjust failed: {e}")
+            return None
+    for pat in _QUOTA_ADJ_VERB_FA_RES:
+        try:
+            m = re.search(pat, norm, flags=re.IGNORECASE)
+        except Exception:
+            continue
+        if not m:
+            continue
+        target = _strip_object_marker(_clean_target(m.group(1)))
+        try:
+            n = int(m.group(2))
+        except Exception:
+            continue
+        delta = n if m.group(3) in ("زیاد", "بیشتر", "اضافه") else -n
+        uid, name = await _resolve_quota_target(target)
+        if not uid:
+            return _t(_nlang, "quota_need_target")
+        try:
+            from src.core import database as _db
+            new_n = await _db.adjust_user_quota_async(uid, delta)
+            if new_n is not None:
+                return _t(_nlang, "quota_adjusted", name=name, uid=uid, delta=delta, limit=new_n)
+            return _t(_nlang, "quota_invalid")
+        except Exception as e:
+            logger.warning(f"intent quota-adjust failed: {e}")
+            return None
+    for pat in _QUOTA_ADJ_VERB_EN_RES:
+        try:
+            m = re.search(pat, norm, flags=re.IGNORECASE)
+        except Exception:
+            continue
+        if not m:
+            continue
+        target = _strip_object_marker(_clean_target(m.group(2)))
+        try:
+            n = int(m.group(3))
+        except Exception:
+            continue
+        delta = n if m.group(1) == "increase" else -n
+        uid, name = await _resolve_quota_target(target)
+        if not uid:
+            return _t(_nlang, "quota_need_target")
+        try:
+            from src.core import database as _db
+            new_n = await _db.adjust_user_quota_async(uid, delta)
+            if new_n is not None:
+                return _t(_nlang, "quota_adjusted", name=name, uid=uid, delta=delta, limit=new_n)
+            return _t(_nlang, "quota_invalid")
+        except Exception as e:
+            logger.warning(f"intent quota-adjust failed: {e}")
+            return None
+
+    # 2d) Clear a user's override (back to global default).
+    for pat in _QUOTA_CLEAR_RES:
+        try:
+            m = re.search(pat, norm, flags=re.IGNORECASE)
+        except Exception:
+            continue
+        if not m:
+            continue
+        target = _strip_object_marker(_clean_target(m.group(1)))
+        uid, name = await _resolve_quota_target(target)
+        if not uid:
+            return _t(_nlang, "quota_need_target")
+        try:
+            from src.core import database as _db
+            await _db.clear_user_quota_async(uid)
+            return _t(_nlang, "quota_cleared", name=name, uid=uid, limit=_db.get_user_limit(uid))
+        except Exception as e:
+            logger.warning(f"intent quota-clear failed: {e}")
             return None
 
     # 3) Leave a group (single explicit target only).

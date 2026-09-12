@@ -705,6 +705,78 @@ async def limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _used, _qlim, _rs = 0, 0, 3600
     await reply_safely(message, t(nlang, "limit_status", used=_used, limit=_qlim, left=max(0, _qlim - _used), h=_rs // 3600, m=(_rs % 3600) // 60))
 
+async def setquota_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sets/adjusts a user's daily quota: /setquota [@user|id] <N|+N|-N> (or reply + number)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not is_admin(user.id):
+        await message.reply_text("⛔ دسترسی غیرمجاز! این بخش مختص فرمانده ارشد سیستم است.")
+        return
+    ulang, _ = _ulang_of(update)
+    from src.tools.admin.intent_router import fa_digits_to_latin as _fa2lat
+    lat = _fa2lat(" ".join(context.args).strip() if context.args else "")
+    toks = lat.split()
+    num_tok = toks[-1] if toks and re.fullmatch(r"[+\-]?\d+", toks[-1]) else None
+    target_text = " ".join(toks[:-1] if num_tok else toks).strip()
+    reply_user = message.reply_to_message.from_user if message.reply_to_message else None
+    if not target_text and reply_user:
+        uid, uname = reply_user.id, reply_user.username or ""
+    elif not target_text:
+        await reply_safely(message, t(ulang, "quota_need_target"))
+        return
+    else:
+        try:
+            uid, uname = await database.resolve_target_identifier(target_text)
+        except Exception:
+            uid, uname = None, None
+        if not uid:
+            await reply_safely(message, t(ulang, "quota_need_target"))
+            return
+    name = (f"@{uname}" if uname else "") or (reply_user.first_name if reply_user and reply_user.id == uid else "") or f"user {uid}"
+    if not num_tok:
+        _used0, _lim0 = await database.get_daily_usage_async(uid)
+        await reply_safely(message, t(ulang, "quota_show", name=name, uid=uid, used=_used0, limit=_lim0))
+        return
+    if num_tok.startswith("+") or num_tok.startswith("-"):
+        _new = await database.adjust_user_quota_async(uid, int(num_tok))
+        if _new is not None:
+            await reply_safely(message, t(ulang, "quota_adjusted", name=name, uid=uid, delta=int(num_tok), limit=_new))
+        else:
+            await reply_safely(message, t(ulang, "quota_invalid"))
+    else:
+        if await database.set_user_quota_async(uid, int(num_tok)):
+            await reply_safely(message, t(ulang, "quota_set", name=name, uid=uid, limit=int(num_tok)))
+        else:
+            await reply_safely(message, t(ulang, "quota_invalid"))
+
+async def resetquota_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin clears a user's quota override: /resetquota [@user|id] (or reply)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not is_admin(user.id):
+        await message.reply_text("⛔ دسترسی غیرمجاز! این بخش مختص فرمانده ارشد سیستم است.")
+        return
+    ulang, _ = _ulang_of(update)
+    from src.tools.admin.intent_router import fa_digits_to_latin as _fa2lat
+    target_text = _fa2lat(" ".join(context.args).strip() if context.args else "")
+    reply_user = message.reply_to_message.from_user if message.reply_to_message else None
+    if not target_text and reply_user:
+        uid, uname = reply_user.id, reply_user.username or ""
+    elif not target_text:
+        await reply_safely(message, t(ulang, "quota_need_target"))
+        return
+    else:
+        try:
+            uid, uname = await database.resolve_target_identifier(target_text)
+        except Exception:
+            uid, uname = None, None
+        if not uid:
+            await reply_safely(message, t(ulang, "quota_need_target"))
+            return
+    name = (f"@{uname}" if uname else "") or (reply_user.first_name if reply_user and reply_user.id == uid else "") or f"user {uid}"
+    await database.clear_user_quota_async(uid)
+    await reply_safely(message, t(ulang, "quota_cleared", name=name, uid=uid, limit=database.get_user_limit(uid)))
+
 async def net_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     target = " ".join(context.args).strip() if context.args else ""
@@ -1572,6 +1644,34 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             if target_user.username:
                 await database.unmute_target_async("@" + target_user.username)
             await reply_safely(message, t(ulang, "unmute_done"))
+            return
+
+        # 3d. Direct Reply Quota (admin sets/shows/adjusts/clears the replied user's daily limit)
+        elif (clean_cmd == "سهمیه" or clean_cmd.startswith("سهمیه ") or clean_cmd == "quota" or clean_cmd.startswith("quota ")) and target_user:
+            from src.tools.admin.intent_router import fa_digits_to_latin as _fa2lat
+            _qlat = _fa2lat(clean_cmd)
+            _tgt_name = target_user.first_name or (f"@{target_user.username}" if target_user.username else "") or f"user {target_user.id}"
+            if any(w in _qlat for w in ["حذف", "پاک", "ریست", "clear", "reset"]):
+                await database.clear_user_quota_async(target_user.id)
+                await reply_safely(message, t(ulang, "quota_cleared", name=_tgt_name, uid=target_user.id, limit=database.get_user_limit(target_user.id)))
+                return
+            _nums = re.findall(r"[+\-]?\d+", _qlat)
+            if _nums:
+                _v = _nums[0]
+                if _v.startswith("+") or _v.startswith("-"):
+                    _new = await database.adjust_user_quota_async(target_user.id, int(_v))
+                    if _new is not None:
+                        await reply_safely(message, t(ulang, "quota_adjusted", name=_tgt_name, uid=target_user.id, delta=int(_v), limit=_new))
+                    else:
+                        await reply_safely(message, t(ulang, "quota_invalid"))
+                else:
+                    if await database.set_user_quota_async(target_user.id, int(_v)):
+                        await reply_safely(message, t(ulang, "quota_set", name=_tgt_name, uid=target_user.id, limit=int(_v)))
+                    else:
+                        await reply_safely(message, t(ulang, "quota_invalid"))
+                return
+            _used0, _lim0 = await database.get_daily_usage_async(target_user.id)
+            await reply_safely(message, t(ulang, "quota_show", name=_tgt_name, uid=target_user.id, used=_used0, limit=_lim0))
             return
 
         # 4. Direct Reply Remember ("یادت باشه", "به خاطر بسپار", "ثبت کن")
@@ -2539,6 +2639,10 @@ def build_application():
     app.add_handler(_pcmd("leave_prometheus", leave_command))
     app.add_handler(_pcmd("limit", limit_command))
     app.add_handler(_pcmd("limit_prometheus", limit_command))
+    app.add_handler(_pcmd("setquota", setquota_command))
+    app.add_handler(_pcmd("setquota_prometheus", setquota_command))
+    app.add_handler(_pcmd("resetquota", resetquota_command))
+    app.add_handler(_pcmd("resetquota_prometheus", resetquota_command))
     app.add_handler(_pcmd("bangroup", bangroup_command))
     app.add_handler(_pcmd("bangroup_prometheus", bangroup_command))
     app.add_handler(_pcmd("remember", remember_command))
