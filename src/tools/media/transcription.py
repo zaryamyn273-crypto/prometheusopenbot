@@ -31,20 +31,12 @@ async def transcribe_audio_tool(audio_url_or_path: str) -> str:
         mime = "audio/mpeg"
         low = clean_target.lower()
         if low.startswith("http://") or low.startswith("https://"):
-            # SSRF guard: block internal/metadata targets (match HOST only —
-            # substring match on the full URL false-blocked legit paths).
+            # Robust SSRF guard: full DNS resolution check & hop-by-hop redirect verification
             try:
-                _host = (urllib.parse.urlsplit(clean_target).hostname or "").lower()
-            except Exception:
-                return "⛔ آدرس صوتی نامعتبر است."
-            _blocked = (
-                _host in ("localhost", "metadata.google.internal")
-                or _host.startswith(("127.", "10.", "192.168.", "169.254.", "0.0.0.0", "[::"))
-                or _host.startswith(tuple(f"172.{i}." for i in range(16, 32)))
-                or _host.endswith((".internal", ".local", ".lan", ".home.arpa"))
-            )
-            if _blocked:
-                return "⛔ آدرس داخلی/غیرمجاز مسدود شد."
+                from src.utils.net_guard import assert_public_url as _assert_url, safe_stream_get as _safe_stream
+                clean_target = _assert_url(clean_target)
+            except Exception as e:
+                return f"⛔ آدرس صوتی نامعتبر یا غیرمجاز است: {str(e)}"
             if low.endswith(".ogg") or low.endswith(".oga") or "ogg" in low or "opus" in low:
                 mime = "audio/ogg"
             elif low.endswith(".wav"):
@@ -54,7 +46,7 @@ async def transcribe_audio_tool(audio_url_or_path: str) -> str:
             elif low.endswith(".webm"):
                 mime = "audio/webm"
             async with shared_client_ctx("stream") as client:
-                async with client.stream("GET", clean_target) as r:
+                async with _safe_stream(client, clean_target) as r:
                     if r.status_code != 200:
                         return f"خطا در دانلود فایل صوتی (کد: {r.status_code})"
                     chunks = []

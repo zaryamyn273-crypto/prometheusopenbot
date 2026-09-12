@@ -746,8 +746,9 @@ async def fetch_webpage_content(url: str, max_chars: int = 4000) -> str:
 
     client = get_async_client()
     try:
-        # 8MB cap: never buffer hostile giant pages into RAM
-        async with client.stream("GET", clean_u, timeout=7.0, follow_redirects=True) as r:
+        from src.utils.net_guard import safe_stream_get as _safe_stream
+        # 8MB cap: never buffer hostile giant pages into RAM & enforce hop-by-hop redirect SSRF safety
+        async with _safe_stream(client, clean_u, timeout=7.0) as r:
             if r.status_code == 200:
                 body = b""
                 async for chunk in r.aiter_bytes(65536):
@@ -806,7 +807,8 @@ async def check_website_status(target: str) -> str:
     loop = asyncio.get_running_loop()
     start_time = loop.time()
     try:
-        r = await client.get(clean_t, timeout=6.0, follow_redirects=True)
+        from src.utils.net_guard import safe_http_get as _safe_get
+        r = await _safe_get(client, clean_t, timeout=6.0)
         elapsed_ms = int((loop.time() - start_time) * 1000)
         status_symbol = "🟢 آنلاین" if r.status_code < 400 else "🔴 با خطا"
         return (

@@ -82,8 +82,11 @@ _STOPPED_CHATS: Dict[int, float] = {}
 _INFLIGHT_TURNS: Dict[int, Any] = {}
 
 
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+def is_admin(user_id: Any) -> bool:
+    try:
+        return int(user_id or 0) == int(ADMIN_ID)
+    except Exception:
+        return False
 
 
 def _ulang_of(update) -> tuple:
@@ -1835,7 +1838,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             if target_uid:
                 from src.tools.system import extract_user_id_tool
                 res_id = await extract_user_id_tool(target=str(target_uid), caller_id=user.id)
-                await reply_safely(message, res_id, parse_mode=ParseMode.HTML)
+                await reply_safely(message, res_id)
                 return
 
         # 3d. Direct Reply Quota (admin sets/shows/adjusts/clears the replied user's daily limit)

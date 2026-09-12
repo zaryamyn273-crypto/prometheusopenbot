@@ -301,10 +301,15 @@ async def quick_http_inspect_tool(url: str) -> str:
     if not clean_url.startswith("http"):
         clean_url = "https://" + clean_url
     try:
+        from src.utils.net_guard import assert_public_url as _assert_url
+        clean_url = _assert_url(clean_url)
+    except Exception as e:
+        return f"⛔ آدرس نامعتبر یا غیرمجاز است (دسترسی به مقاصد محلی و داخلی مسدود است): {str(e)}"
+    try:
         async with shared_client_ctx("fast") as client:
-            r = await client.head(clean_url)
+            r = await client.head(clean_url, follow_redirects=False)
             if r.status_code in [405, 403]:
-                r = await client.get(clean_url)
+                r = await client.get(clean_url, follow_redirects=False)
             return (
                 f"🌐 *گزارش بررسی پیوند اینترنتی*:\n"
                 f"• *آدرس*: `{clean_url}`\n"

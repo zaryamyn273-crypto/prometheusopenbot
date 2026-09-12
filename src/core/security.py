@@ -1,3 +1,12 @@
+"""
+Core Security Module: Multi-Layer Secret Sanitization and AST Code Sandboxing.
+
+1. sanitize_output: Scrubs known API keys, environment secrets, Telegram bot tokens,
+   Bearer headers, and high-entropy key patterns before delivering output to users.
+2. validate_python_code: AST-based static code analysis preventing execution of
+   dangerous calls, dynamic imports, reflection, and sandbox-escape attribute traversals.
+"""
+
 import ast
 import logging
 import os
@@ -9,8 +18,7 @@ logger = logging.getLogger(__name__)
 
 # --- Secrets Sanitizer ---
 def _build_secrets_list() -> List[str]:
-    # Dynamic: read fresh from env/config every call so rotation works.
-    # (No import-time static snapshot: those went stale after key rotation.)
+    """Dynamically read secrets fresh from configuration and environment."""
     vals = [
         getattr(_config, "TELEGRAM_BOT_TOKEN", ""),
         getattr(_config, "ROUTER_API_KEY", ""),
@@ -26,6 +34,7 @@ def _build_secrets_list() -> List[str]:
         os.getenv("SPOTIFY_CLIENT_SECRET", ""),
         os.getenv("E2B_API_KEY", ""),
         getattr(_config, "E2B_API_KEY", ""),
+        os.getenv("RAILWAY_API_TOKEN", ""),
     ]
     out = []
     seen = set()
@@ -41,35 +50,56 @@ def _build_secrets_list() -> List[str]:
 
 
 _PATTERNS_EXTRA = [
-    re.compile(r'ghp_[A-Za-z0-9]{20,}'),
-    re.compile(r'gho_[A-Za-z0-9]{20,}'),
-    re.compile(r'github_pat_[A-Za-z0-9_]{10,}'),
-    re.compile(r'tvly-[A-Za-z0-9_\-]{8,}'),
-    re.compile(r'art_live_[A-Za-z0-9]{8,}'),
-    re.compile(r'e2b_[A-Za-z0-9]{16,}'),
+    # Telegram Bot Token (e.g. 1234567890:AAFakeToken...)
+    re.compile(r'\b\d{8,11}:[A-Za-z0-9_-]{34,38}\b'),
+    # OpenAI / 9Router / Gemini / DeepSeek API Keys
+    re.compile(r'\bsk-[A-Za-z0-9_-]{16,}\b'),
+    # GitHub Personal Access Tokens
+    re.compile(r'\bghp_[A-Za-z0-9]{20,}\b'),
+    re.compile(r'\bgho_[A-Za-z0-9]{20,}\b'),
+    re.compile(r'\bgithub_pat_[A-Za-z0-9_]{10,}\b'),
+    # Tavily Search API Keys
+    re.compile(r'\btvly-[A-Za-z0-9_\-]{8,}\b'),
+    # AllRatesToday API Keys
+    re.compile(r'\bart_live_[A-Za-z0-9]{8,}\b'),
+    # E2B Sandbox API Keys
+    re.compile(r'\be2b_[A-Za-z0-9]{16,}\b'),
+    # Bearer Authentication Headers
+    re.compile(r'Bearer\s+[A-Za-z0-9_\-\.]{20,}', re.IGNORECASE),
+    # Key-Value credential declarations (api_key = "...")
+    re.compile(r'(?:api[-_]?key|auth_token|client_secret)\s*[:=]\s*["\']?[A-Za-z0-9_\-\.]{12,}["\']?', re.IGNORECASE),
 ]
 
+
 def sanitize_output(text: str) -> str:
+    """Scrub all sensitive keys, tokens, and credentials from outgoing text."""
     if not text:
         return text
     sanitized = text
+
+    # Exact match from active configuration
     for sec in _build_secrets_list():
         try:
             if sec and len(str(sec)) > 3 and str(sec) in sanitized:
                 sanitized = sanitized.replace(str(sec), "[SECRET]")
         except Exception:
             continue
+
+    # Structural regex patterns for leaked formats
     for pat in _PATTERNS_EXTRA:
         try:
             sanitized = pat.sub("[SECRET]", sanitized)
         except Exception:
             continue
+
     return sanitized
+
 
 # --- AST Python Security ---
 FORBIDDEN_ATTRIBUTES: Set[str] = {
-    "__class__", "__bases__", "__subclasses__", "__globals__",
-    "__code__", "__closure__", "__builtins__", "__import__",
+    "__class__", "__bases__", "__subclasses__", "__globals__", "__mro__",
+    "__code__", "__closure__", "__builtins__", "__import__", "__reduce__",
+    "__reduce_ex__", "__loader__", "__spec__", "__package__",
     "__dict__", "__module__", "__qualname__", "f_globals", "f_locals",
     "gi_frame", "gi_code", "cr_frame", "tb_frame", "f_builtins",
 }
@@ -78,10 +108,13 @@ FORBIDDEN_CALLS: Set[str] = {
     "__import__", "eval", "exec", "compile", "open", "input",
     "breakpoint", "help", "exit", "quit",
     "getattr", "setattr", "delattr", "globals", "locals", "vars",
-    "dir", "memoryview", "import_module",
+    "dir", "memoryview", "import_module", "system", "popen", "spawn",
+    "execv", "execve",
 }
 
+
 class SecurityASTValidator(ast.NodeVisitor):
+    """AST visitor that detects and blocks unauthorized operations and sandbox escapes."""
     def __init__(self):
         self.violations = []
 
@@ -102,8 +135,6 @@ class SecurityASTValidator(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node):
-        # Only real call expressions are dangerous; bare name mentions
-        # (variables, f-string text, attribute bases) are harmless.
         func = node.func
         if isinstance(func, ast.Name) and func.id in FORBIDDEN_CALLS:
             self.violations.append(f"Function call '{func.id}' forbidden.")
@@ -111,7 +142,11 @@ class SecurityASTValidator(ast.NodeVisitor):
             self.violations.append(f"Method/call '{func.attr}' forbidden.")
         self.generic_visit(node)
 
+
 def validate_python_code(code: str) -> None:
+    """Validate python code using AST; raises ValueError on syntax error or PermissionError on violation."""
+    if not code or len(code) > 20000:
+        raise ValueError("Code too large or empty.")
     try:
         tree = ast.parse(code)
     except SyntaxError as e:

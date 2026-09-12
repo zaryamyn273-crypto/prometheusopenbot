@@ -27,16 +27,29 @@ def read_document_file(file_path: str, max_chars: int = 4000) -> str:
     # Security Sandbox Protection: the LLM may only read files the bot itself
     # downloaded into /tmp (Telegram docs, fetched files). Everything else —
     # source, configs, /etc, /proc, home dirs, symlinks escaping /tmp — is
-    # refused. realpath() kills symlink bypass; extension cap kills binaries.
+    # refused. realpath() kills symlink bypass; extension whitelist restricts formats.
     try:
         real_p = os.path.realpath(clean_path)
     except Exception:
         return "⛔ مسیر فایل نامعتبر است."
+
     allowed_roots = (os.path.realpath("/tmp") + os.sep,)
     if not real_p.startswith(allowed_roots):
         return "⛔ دسترسی غیرمجاز: فقط فایل‌های دانلودشده در پوشه موقت (/tmp) خوانده می‌شوند."
-    if real_p.lower().endswith((".py", ".env", ".pem", ".key", ".sqlite", ".db", ".so", ".sh")):
-        return "⛔ دسترسی غیرمجاز: خواندن سورس‌کد، کلیدها یا فایل‌های اجرایی مسدود است."
+
+    base_name = os.path.basename(real_p).lower()
+    if base_name.startswith("."):
+        return "⛔ دسترسی غیرمجاز: خواندن فایل‌های پنهان سیستمی مسدود است."
+
+    allowed_exts = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt", ".rtf", ".pptx", ".md"}
+    ext = os.path.splitext(real_p)[1].lower()
+    if ext not in allowed_exts:
+        return f"⛔ دسترسی غیرمجاز: فرمت فایل '{ext}' برای استخراج سند مجاز نیست (فقط اسناد آفیس، PDF، متنی و CSV)."
+
+    sensitive_markers = ("key", "token", "secret", "id_rsa", "password", "credential", "environ", ".env")
+    if any(sm in base_name for sm in sensitive_markers):
+        return "⛔ دسترسی غیرمجاز: خواندن فایل‌های حساس یا کلیدها مسدود است."
+
     try:
         if os.path.getsize(real_p) > 25 * 1024 * 1024:
             return "⛔ فایل بزرگ‌تر از ۲۵ مگابایت خوانده نمی‌شود."
