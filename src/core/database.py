@@ -42,6 +42,7 @@ _ACTIVE_GROUPS: Dict[int, Dict[str, Any]] = {}
 # Chats awaiting admin activation (bot was added by a non-admin).
 # Mirrored from D1 `tracked_groups.status == 'pending'` at startup.
 _PENDING_GROUPS: set = set()
+_USER_TIMEZONES: Dict[int, str] = {}
 
 # Asynchronous Write-Behind Batch Message Queue & Worker Guard
 _D1_WRITE_QUEUE: Optional[asyncio.Queue] = None
@@ -693,6 +694,12 @@ def init_db():
         limit_n INTEGER NOT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS user_preferences (
+        user_id INTEGER PRIMARY KEY,
+        timezone TEXT DEFAULT '',
+        language TEXT DEFAULT '',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE IF NOT EXISTS scheduled_jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chat_id INTEGER NOT NULL,
@@ -708,6 +715,7 @@ def init_db():
         next_run_ts REAL NOT NULL,
         is_recurring INTEGER DEFAULT 0,
         status TEXT DEFAULT 'active',
+        timezone TEXT DEFAULT '',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         last_run_at TIMESTAMP
     );
@@ -746,7 +754,7 @@ def init_db():
             _need_ddl = not {"messages", "admin_memories", "custom_data_store",
                              "banned_users", "muted_users", "user_mappings",
                              "tracked_groups", "daily_usage", "quota_overrides", "messages_fts",
-                             "scheduled_jobs"}.issubset(_have)
+                             "scheduled_jobs", "user_preferences"}.issubset(_have)
     except Exception:
         _need_ddl = True
     if _need_ddl:
@@ -767,6 +775,7 @@ def init_db():
         "ALTER TABLE messages ADD COLUMN char_count INTEGER DEFAULT 0",
         "ALTER TABLE messages ADD COLUMN has_media INTEGER DEFAULT 0",
         "ALTER TABLE messages ADD COLUMN extra_meta TEXT DEFAULT '{}'",
+        "ALTER TABLE scheduled_jobs ADD COLUMN timezone TEXT DEFAULT ''",
     ):
         try:
             execute_d1_query_sync(_mig)
@@ -912,11 +921,18 @@ async def sync_memory_from_d1_async():
 
 # --- Tracked Groups Management ---
 
-async def track_group_presence_async(chat_id: int, title: str, chat_type: str = "supergroup", added_by: int = 0, username: str = "", invite_link: str = "", status: str = "active"):
+async def track_group_presence_async(chat_id: int, title: str, chat_type: str = "supergroup", added_by: int = 0, username: str = "", invite_link: str = "", status: str = "pending"):
     clean_chat_id = int(chat_id)
-    clean_status = (status or "active").strip().lower() or "active"
-    if clean_status not in ("active", "pending", "left"):
+    clean_by = int(added_by or 0)
+    # Never auto-approve unless explicitly added or approved by the Master Admin
+    if status == "active" and clean_by != ADMIN_ID and clean_by != 0:
+        clean_status = "pending"
+    else:
+        clean_status = (status or "pending").strip().lower() or "pending"
+    if clean_by == ADMIN_ID:
         clean_status = "active"
+    if clean_status not in ("active", "pending", "left"):
+        clean_status = "pending"
     _ACTIVE_GROUPS[clean_chat_id] = {
         "chat_id": clean_chat_id,
         "title": title,
@@ -932,7 +948,7 @@ async def track_group_presence_async(chat_id: int, title: str, chat_type: str = 
         _PENDING_GROUPS.discard(clean_chat_id)
     await execute_d1_query(
         "INSERT OR REPLACE INTO tracked_groups (chat_id, title, chat_type, added_by, username, invite_link, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [clean_chat_id, title, chat_type, added_by, username or "", invite_link or "", clean_status]
+        [clean_chat_id, title, chat_type, clean_by, username or "", invite_link or "", clean_status]
     )
 
 async def set_group_status_async(chat_id: int, status: str) -> bool:
@@ -963,12 +979,29 @@ async def set_group_status_async(chat_id: int, status: str) -> bool:
     )
     return bool(ins.get("success"))
 
+def is_group_approved(chat_id: int) -> bool:
+    """Sync RAM check: is this group explicitly approved and ACTIVE by Master Admin?"""
+    try:
+        cid = int(chat_id)
+        if cid in _PENDING_GROUPS:
+            return False
+        rec = _ACTIVE_GROUPS.get(cid)
+        return bool(rec and rec.get("status") == "active")
+    except Exception:
+        return False
+
 def is_group_pending(chat_id: int) -> bool:
     """Sync RAM check: is this chat awaiting admin activation?"""
     try:
-        return int(chat_id) in _PENDING_GROUPS
-    except Exception:
+        cid = int(chat_id)
+        if cid in _PENDING_GROUPS:
+            return True
+        rec = _ACTIVE_GROUPS.get(cid)
+        if not rec or rec.get("status") != "active":
+            return True
         return False
+    except Exception:
+        return True
 
 async def remove_group_presence_async(chat_id: int, purge_messages: bool = False):
     """
@@ -1159,6 +1192,36 @@ async def get_all_tracked_groups_async() -> List[Dict[str, Any]]:
         return res["results"]
     return list(_ACTIVE_GROUPS.values())
 
+async def get_user_timezone_async(user_id: int, fallback_lang: str = "fa") -> str:
+    """Gets configured timezone for user with multi-tier RAM + D1 + Language fallback."""
+    uid = int(user_id or 0)
+    if not uid:
+        return "Asia/Tehran" if fallback_lang == "fa" else "UTC"
+    if uid in _USER_TIMEZONES:
+        return _USER_TIMEZONES[uid]
+    res = await execute_d1_query("SELECT timezone FROM user_preferences WHERE user_id = ?", [uid])
+    if res.get("success") and res.get("results"):
+        tz = str(res["results"][0].get("timezone") or "").strip()
+        if tz:
+            _USER_TIMEZONES[uid] = tz
+            return tz
+    inferred = "Asia/Tehran" if fallback_lang == "fa" else "UTC"
+    _USER_TIMEZONES[uid] = inferred
+    return inferred
+
+async def set_user_timezone_async(user_id: int, timezone_name: str) -> bool:
+    """Saves user timezone to fast RAM and persists to D1."""
+    uid = int(user_id or 0)
+    clean_tz = str(timezone_name or "").strip()
+    if not uid or not clean_tz:
+        return False
+    _USER_TIMEZONES[uid] = clean_tz
+    res = await execute_d1_query(
+        "INSERT INTO user_preferences (user_id, timezone) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET timezone = excluded.timezone, updated_at = CURRENT_TIMESTAMP",
+        [uid, clean_tz]
+    )
+    return bool(res.get("success"))
+
 # --- High-Performance Isolated Per-Group Chat Memory Engine ---
 
 async def save_message_async(
@@ -1202,7 +1265,7 @@ async def save_message_async(
 
     # 1. Update In-Memory L1 Tracking
     if clean_chat_id < 0 and clean_chat_id not in _ACTIVE_GROUPS:
-        asyncio.create_task(track_group_presence_async(clean_chat_id, chat_title or "گروه ناشناس"))
+        asyncio.create_task(track_group_presence_async(clean_chat_id, chat_title or "گروه ناشناس", status="pending"))
 
     if clean_username and user_id:
         prev_uid = _USERNAME_TO_ID_MAP.get(clean_username)

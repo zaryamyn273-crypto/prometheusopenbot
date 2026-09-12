@@ -1,5 +1,5 @@
 # Prometheus — Multi-Modal, Agentic & Hardened Telegram Assistant
-> An agentic assistant connected to modern language models, equipped with a real-time matrix of ~90 tools (finance, web search, media, high-res vision, voice STT, damaged barcode reconstruction, secure file inspection, and sandbox execution). Prometheus never hallucinates; it reasons independently, calls the verified tool, and delivers referenced facts.
+> An advanced agentic assistant connected to modern frontier LLMs, equipped with a real-time matrix of ~90 tools (finance, web search, media, high-res vision, voice STT, international task scheduling, damaged barcode reconstruction, secure file inspection, and sandbox execution). Prometheus never hallucinates; it reasons independently, calls the verified tool, and delivers referenced facts.
 
 [![CI](https://github.com/zaryamyn273-crypto/prometheusopenbot/actions/workflows/ci.yml/badge.svg)](https://github.com/zaryamyn273-crypto/prometheusopenbot/actions/workflows/ci.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
@@ -19,7 +19,7 @@
 - [Key Features & Recent Advancements](#key-features--recent-advancements)
 - [Quickstart & Configuration](#quickstart--configuration)
 - [Pipeline Architecture](#pipeline-architecture)
-- [Tools Matrix](#tools-matrix)
+- [Tools Matrix & Telegram Commands](#tools-matrix--telegram-commands)
 - [Security and Hardening](#security-and-hardening)
 - [Adversarial Testing & Penetration Suite](#adversarial-testing--penetration-suite)
 - [Documentation & Guides](#documentation--guides)
@@ -28,14 +28,23 @@
 
 ## Key Features & Recent Advancements
 
+* 🌍 **Multilingual & Timezone-Aware Distributed Task Scheduler (`scheduler`):**
+  - Persistent scheduling of reminders, tasks, and automated financial broadcasts backed by Cloudflare D1 SQL storage (fully resilient against container restarts).
+  - **Dynamic Timezone Inference:** Automatically resolves the user's country and timezone based on their language and locale (Persian ➔ `Asia/Tehran`, English ➔ `UTC`, Arabic ➔ `Asia/Dubai`, German ➔ `Europe/Berlin`, Turkish ➔ `Europe/Istanbul`, Japanese ➔ `Asia/Tokyo`, etc.).
+  - **Natural Timezone Recognition in Prompts:** Extracts arbitrary city/timezones directly from user text (e.g. "at 14:00 London time", "tomorrow at 9 am est", "at 18:00 UTC", "ساعت ۵ عصر به وقت دبی").
+  - **User Timezone Persistence & Clarification:** Dedicated `user_preferences` table in D1, with native `/timezone` and `/tz` commands alongside agent tools (`schedule_task_tool` and `set_user_timezone_tool`). Automatically notifies international users with guidance on setting their local timezone.
+* 🚪 **Strict Group Authorization Gate (Zero Auto-Approval & Zero Auto-Leave):**
+  - When the bot is invited to any group by non-admins, it enters a strict `pending` status.
+  - **Never Auto-Approves, Never Auto-Leaves:** The bot remains 100% silent and never answers regular chat messages until the Master Admin explicitly acts.
+  - It **never automatically leaves** on its own; approval is granted strictly when the Master Admin clicks "Approve" in private chat, and departure occurs strictly when the admin clicks "Reject".
+* 🛡️ **Zero Cross-Group Collision & Cloudflare Quota Shield:**
+  - Per-chat isolated display-name indexing (`_CHAT_DISPLAY_NAMES`) preventing identity collisions when different users share names across groups.
+  - Strict mandatory `chat_id` constraints across all memory search layers and FTS5 indices, completely blocking cross-chat data leaks.
+  - Intelligent Adaptive Write-Behind Coalescer (3.0s debounce window): multi-row batch inserts **reduce Cloudflare D1 HTTP calls by >95%**, shielding against daily quota limits and HTTP 429 throttling.
+  - Enriched 23-column message schemas capturing Telegram forum `thread_id`, `forward_from`, `sender_chat_id`, `detected_lang`, `char_count`, `has_media`, and `extra_meta`.
 * 🧠 **Isolated 30-Message RAM Buffer per Group & On-Demand Context:**
   - Dedicated, isolated rolling window of **up to 30 last messages per group in RAM** with zero cross-group context leaks or pollution.
   - Context is injected into the LLM prompt **strictly on demand** (only when explicitly requested by the user or when replying to a message). Direct standalone queries execute in zero-history mode for maximum speed and token efficiency.
-* 🛡️ **Zero Cross-Group Collision & Cloudflare Quota Shield:**
-  - Per-chat isolated display-name indexing (`_CHAT_DISPLAY_NAMES`) preventing identity collisions when different users share names across groups.
-  - Strict mandatory `chat_id` constraints across all memory search layers and FTS5 indices, preventing cross-chat data leaks.
-  - Intelligent Adaptive Write-Behind Coalescer (3.0s debounce window): multi-row batch inserts **reduce Cloudflare D1 HTTP calls by >95%**, shielding against daily quota limits and HTTP 429 throttling.
-  - Enriched 23-column message schemas capturing Telegram forum `thread_id`, `forward_from`, `sender_chat_id`, `detected_lang`, `char_count`, `has_media`, and `extra_meta`.
 * 🇮🇷 **100% Persian Language Accuracy & Zero Arabic False Positives:**
   - Overhauled language detection (`detect_lang`) providing absolute Persian priority for shared-alphabet messages.
   - Completely eliminates erroneous Arabic language switching on short Persian sentences (such as "who are you" or "write a story").
@@ -44,10 +53,6 @@
   - Crisp, professional, concise, and technical tone with a touch of intelligent, dry wit and subtle sarcasm.
 * ⚡ **Real-Time RAM & Cloudflare D1 Sync for Bans & Directives:**
   - Instant synchronization between sub-microsecond in-memory hashed sets and Cloudflare D1 for banned users and admin directives (`manage_admin_memory`).
-* ⏰ **Distributed Cron Job & Task Scheduler Engine (`scheduler`):**
-  - Persistent scheduling of reminders, tasks, and automated financial broadcasts backed by Cloudflare D1 SQL storage (resilient against container restarts).
-  - Full natural language parser for English & Persian ("in 10m", "tomorrow at 18:30", "every day at 12:00", "every 2 hours") alongside standard 5-part cron syntax (`0 12 * * *`).
-  - Native Telegram commands `/remind`, `/schedules`, and `/cancel_schedule` alongside autonomous LLM agent tools.
 * 🔍 **Sub-Second Speculative Web Search (<1.2s):**
   - Concurrent speculative race across Tavily AI, Bing, Wikipedia, and DuckDuckGo Instant.
   - Automatic circuit breaker for Tavily rate-limits to eliminate 429 delays and timeouts.
@@ -57,21 +62,16 @@
 * 🎙️ **Multimodal Audio & High-Definition Vision:**
   - Fast Speech-to-Text (STT) powered by multimodal LLMs, transcribing voice notes and audio without third-party local overhead.
   - 2048px high-resolution vision engine handling both standard compressed Telegram photos and uncompressed photo documents.
-* 🛡️ **Live Group Telemetry & Airtight Governance:**
-  - Real-time parallel group status monitoring (`list_joined_groups_tool`) tracking live member count, bot permission status (Admin vs Member), and valid invite links.
-  - **100% Silent Security Gate:** Silently blocks unauthorized groups until the Master Admin explicitly approves them via interactive buttons in private chat.
-* ⚡ **Instant Numeric User ID & Identity Extraction (`whois` / `getid`):**
-  - Sub-10ms user identity lookup via replies ("id", "whois", "آیدی") or forwarded channel messages.
-* 🔒 **Enterprise-Grade Defense-in-Depth:**
-  - Three-layer anti-jailbreak shield with NFKC character normalization and zero-width character stripping.
-  - Full hop-by-hop redirect SSRF guard blocking private IP ranges and cloud metadata endpoints (`169.254.169.254`).
-  - AST Python code analyzer and automated secret scrubber masking API keys and bot tokens with `[SECRET]`.
+* 🔒 **Enterprise Hardened Red/Blue Shield:**
+  - Hop-by-hop redirect SSRF guard with strict loopback/private IPv4/IPv6 blocking.
+  - Deterministic pre-LLM zero-cost anti-jailbreak filter with NFKC and zero-width normalization.
+  - AST-based Python sandbox and automatic secret masking in shell logs with `[SECRET]`.
 
 ---
 
 ## Quickstart & Configuration
 
-Only **3 environment variables** are required to boot (all other services have automatic fallbacks):
+To start Prometheus, only **3 mandatory variables** are required in your environment:
 
 ```bash
 # 1. Clone repository
@@ -80,9 +80,9 @@ cd prometheusopenbot
 
 # 2. Configure environment
 cp .env.example .env
-# Set TELEGRAM_BOT_TOKEN, ADMIN_ID, and ROUTER_API_KEY in .env
+# Set TELEGRAM_BOT_TOKEN, ADMIN_ID, and ROUTER_API_KEY
 
-# 3. Install dependencies and start
+# 3. Install dependencies and run
 pip install -r requirements.txt
 python bot.py
 
@@ -90,128 +90,65 @@ python bot.py
 docker compose up -d --build
 ```
 
-> **Zero Secrets Policy:** Zero tokens, API keys, or credentials are committed to Git. All credentials are supplied strictly via environment variables at runtime.
+> **Zero Secret Leak Guarantee:** No credentials, API tokens, or secrets are ever committed to the repository or git history. All variables are injected at runtime via environment variables.
 
 ---
 
-## Pipeline Architecture
+## Tools Matrix & Telegram Commands
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                      User on Telegram                       │
-│        (Text, Voice Note, Image, Reply, Forward)            │
-└──────────────────────────────┬──────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 Telegram Dispatcher Engine                  │
-│   • Admin numeric ID verification                           │
-│   • Pre-LLM anti-jailbreak & NFKC sanitization              │
-│   • Sub-millisecond fast-turn triage (Time, Market, Ping)   │
-└──────────────────────────────┬──────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│             On-Demand Isolated Memory Tier                  │
-│  • Strict 30-message isolated RAM buffer per group          │
-│  • On-demand context injection (reply or explicit request)  │
-│  • Cloudflare D1: Serverless SQL database with FTS5 search  │
-│  • Live synchronization for bans & admin directives         │
-└──────────────────────────────┬──────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│             Autonomous LLM Multi-Step Reasoner              │
-│     (Parallel multi-tool calling, reasoning, formatting)    │
-│     • Strict Persian language fidelity, concise persona     │
-│     • Absolute direct-question scoping without bloat        │
-└──────────────────────────────┬──────────────────────────────┘
-                                │ (Parallel Async Tool Exec)
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│               Tool Matrix (~90 Verified Tools)              │
-│  • Finance (Binance, Nobitex, Gold, Forex, Tether)          │
-│  • Web & Network (Speculative Search, DNS, Web Scraper)     │
-│  • Media (Damaged Barcode Recovery, QR Level-H, MP3 320k)   │
-│  • System & Docs (E2B Sandbox, Telegram ID, PDF/Doc Reader) │
-└──────────────────────────────┬──────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│               Telegram HTML & Shield Formatter              │
-│  • Automatic secret masking with [SECRET] pattern           │
-│  • Telegram 4096-character chunking & HTML fallback         │
-└──────────────────────────────┬──────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Delivery to User Message                  │
-└─────────────────────────────────────────────────────────────┘
-```
+### Telegram Commands:
+* `/remind <time> <message>` or `/schedule`: Schedule reminders or tasks across any timezone.
+* `/schedules`: View active schedules for the current chat or user.
+* `/cancel_schedule <id>`: Cancel an active schedule by its ID.
+* `/timezone` or `/tz`: View or set preferred timezone (e.g. `/timezone London`, `/timezone New York`).
+* `/whois` or `ID`: Instant user/channel telemetry extraction via reply.
+* `/admin`: Interactive Master Admin control dashboard.
+* `/ban` & `/unban`: Manage user access by numeric ID, username, or display name.
 
----
-
-## Tools Matrix
-
-| Category | Highlighted Tools | Capabilities |
-| :--- | :--- | :--- |
-| **Media & Barcode** | `generate_barcode_tool`<br>`reconstruct_damaged_barcode_tool`<br>`download_music_track`<br>`transcribe_audio_tool` | 1D barcode & Level-H QR generation, mathematical repair of scratched barcodes, 320kbps MP3 retrieval, high-accuracy speech-to-text. |
-| **Web & Network** | `web_search`<br>`fetch_webpage_content`<br>`check_website_status`<br>`resolve_dns` | Sub-1.2s concurrent search, ad-stripped page extraction, SSRF-guarded ping/status diagnostics, DNS-over-HTTPS. |
-| **Financial Markets** | `get_price`<br>`get_crypto_overview`<br>`get_gold_and_coin_price`<br>`get_fiat_overview` | Sub-50ms crypto, gold, coin, and foreign exchange rates with distributed fallback architecture. |
-| **System & Admin** | `extract_user_id_tool`<br>`list_joined_groups_tool`<br>`ban_user_tool`<br>`manage_admin_memory` | Instant numeric ID extraction, live group auditing, user ban management, admin memory sync across D1 and RAM. |
-| **Documents & Math** | `read_document_file`<br>`calculate_math_expression`<br>`convert_units` | Sandboxed extraction of PDF, DOCX, and XLSX files, arbitrary precision arithmetic, and scientific unit conversion. |
+### Autonomous Agent Tools:
+* `schedule_task_tool`: Natural language scheduling with automatic timezone awareness.
+* `set_user_timezone_tool`: Configure user timezone through conversational interaction.
+* `list_scheduled_tasks_tool`: Query active scheduled jobs and cron runs.
+* `cancel_scheduled_task_tool`: Terminate active scheduled tasks.
+* `search_group_memory`: FTS5 full-text search strictly scoped to the current chat.
+* `generate_barcode_tool` & `generate_qr_code_tool`: High-res barcode generation.
+* `resolve_barcode_math_tool`: Algebraic reconstruction of scratched barcodes.
+* `download_music_track` & `get_song_lyrics`: Studio music retrieval with timestamped lyrics.
 
 ---
 
 ## Security and Hardening
 
-1. **Hop-by-Hop Redirect SSRF Defense (`src/utils/net_guard.py`):**
-   - Validates resolved DNS IP addresses at every individual redirect hop (HTTP 301/302/307/308).
-   - Firmly blocks private IP subnets, loopbacks, link-local ranges, and cloud metadata endpoints (`169.254.169.254`).
-2. **Three-Layer Anti-Jailbreak Guard (`src/core/guard.py`):**
-   - Unicode NFKC normalization and zero-width character stripping before pattern matching.
-   - Comprehensive detection of override prompts, safety boundary bypasses, and roleplay hijacking.
-   - Fixed `IMMUNITY_BLOCK` enforcing that all user inputs and tool responses are treated strictly as untrusted data.
-3. **Automated Secret Scrubbing (`src/core/security.py`):**
-   - Regex-based masking for Telegram bot tokens, OpenAI/DeepSeek `sk-` keys, GitHub PATs, and authorization headers.
-4. **AST Code Sandbox:**
-   - Static abstract syntax tree verification blocking dangerous reflection attributes (`__mro__`, `__subclasses__`, `__globals__`) and system calls.
+1. **Hop-by-Hop Redirect SSRF Guard:** Inspects IP addresses at every HTTP redirect hop, neutralizing loopback, AWS metadata, and DNS rebinding attacks.
+2. **Deterministic Anti-Jailbreak Filter:** Zero-token-cost gate checking input vectors before reaching LLM inference.
+3. **AST-Based Python Sandbox:** Prohibits hazardous OS-level calls (`open`, `eval`, `exec`, `os`, `sys`) before evaluation.
+4. **Automatic Secret Sanitizer:** Intercepts and scrubs tokens and sensitive keys before output rendering.
+5. **Strict Group Authorization Gate:** Enforces total silence on untracked groups, eliminating auto-leaves and unauthorized responses.
 
 ---
 
 ## Adversarial Testing & Penetration Suite
 
-Run the automated test suite locally:
+Verify project integrity and security with the automated test battery:
 
 ```bash
-# Run the complete adversarial anti-jailbreak, SSRF, and sandbox test suite:
-python tests/test_adversarial.py
+# Run database isolation and Cloudflare rate-limit tests
+python -m tests.test_database_isolation
 
-# Run offline language detection and Persian/Arabic boundary verification:
-python tests/test_detect_lang.py
+# Run international timezone and scheduler tests
+python -m tests.test_scheduler
 
-# Run multi-dimensional stress testing:
-python tests/run_test_battery.py
+# Run adversarial penetration suite (Red/Blue security audit)
+python -m tests.test_adversarial
 
-# Test language detection and internationalization:
-python tests/test_i18n.py
-
-# Test daily quota and rate limiter enforcement:
-python tests/test_daily_limit.py
+# Run Persian language detection accuracy tests
+python -m tests.test_detect_lang
 ```
 
 ---
 
 ## Documentation & Guides
 
-* 🔑 [Complete Key Configuration Guide (Persian)](docs/setup/keys.fa.md)
-* 🌐 [Complete Key Configuration Guide (English)](docs/setup/keys.md)
-* 🏗️ [Architecture & Memory Tiers](docs/architecture/overview.md)
-* 🛠️ [Tool Matrix Catalog](docs/architecture/tooling.md)
-* 🛡️ [Security Policy & Vulnerability Reporting](SECURITY.md)
-
----
-
-## License and Contributing
-
-Prometheus is open-source software under standard licensing. Contributions, issues, and pull requests are welcomed!
+* 📘 [Technical Reference & Architecture (docs/README.md)](docs/README.md)
+* 🛡️ [Security Architecture (docs/SECURITY.md)](docs/SECURITY.md)
+* 🌐 [Cloud Deployment & Cloudflare Guide (docs/DEPLOYMENT.md)](docs/DEPLOYMENT.md)

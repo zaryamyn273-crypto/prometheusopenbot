@@ -132,6 +132,31 @@ async def main():
     assert database._D1_WRITE_QUEUE.empty()
     database._flush_batch_to_d1 = original_flush
 
+    print("\n--- 4. Testing Strict Group Authorization (Zero Auto-Approve, Zero Auto-Reject) ---")
+    new_group = -1009999999999
+    # Simulate non-admin adding bot
+    await database.track_group_presence_async(new_group, "گروه تستی جدید", added_by=99999, status="pending")
+    assert not database.is_group_approved(new_group)
+    assert database.is_group_pending(new_group)
+    print("✓ Group registered as pending. Bot is NOT approved to speak.")
+
+    # Even if messages are saved from this group, status stays pending!
+    await database.save_message_async(
+        chat_id=new_group,
+        user_id=888,
+        role="user",
+        content="پیام در گروه تایید نشده"
+    )
+    assert not database.is_group_approved(new_group)
+    assert database.is_group_pending(new_group)
+    print("✓ Incoming messages do NOT auto-approve group: stays strictly pending.")
+
+    # Only when Master Admin explicitly approves:
+    await database.set_group_status_async(new_group, "active")
+    assert database.is_group_approved(new_group)
+    assert not database.is_group_pending(new_group)
+    print("✓ Explicit Master Admin approval activates group.")
+
     print("\n== test_database_isolation ALL PASSED ==")
 
 

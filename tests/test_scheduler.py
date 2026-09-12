@@ -41,6 +41,7 @@ async def mock_execute_d1_query(sql: str, params: list = None):
             "cron_expr": params[9],
             "next_run_ts": params[10],
             "is_recurring": params[11],
+            "timezone": params[12] if len(params) > 12 else "Asia/Tehran",
             "status": "active"
         }
         mock_execute_d1_query.store.append(record)
@@ -108,6 +109,21 @@ async def main():
     assert cron == "*/30 * * * *"
     print("✓ */30 * * * * passed:", desc)
 
+    # International Timezone: London
+    sched_london = parse_schedule_expression("at 14:00 London time")
+    assert sched_london.timezone == "Europe/London"
+    print("✓ at 14:00 London time passed:", sched_london.human_desc, f"[{sched_london.timezone}]")
+
+    # International Timezone: Dubai in Persian
+    sched_dubai = parse_schedule_expression("فردا ساعت ۵ عصر به وقت دبی")
+    assert sched_dubai.timezone == "Asia/Dubai"
+    print("✓ فردا ساعت ۵ عصر به وقت دبی passed:", sched_dubai.human_desc, f"[{sched_dubai.timezone}]")
+
+    # International Timezone: New York EST
+    sched_ny = parse_schedule_expression("at 9 am est")
+    assert sched_ny.timezone == "America/New_York"
+    print("✓ at 9 am est passed:", sched_ny.human_desc, f"[{sched_ny.timezone}]")
+
     print("\n--- 2. Testing Job Creation & D1 Storage ---")
     database.execute_d1_query = mock_execute_d1_query
 
@@ -123,8 +139,21 @@ async def main():
     job_id = res["job_id"]
     print(f"✓ Job created successfully with id #{job_id}: {res['title']} at {res['next_run_formatted']}")
 
-    # Create 4 more to test quota
-    for i in range(2, 6):
+    # Create an international job (London)
+    res_int = await create_scheduled_job_async(
+        chat_id=1001,
+        user_id=5001,
+        title="London Team Sync",
+        time_expression="at 15:00 London time",
+        user_name="Ali",
+        username="ali_test"
+    )
+    assert res_int["success"]
+    assert res_int["timezone"] == "Europe/London"
+    print(f"✓ International job created successfully: {res_int['title']} at {res_int['next_run_formatted']}")
+
+    # Create 3 more to test quota (already 2 created)
+    for i in range(3, 6):
         r = await create_scheduled_job_async(
             chat_id=1001,
             user_id=5001,

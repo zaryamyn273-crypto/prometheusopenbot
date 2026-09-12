@@ -1164,6 +1164,7 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_part = args[0].replace("_", " ")
     title_part = " ".join(args[1:])
     from src.core import scheduler
+    ulang_code, _ = _ulang_of(update)
     res = await scheduler.create_scheduled_job_async(
         chat_id=chat.id,
         user_id=user.id,
@@ -1171,6 +1172,7 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time_expression=time_part,
         user_name=user.first_name or "",
         username=user.username or "",
+        user_lang=ulang_code,
     )
     if not res.get("success"):
         await reply_safely(message, f"❌ {res.get('error', 'خطا در ثبت یادآوری.')}")
@@ -1178,15 +1180,17 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     jid = res.get("job_id")
     recur_txt = "🔁 <b>تکرارشونده</b>" if res.get("is_recurring") else "⏱ <b>یک‌باره</b>"
+    tip_txt = f"\n\n<i>{res.get('tip')}</i>" if res.get("tip") else ""
     await reply_safely(
         message,
         f"✅ <b>یادآوری با موفقیت در سیستم زمان‌بندی پرومته ثبت شد:</b>\n\n"
         f"• <b>شناسه تسک:</b> <code>#{jid}</code>\n"
         f"• <b>متن:</b> {html.escape(title_part)}\n"
         f"• <b>نوع:</b> {recur_txt}\n"
+        f"• <b>منطقه زمانی:</b> <code>{res.get('timezone', 'Asia/Tehran')}</code>\n"
         f"• <b>زمانبندی:</b> {html.escape(str(res.get('human_desc')))}\n"
         f"• <b>موعد اجرا:</b> <code>{res.get('next_run_formatted')}</code>\n\n"
-        f"<i>💡 برای لغو:</i> <code>/cancel_schedule {jid}</code>"
+        f"<i>💡 برای لغو:</i> <code>/cancel_schedule {jid}</code>{tip_txt}"
     )
 
 async def schedules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1217,6 +1221,43 @@ async def cancel_schedule_command(update: Update, context: ContextTypes.DEFAULT_
     from src.tools.system import cancel_scheduled_task_tool
     res = await cancel_scheduled_task_tool(task_id=task_id, caller_id=user.id)
     await reply_safely(message, res)
+
+async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sets or views user timezone: /timezone or /timezone <city/zone>"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or database.is_user_banned(user.id):
+        return
+
+    from src.core import scheduler
+    args = context.args or []
+    if not args:
+        current_tz = await database.get_user_timezone_async(user.id)
+        tz_obj, canon_tz = scheduler.resolve_user_timezone(current_tz)
+        now_in_tz = datetime.datetime.now(tz_obj).strftime("%H:%M")
+        await reply_safely(
+            message,
+            f"🌍 <b>منطقه زمانی فعلی شما:</b> <code>{canon_tz}</code>\n"
+            f"🕒 <b>ساعت محلی شما:</b> <code>{now_in_tz}</code>\n\n"
+            f"<i>💡 برای تغییر منطقه زمانی:</i>\n"
+            f"<code>/timezone &lt;نام شهر یا منطقه&gt;</code>\n"
+            f"<i>مثال‌ها:</i> <code>/timezone London</code> یا <code>/timezone Berlin</code> یا <code>/timezone Tehran</code> یا <code>/timezone New York</code>"
+        )
+        return
+
+    tz_query = " ".join(args).strip()
+    tz_obj, canon_tz = scheduler.resolve_user_timezone(tz_query)
+    ok = await database.set_user_timezone_async(user.id, canon_tz)
+    now_in_tz = datetime.datetime.now(tz_obj).strftime("%H:%M")
+    if ok:
+        await reply_safely(
+            message,
+            f"✅ <b>منطقه زمانی شما با موفقیت تنظیم شد:</b> <code>{canon_tz}</code>\n"
+            f"🕒 <b>ساعت کنونی در این منطقه:</b> <code>{now_in_tz}</code>\n\n"
+            f"📌 از این پس تمامی یادآوری‌ها، کرون‌جاب‌ها و زمان‌بندی‌های شما بر اساس ساعت این منطقه محاسبه و اجرا خواهند شد."
+        )
+    else:
+        await reply_safely(message, "❌ خطا در ذخیره منطقه زمانی.")
 
 # ==========================================
 # 2. Group Membership Guardian (Auto-Leave)
@@ -1751,34 +1792,33 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 return
 
     # PENDING & UNAPPROVED GROUPS: the bot stays 100% silent until the Master Admin approves.
+    # NEVER auto-approves and NEVER auto-leaves: stays pending indefinitely until explicit admin action.
     if not is_pv:
-        if database.is_group_pending(chat.id):
-            return
-        # If the group is completely untracked and sender is not admin, auto-register pending & alert admin
-        if chat.id not in database._ACTIVE_GROUPS:
-            if is_admin(user.id):
+        if not database.is_group_approved(chat.id):
+            if chat.id not in database._ACTIVE_GROUPS and is_admin(user.id):
                 await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="active")
             else:
-                await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="pending")
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat.id,
-                        text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_pending")),
-                        parse_mode=ParseMode.HTML
-                    )
-                except Exception:
-                    pass
-                try:
-                    await context.bot.send_message(
-                        chat_id=ADMIN_ID,
-                        text=telegram_formatter.markdown_to_telegram_html(
-                            t("fa", "pv_group_request", title=chat.title or "گروه", cid=chat.id, inviter=user.first_name or user.id)
-                        ),
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=admin_panel.get_group_approval_keyboard(chat.id)
-                    )
-                except Exception as e:
-                    logger.warning(f"Could not notify admin of pending group {chat.id}: {e}")
+                if chat.id not in database._ACTIVE_GROUPS:
+                    await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="pending")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat.id,
+                            text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_pending")),
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await context.bot.send_message(
+                            chat_id=ADMIN_ID,
+                            text=telegram_formatter.markdown_to_telegram_html(
+                                t("fa", "pv_group_request", title=chat.title or "گروه", cid=chat.id, inviter=user.first_name or user.id)
+                            ),
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=admin_panel.get_group_approval_keyboard(chat.id)
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not notify admin of pending group {chat.id}: {e}")
                 return
 
     ulang, ulang_name = _ulang_of(update)
@@ -3038,6 +3078,10 @@ def build_application():
     app.add_handler(_pcmd("schedules_prometheus", schedules_command))
     app.add_handler(_pcmd("cancel_schedule", cancel_schedule_command))
     app.add_handler(_pcmd("cancel_schedule_prometheus", cancel_schedule_command))
+    app.add_handler(_pcmd("timezone", timezone_command))
+    app.add_handler(_pcmd("timezone_prometheus", timezone_command))
+    app.add_handler(_pcmd("tz", timezone_command))
+    app.add_handler(_pcmd("tz_prometheus", timezone_command))
 
     # Callbacks, Chat Member Updates & Messages
     app.add_handler(ChatMemberHandler(track_chat_member_updates, ChatMemberHandler.MY_CHAT_MEMBER))

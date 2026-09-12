@@ -605,20 +605,22 @@ async def get_banned_users_list_tool(caller_id: int = 0, is_private_chat: bool =
 
 @register_tool(
     name="schedule_task_tool",
-    description="زمان‌بندی یادآوری، تسک یا گزارش‌های خودکار (کرون جاب) با پشتیبانی از زمان نسبی (۱۰ دقیقه دیگه، ۲ ساعت بعد)، ساعت دقیق (فردا ساعت ۱۲:۰۰، ساعت ۵ عصر) یا تکرارشونده (هر روز ساعت ۹، هر ۳ ساعت، الگوی کرون)",
+    description="زمان‌بندی یادآوری، تسک یا گزارش‌های خودکار (کرون جاب) با پشتیبانی چندزبانه و بین‌المللی از ساعت شهرها و مناطق زمانی مختلف (تهران، لندن، نیویورک، دبی، برلین، توکیو یا UTC)، زمان نسبی (۱۰ دقیقه دیگه)، ساعت دقیق (فردا ساعت ۱۲:۰۰) یا الگوهای تکرارشونده",
     category="system"
 )
 async def schedule_task_tool(
     title: str,
     when: str,
     action_type: str = "reminder",
+    timezone: str = "",
     chat_id: int = 0,
     caller_id: int = 0
 ) -> str:
     """
     :param title: متن یادآوری یا عنوان تسک زمان‌بندی‌شده
-    :param when: عبارت زمانی (مانند '10m', '2 ساعت بعد', 'فردا ساعت 18:30', 'هر روز ساعت 12:00', '0 9 * * *')
+    :param when: عبارت زمانی (مانند '10m', '2 ساعت بعد', 'فردا ساعت 18:30 به وقت لندن', 'at 14:00 London', 'هر روز ساعت 12:00', '0 9 * * *')
     :param action_type: نوع تسک ('reminder' برای پیام یادآوری، 'market_report' برای گزارش مالی خودکار)
+    :param timezone: منطقه زمانی یا شهر اختیاری (مثلاً 'London', 'Berlin', 'New York', 'Asia/Tehran', 'UTC')
     """
     from src.core import scheduler
     if not title or not title.strip():
@@ -632,6 +634,7 @@ async def schedule_task_tool(
         title=title.strip(),
         time_expression=when.strip(),
         action_type=action_type.strip(),
+        user_timezone=timezone.strip(),
     )
 
     if not res.get("success"):
@@ -639,15 +642,45 @@ async def schedule_task_tool(
 
     jid = res.get("job_id")
     recur_txt = "🔁 *تکرارشونده*" if res.get("is_recurring") else "⏱ *یک‌باره*"
+    tip_txt = f"\n\n{res.get('tip')}" if res.get("tip") else ""
     return (
         f"✅ *تسک زمان‌بندی‌شده با موفقیت در دیتابیس ابدی D1 ثبت گردید*:\n\n"
         f"• *شناسه تسک*: `#{jid}`\n"
         f"• *عنوان*: {title.strip()}\n"
         f"• *نوع تسک*: {recur_txt}\n"
+        f"• *منطقه زمانی*: `{res.get('timezone', 'Asia/Tehran')}`\n"
         f"• *زمانبندی*: {res.get('human_desc')}\n"
         f"• *موعد اجرای بعدی*: `{res.get('next_run_formatted')}`\n\n"
-        f"💡 برای لغو در آینده: «تسک #{jid} رو لغو کن»"
+        f"💡 برای لغو در آینده: «تسک #{jid} رو لغو کن»{tip_txt}"
     )
+
+
+@register_tool(
+    name="set_user_timezone_tool",
+    description="تنظیم یا تغییر منطقه زمانی (تایم‌زون) کاربر برای زمان‌بندی دقیق تسک‌ها و یادآوری‌ها بر اساس ساعت شهر یا کشور دلخواه (مانند تهران، لندن، برلین، نیویورک، دبی، توکیو یا UTC)",
+    category="system"
+)
+async def set_user_timezone_tool(
+    timezone_or_city: str,
+    caller_id: int = 0
+) -> str:
+    """
+    :param timezone_or_city: نام شهر، کشور یا منطقه زمانی استاندارد (مثلاً 'London', 'Tehran', 'Berlin', 'New York', 'Asia/Dubai', 'UTC')
+    """
+    from src.core import scheduler, database
+    import datetime
+    if not timezone_or_city or not timezone_or_city.strip():
+        return "❌ نام شهر یا منطقه زمانی نمی‌تواند خالی باشد."
+    tz_obj, canon_tz = scheduler.resolve_user_timezone(timezone_or_city.strip())
+    ok = await database.set_user_timezone_async(caller_id, canon_tz)
+    now_in_tz = datetime.datetime.now(tz_obj).strftime("%H:%M")
+    if ok:
+        return (
+            f"✅ منطقه زمانی شما با موفقیت روی *{canon_tz}* تنظیم گردید.\n"
+            f"🕒 ساعت محلی فعلی در این منطقه: *{now_in_tz}*\n"
+            f"📌 تمامی تسک‌ها و یادآوری‌های آتی شما بر اساس ساعت این منطقه محاسبه و اجرا خواهند شد."
+        )
+    return "❌ خطا در ذخیره منطقه زمانی در پایگاه داده."
 
 
 @register_tool(
