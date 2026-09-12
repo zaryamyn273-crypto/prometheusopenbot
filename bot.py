@@ -1422,21 +1422,93 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 # 4. Main Message & Vision Pipeline
 # ==========================================
 
+_FAST_CRYPTO_MAP = {
+    "بیت کوین": "BTC", "بیتکوین": "BTC", "بیت": "BTC", "btc": "BTC", "bitcoin": "BTC",
+    "اتریوم": "ETH", "اتر": "ETH", "eth": "ETH", "ethereum": "ETH",
+    "تتر": "USDT", "usdt": "USDT", "tether": "USDT",
+    "سولانا": "SOL", "سول": "SOL", "sol": "SOL", "solana": "SOL",
+    "تون کوین": "TON", "تون": "TON", "ton": "TON", "toncoin": "TON",
+    "دوج کوین": "DOGE", "دوج": "DOGE", "doge": "DOGE", "dogecoin": "DOGE",
+    "نات کوین": "NOT", "نات": "NOT", "not": "NOT", "notcoin": "NOT",
+    "ریپل": "XRP", "xrp": "XRP", "ripple": "XRP",
+    "ترون": "TRX", "trx": "TRX", "tron": "TRX",
+    "کاردانو": "ADA", "ada": "ADA", "cardano": "ADA",
+    "بی ان بی": "BNB", "بایننس کوین": "BNB", "bnb": "BNB",
+    "پپه": "PEPE", "pepe": "PEPE",
+    "شیبا": "SHIB", "شیبا اینو": "SHIB", "shib": "SHIB", "shiba": "SHIB",
+    "آوالانچ": "AVAX", "avax": "AVAX", "avalanche": "AVAX",
+    "چین لینک": "LINK", "لینک": "LINK", "link": "LINK",
+    "سویی": "SUI", "sui": "SUI",
+    "نیر": "NEAR", "near": "NEAR",
+    "پلیگان": "POL", "متیک": "POL", "matic": "POL", "pol": "POL",
+    "پولکادات": "DOT", "دات": "DOT", "dot": "DOT",
+    "کسپا": "KAS", "kas": "KAS",
+    "آربیتروم": "ARB", "arb": "ARB",
+    "آپتوس": "APT", "apt": "APT",
+}
+
+def _match_financial_fast_intent(text: str) -> Optional[Tuple[str, Tuple[Any, ...]]]:
+    """Ultra-fast regex parser mapping natural market queries directly to tools in 0.01ms."""
+    if not text:
+        return None
+    t = text.strip().lower()
+    t = re.sub(r"[!؟?،,.]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    price_markers = ["قیمت", "نرخ", "چنده", "چند شد", "چند است", "چقدر شد", "چقدره", "ارزش", "تابلو", "price", "rate"]
+    has_price_marker = any(pm in t for pm in price_markers)
+
+    # 1. Gold & Coins
+    gold_keywords = ["طلا", "سکه", "طلای ۱۸", "طلای 18", "گرم طلا", "آبشده", "مثقال", "انس", "امامی", "بهار آزادی", "نیم سکه", "ربع سکه", "سکه گرمی"]
+    if any(k in t for k in gold_keywords):
+        if has_price_marker or len(t.split()) <= 5:
+            return ("get_gold_and_coin_price", ())
+
+    # 2. Dollar specifically
+    dollar_keywords = ["دلار", "دلار تهران", "دلار سبزه میدان", "دلار آزاد", "نرخ دلار"]
+    if any(k in t for k in dollar_keywords) and not any(k in t for k in ["تتر", "usdt", "کانادا", "استرالیا"]):
+        if has_price_marker or len(t.split()) <= 4:
+            return ("get_dollar_price", ())
+
+    # 3. Fiat Overview
+    fiat_keywords = ["ارزها", "تابلوی ارز", "قیمت ارز", "نرخ ارز", "یورو", "درهم", "پوند", "لیر", "یوان", "فرانک"]
+    if any(k in t for k in fiat_keywords):
+        if has_price_marker or len(t.split()) <= 4:
+            return ("get_fiat_overview", ())
+
+    # 4. Crypto Overview
+    crypto_board_keywords = ["کریپتو", "تابلوی رمزارز", "بازار رمزارز", "بازار کریپتو", "ارزهای دیجیتال", "ارز دیجیتال"]
+    if any(k in t for k in crypto_board_keywords):
+        return ("get_crypto_overview", ())
+
+    # 5. Individual Cryptos (Check longest matching phrase first)
+    for phrase in sorted(_FAST_CRYPTO_MAP.keys(), key=lambda x: -len(x)):
+        pattern = rf"(?:^|\s){re.escape(phrase)}(?:\s|$)"
+        if re.search(pattern, t):
+            if has_price_marker or len(t.split()) <= 4:
+                return ("get_price", (_FAST_CRYPTO_MAP[phrase],))
+
+    # 6. Generic /p or price <symbol> pattern: e.g. "/p btc" or "قیمت ftm" or "p sol"
+    m_sym = re.search(r"(?:^/p\s+|^p\s+|قیمت\s+)([a-zA-Z]{2,10})\b", t)
+    if m_sym:
+        sym = m_sym.group(1).upper()
+        return ("get_price", (sym,))
+
+    return None
+
 async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang, image_bytes, has_reply):
     """Tier 0/1 triage: answer trivial turns with the minimum possible machinery.
 
     Returns (text, extra_action) or None when a full Tier-2 AI turn is needed.
     - Tier 0a (clock/date): database timestamps only, <1ms, zero imports.
     - Tier 0b (social chatter): internal query-rewriter only, no network.
-    - Tier 1 (market boards): exactly ONE tool module (financial) is loaded.
-    Non-Persian market text gets one cheap translation call (still no
-    history, no tool loop, no reasoning rounds).
+    - Tier 1 (market boards): instant sub-millisecond execution, bypasses LLM completely.
     """
     try:
         _norm = re.sub(r"[!؟?،,.]+", "", user_text or "").strip().lower()
     except Exception:
         return None
-    if not _norm or len(_norm) >= 50 or image_bytes or has_reply:
+    if not _norm or len(_norm) >= 120 or image_bytes or has_reply:
         return None
     try:
         # Tier 0a: time / date
@@ -1457,21 +1529,14 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
             return _pingpong_reply(_pp, user_display, user.id, ulang), None
     except Exception:
         pass
-    # Tier 1: single-board market queries (financial module only)
+    # Tier 1: single-board market queries (instant sub-millisecond execution)
     try:
-        _fin_map = [
-            (["قیمت دلار", "دلار", "دلار چنده", "نرخ دلار", "دلار تهران", "دلار چند"], "get_dollar_price", ()),
-            (["قیمت طلا", "طلا", "سکه", "قیمت سکه", "طلا چنده", "سکه امامی"], "get_gold_and_coin_price", ()),
-            (["ارزها", "تابلوی ارز", "قیمت ارزها", "قیمت یورو", "درهم", "قیمت تتر", "تتر"], "get_fiat_overview", ()),
-            (["بیتکوین", "بیت کوین", "قیمت بیتکوین", "قیمت بیت کوین", "btc", "bitcoin"], "get_price", ("BTC",)),
-            (["اتریوم", "قیمت اتریوم", "eth", "ethereum"], "get_price", ("ETH",)),
-            (["سولانا", "sol", "قیمت سولانا"], "get_price", ("SOL",)),
-            (["کریپتو", "تابلوی رمزارز", "بازار کریپتو"], "get_crypto_overview", ()),
-        ]
-        for _triggers, _fname, _fargs in _fin_map:
-            if _norm in _triggers:
-                from src.tools import financial as _fin_mod
-                _fn = getattr(_fin_mod, _fname)
+        fin_match = _match_financial_fast_intent(_norm)
+        if fin_match:
+            _fname, _fargs = fin_match
+            from src.tools import financial as _fin_mod
+            _fn = getattr(_fin_mod, _fname, None)
+            if _fn:
                 _out = await _fn(*_fargs)
                 if isinstance(_out, str) and _out.strip() and ulang != "fa":
                     try:

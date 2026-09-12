@@ -350,12 +350,18 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
             relevant_categories.add("search")
 
     # --- Price Disambiguation Protocol (Commodities/Goods vs Financial Exchanges) ---
-    price_words = ["قیمت", "نرخ", "چنده", "چند است", "چقدره", "قیمتش"]
+    price_words = ["قیمت", "نرخ", "چنده", "چند است", "چقدره", "قیمتش", "ارزش", "تابلو"]
     has_price_query = any(pw in prompt_lower for pw in price_words)
     if has_price_query:
         fin_anchors = [
-            "دلار", "ارز", "طلا", "سکه", "یورو", "پوند", "درهم", "لیر", "بیتکوین", "بیت کوین",
-            "تتر", "اتریوم", "کریپتو", "رمزارز", "forex", "crypto", "btc", "eth", "usdt", "sol", "ton"
+            "دلار", "ارز", "طلا", "سکه", "یورو", "پوند", "درهم", "لیر", "یوان", "فرانک",
+            "بیتکوین", "بیت کوین", "بیت", "تتر", "اتریوم", "اتر", "کریپتو", "رمزارز",
+            "forex", "crypto", "btc", "eth", "usdt", "sol", "ton", "doge", "not", "xrp",
+            "trx", "ada", "bnb", "pepe", "shib", "avax", "link", "sui", "near", "dot",
+            "pol", "matic", "kas", "arb", "apt", "fet", "rndr", "دوج", "نات", "ریپل",
+            "ترون", "کاردانو", "بایننس", "پپه", "شیبا", "سولانا", "تون کوین", "آوالانچ",
+            "نیر", "پولکادات", "فانتوم", "آبشده", "مثقال", "انس", "امامی", "بهار آزادی",
+            "نیم سکه", "ربع سکه", "سکه گرمی"
         ]
         has_fin = any(fa in prompt_lower for fa in fin_anchors)
         commodity_anchors = ["گوشی", "موبایل", "آیفون", "سامسونگ", "ماشین", "خودرو", "پراید", "بنزین", "سهام", "آهن", "لپتاپ", "کنسول", "ps5", "خرید"]
