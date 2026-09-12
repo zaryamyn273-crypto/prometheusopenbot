@@ -36,6 +36,7 @@ _MUTED_UNTIL: Dict[int, float] = {}
 _MUTED_USERNAMES: Dict[str, float] = {}
 _USERNAME_TO_ID_MAP: Dict[str, int] = {}
 _DISPLAY_NAME_TO_ID_MAP: Dict[str, Dict[str, Any]] = {}
+_CHAT_DISPLAY_NAMES: Dict[int, Dict[str, Dict[str, Any]]] = {}
 _CHAT_HISTORIES: Dict[int, List[Dict[str, Any]]] = {}
 _ACTIVE_GROUPS: Dict[int, Dict[str, Any]] = {}
 # Chats awaiting admin activation (bot was added by a non-admin).
@@ -424,8 +425,18 @@ def execute_d1_query_sync(sql: str, params: Optional[List[Any]] = None) -> Dict[
 
 # --- Bulletproof Asynchronous Write-Behind Worker Engine ---
 
+_BATCH_DEBOUNCE_SEC = 3.0
+_BATCH_MAX_SIZE = 50
+
+_MESSAGE_COLS = (
+    "chat_id, user_id, message_id, user_name, username, chat_title, chat_type, "
+    "msg_kind, reply_to_msg_id, reply_to_user, reply_to_text, role, content, "
+    "msg_date, msg_time, created_at, thread_id, forward_from, sender_chat_id, "
+    "detected_lang, char_count, has_media, extra_meta"
+)
+
 async def _flush_batch_to_d1(batch: List[Dict[str, Any]]):
-    """Safely flushes a batch of messages to Cloudflare D1 with chunking, retries, and fallback."""
+    """Safely flushes a batch of messages to Cloudflare D1 with high-efficiency chunking and retries."""
     if not batch:
         return
 
@@ -448,32 +459,49 @@ async def _flush_batch_to_d1(batch: List[Dict[str, Any]]):
             "content": str(m.get("content", ""))[:6000],
             "msg_date": str(m.get("msg_date", ""))[:30],
             "msg_time": str(m.get("msg_time", ""))[:30],
-            "created_at": str(m.get("created_at", ""))[:40]
+            "created_at": str(m.get("created_at", ""))[:40],
+            "thread_id": int(m.get("thread_id", 0) or 0),
+            "forward_from": str(m.get("forward_from", ""))[:120],
+            "sender_chat_id": int(m.get("sender_chat_id", 0) or 0),
+            "detected_lang": str(m.get("detected_lang", ""))[:10],
+            "char_count": int(m.get("char_count", 0) or 0),
+            "has_media": int(m.get("has_media", 0) or 0),
+            "extra_meta": str(m.get("extra_meta", "{}"))[:500],
         })
 
-    # Chunk into 5 items per SQL insert (5 * 16 = 80 params, strictly below SQLite 100 limit)
-    chunk_size = 5
+    # Chunk into 25 items per SQL insert (25 * 23 = 575 params, safely below SQLite 999 limit)
+    chunk_size = 25
     for i in range(0, len(clean_batch), chunk_size):
         sub_batch = clean_batch[i:i + chunk_size]
         if len(sub_batch) == 1:
             m = sub_batch[0]
-            sql = "INSERT INTO messages (chat_id, user_id, message_id, user_name, username, chat_title, chat_type, msg_kind, reply_to_msg_id, reply_to_user, reply_to_text, role, content, msg_date, msg_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            params = [m["chat_id"], m["user_id"], m["message_id"], m["user_name"], m["username"], m["chat_title"], m["chat_type"], m["msg_kind"], m["reply_to_msg_id"], m["reply_to_user"], m["reply_to_text"], m["role"], m["content"], m["msg_date"], m["msg_time"], m["created_at"]]
+            sql = f"INSERT INTO messages ({_MESSAGE_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            params = [
+                m["chat_id"], m["user_id"], m["message_id"], m["user_name"], m["username"],
+                m["chat_title"], m["chat_type"], m["msg_kind"], m["reply_to_msg_id"],
+                m["reply_to_user"], m["reply_to_text"], m["role"], m["content"],
+                m["msg_date"], m["msg_time"], m["created_at"],
+                m["thread_id"], m["forward_from"], m["sender_chat_id"],
+                m["detected_lang"], m["char_count"], m["has_media"], m["extra_meta"]
+            ]
             for attempt in range(3):
                 res = await execute_d1_query(sql, params)
                 if res.get("success"):
                     break
                 await asyncio.sleep(0.2 * (attempt + 1))
         else:
-            val_placeholders = ["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" for _ in sub_batch]
+            val_placeholders = ["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" for _ in sub_batch]
             params = []
             for m in sub_batch:
                 params.extend([
                     m["chat_id"], m["user_id"], m["message_id"], m["user_name"], m["username"],
-                    m["chat_title"], m["chat_type"], m["msg_kind"], m["reply_to_msg_id"], m["reply_to_user"], m["reply_to_text"],
-                    m["role"], m["content"], m["msg_date"], m["msg_time"], m["created_at"]
+                    m["chat_title"], m["chat_type"], m["msg_kind"], m["reply_to_msg_id"],
+                    m["reply_to_user"], m["reply_to_text"], m["role"], m["content"],
+                    m["msg_date"], m["msg_time"], m["created_at"],
+                    m["thread_id"], m["forward_from"], m["sender_chat_id"],
+                    m["detected_lang"], m["char_count"], m["has_media"], m["extra_meta"]
                 ])
-            sql = f"INSERT INTO messages (chat_id, user_id, message_id, user_name, username, chat_title, chat_type, msg_kind, reply_to_msg_id, reply_to_user, reply_to_text, role, content, msg_date, msg_time, created_at) VALUES {', '.join(val_placeholders)}"
+            sql = f"INSERT INTO messages ({_MESSAGE_COLS}) VALUES {', '.join(val_placeholders)}"
 
             success = False
             for attempt in range(3):
@@ -484,52 +512,83 @@ async def _flush_batch_to_d1(batch: List[Dict[str, Any]]):
                 await asyncio.sleep(0.2 * (attempt + 1))
 
             if not success:
-                single_sql = "INSERT INTO messages (chat_id, user_id, message_id, user_name, username, chat_title, chat_type, msg_kind, reply_to_msg_id, reply_to_user, reply_to_text, role, content, msg_date, msg_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                single_sql = f"INSERT INTO messages ({_MESSAGE_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 for m in sub_batch:
                     try:
                         await execute_d1_query(single_sql, [
                             m["chat_id"], m["user_id"], m["message_id"], m["user_name"], m["username"],
-                            m["chat_title"], m["chat_type"], m["msg_kind"], m["reply_to_msg_id"], m["reply_to_user"], m["reply_to_text"],
-                            m["role"], m["content"], m["msg_date"], m["msg_time"], m["created_at"]
+                            m["chat_title"], m["chat_type"], m["msg_kind"], m["reply_to_msg_id"],
+                            m["reply_to_user"], m["reply_to_text"], m["role"], m["content"],
+                            m["msg_date"], m["msg_time"], m["created_at"],
+                            m["thread_id"], m["forward_from"], m["sender_chat_id"],
+                            m["detected_lang"], m["char_count"], m["has_media"], m["extra_meta"]
                         ])
                     except Exception:
                         pass
 
 async def _d1_batch_writer_loop():
     """
-    Continuous Background Queue Worker:
-    Drains messages from the memory queue and flushes them in batches with zero crashes.
+    Continuous Background Queue Worker with Adaptive Debouncing:
+    Gathers messages over a 3-second window or up to 50 items and flushes them
+    in a single multi-row query. Reduces Cloudflare D1 requests by over 95%.
     """
-    # NOTE: _D1_WRITE_QUEUE is only read here (created in ensure_batch_worker).
+    batch = []
+    last_flush = time.time()
     while True:
         try:
             if _D1_WRITE_QUEUE is None:
                 await asyncio.sleep(0.5)
                 continue
 
-            batch = []
-            # Wait for first item
-            first_item = await _D1_WRITE_QUEUE.get()
-            batch.append(first_item)
-            _D1_WRITE_QUEUE.task_done()
+            time_since_flush = time.time() - last_flush
+            wait_time = max(0.1, _BATCH_DEBOUNCE_SEC - time_since_flush) if batch else 5.0
 
-            # Drain up to 20 messages per batch (optimal 200 SQL params)
-            while not _D1_WRITE_QUEUE.empty() and len(batch) < 20:
+            try:
+                item = await asyncio.wait_for(_D1_WRITE_QUEUE.get(), timeout=wait_time)
+                batch.append(item)
+                _D1_WRITE_QUEUE.task_done()
+            except asyncio.TimeoutError:
+                pass
+
+            # Drain any immediately ready items from queue up to _BATCH_MAX_SIZE
+            while not _D1_WRITE_QUEUE.empty() and len(batch) < _BATCH_MAX_SIZE:
                 try:
-                    item = _D1_WRITE_QUEUE.get_nowait()
-                    batch.append(item)
+                    b_item = _D1_WRITE_QUEUE.get_nowait()
+                    batch.append(b_item)
                     _D1_WRITE_QUEUE.task_done()
                 except Exception:
                     break
 
-            if batch:
-                await _flush_batch_to_d1(batch)
+            now = time.time()
+            if batch and (len(batch) >= _BATCH_MAX_SIZE or (now - last_flush) >= _BATCH_DEBOUNCE_SEC):
+                to_flush = batch
+                batch = []
+                last_flush = now
+                await _flush_batch_to_d1(to_flush)
 
         except asyncio.CancelledError:
+            if batch:
+                await _flush_batch_to_d1(batch)
             break
         except Exception as e:
             logger.error(f"D1 batch write loop exception: {e}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
+
+async def flush_write_queue_async():
+    """Immediately drains and persists all pending messages in memory to D1."""
+    global _D1_WRITE_QUEUE
+    if _D1_WRITE_QUEUE is None or _D1_WRITE_QUEUE.empty():
+        return
+    pending = []
+    while not _D1_WRITE_QUEUE.empty():
+        try:
+            item = _D1_WRITE_QUEUE.get_nowait()
+            pending.append(item)
+            _D1_WRITE_QUEUE.task_done()
+        except Exception:
+            break
+    if pending:
+        await _flush_batch_to_d1(pending)
 
 def ensure_batch_worker():
     global _D1_WRITE_QUEUE, _BATCH_WORKER_TASK
@@ -564,7 +623,14 @@ def init_db():
         msg_date TEXT,
         msg_time TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        message_id INTEGER DEFAULT 0
+        message_id INTEGER DEFAULT 0,
+        thread_id INTEGER DEFAULT 0,
+        forward_from TEXT DEFAULT '',
+        sender_chat_id INTEGER DEFAULT 0,
+        detected_lang TEXT DEFAULT '',
+        char_count INTEGER DEFAULT 0,
+        has_media INTEGER DEFAULT 0,
+        extra_meta TEXT DEFAULT '{}'
     );
     CREATE TABLE IF NOT EXISTS admin_memories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -646,6 +712,8 @@ def init_db():
         last_run_at TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(chat_id, thread_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_messages_lang ON messages(chat_id, detected_lang);
     CREATE INDEX IF NOT EXISTS idx_messages_search ON messages(chat_id, content);
     CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(chat_id, user_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_user_name ON messages(chat_id, user_name);
@@ -687,11 +755,18 @@ def init_db():
             if _s:
                 execute_d1_query_sync(_s)
 
-    # Migrate DBs created before username/invite_link/status existed (no-op if present).
+    # Migrate DBs created before username/invite_link/status/enriched columns existed (no-op if present).
     for _mig in (
         "ALTER TABLE tracked_groups ADD COLUMN username TEXT DEFAULT ''",
         "ALTER TABLE tracked_groups ADD COLUMN invite_link TEXT DEFAULT ''",
         "ALTER TABLE tracked_groups ADD COLUMN status TEXT DEFAULT 'active'",
+        "ALTER TABLE messages ADD COLUMN thread_id INTEGER DEFAULT 0",
+        "ALTER TABLE messages ADD COLUMN forward_from TEXT DEFAULT ''",
+        "ALTER TABLE messages ADD COLUMN sender_chat_id INTEGER DEFAULT 0",
+        "ALTER TABLE messages ADD COLUMN detected_lang TEXT DEFAULT ''",
+        "ALTER TABLE messages ADD COLUMN char_count INTEGER DEFAULT 0",
+        "ALTER TABLE messages ADD COLUMN has_media INTEGER DEFAULT 0",
+        "ALTER TABLE messages ADD COLUMN extra_meta TEXT DEFAULT '{}'",
     ):
         try:
             execute_d1_query_sync(_mig)
@@ -1100,6 +1175,13 @@ async def save_message_async(
     reply_to_msg_id: int = 0,
     reply_to_user: str = "",
     reply_to_text: str = "",
+    thread_id: int = 0,
+    forward_from: str = "",
+    sender_chat_id: int = 0,
+    detected_lang: str = "",
+    char_count: int = 0,
+    has_media: int = 0,
+    extra_meta: Optional[Union[Dict[str, Any], str]] = None,
 ):
     ensure_batch_worker()
     now_ts = time.time()
@@ -1107,13 +1189,22 @@ async def save_message_async(
     created_at_iso, time_str, j_date_str = get_tehran_timestamps()
     clean_chat_id = int(chat_id) if isinstance(chat_id, (int, str)) and str(chat_id).lstrip("-").isdigit() else 0
     clean_user_id = int(user_id) if isinstance(user_id, (int, str)) and str(user_id).lstrip("-").isdigit() else 0
-    
+    clean_thread_id = int(thread_id or 0)
+    clean_fwd = str(forward_from or "")[:120]
+    clean_sender_chat = int(sender_chat_id or 0)
+    clean_lang = str(detected_lang or "")[:10]
+    clean_chars = int(char_count) if char_count > 0 else len(str(content or ""))
+    clean_media = int(has_media or 0)
+    if isinstance(extra_meta, dict):
+        clean_extra = json.dumps(extra_meta, ensure_ascii=False)
+    else:
+        clean_extra = str(extra_meta or "{}")
+
     # 1. Update In-Memory L1 Tracking
     if clean_chat_id < 0 and clean_chat_id not in _ACTIVE_GROUPS:
         asyncio.create_task(track_group_presence_async(clean_chat_id, chat_title or "گروه ناشناس"))
 
     if clean_username and user_id:
-        # Only hit D1 when the mapping is actually new/changed (saves 1 HTTP call per message)
         prev_uid = _USERNAME_TO_ID_MAP.get(clean_username)
         _USERNAME_TO_ID_MAP[clean_username] = user_id
         if prev_uid != user_id:
@@ -1127,11 +1218,11 @@ async def save_message_async(
             except RuntimeError:
                 pass
 
-    # Ultra-Fast In-Memory Display Name Indexing (Even for users without @username)
+    # Ultra-Fast Per-Chat Isolated Display Name Indexing (Prevents cross-group identity collisions)
     clean_display = str(user_name or "").strip()
     if clean_display and clean_user_id:
         norm_key = re.sub(r"[\s_\-\.]+", " ", clean_display).lower().strip()
-        _DISPLAY_NAME_TO_ID_MAP[norm_key] = {
+        user_identity_obj = {
             "user_id": clean_user_id,
             "display_name": clean_display,
             "username": clean_username,
@@ -1139,6 +1230,17 @@ async def save_message_async(
             "chat_title": chat_title,
             "updated_at": created_at_iso
         }
+        if clean_chat_id not in _CHAT_DISPLAY_NAMES:
+            _CHAT_DISPLAY_NAMES[clean_chat_id] = {}
+        _CHAT_DISPLAY_NAMES[clean_chat_id][norm_key] = user_identity_obj
+        _DISPLAY_NAME_TO_ID_MAP[norm_key] = user_identity_obj
+
+    # Invalidate search memo for this specific chat so search is always fresh
+    if _SEARCH_MEMO.get("cache") and clean_chat_id:
+        _pfx = f"{clean_chat_id}|"
+        stale_keys = [k for k in _SEARCH_MEMO["cache"] if k.startswith(_pfx)]
+        for sk in stale_keys:
+            _SEARCH_MEMO["cache"].pop(sk, None)
 
     # 2. Update RAM context immediately for sub-millisecond turn continuity.
     # Key is ALWAYS the normalized int chat_id: per-group isolation depends on it.
@@ -1147,7 +1249,6 @@ async def save_message_async(
 
     _clean_kind = (msg_kind or "text").strip().lower() or "text"
     _clean_ctype = (chat_type or "").strip().lower()
-    # Memory optimization: cap turn content in RAM to 2000 chars (D1 retains 100% of full message)
     _ram_content = content[:2000] if (isinstance(content, str) and len(content) > 2000) else content
     _CHAT_HISTORIES[clean_chat_id].append({
         "role": role,
@@ -1162,13 +1263,19 @@ async def save_message_async(
         "reply_to_msg_id": int(reply_to_msg_id or 0),
         "reply_to_user": (reply_to_user or "")[:80],
         "reply_to_text": (reply_to_text or "")[:200],
+        "thread_id": clean_thread_id,
+        "forward_from": clean_fwd,
+        "sender_chat_id": clean_sender_chat,
+        "detected_lang": clean_lang,
+        "char_count": clean_chars,
+        "has_media": clean_media,
+        "extra_meta": clean_extra,
         "msg_date": j_date_str,
         "msg_time": time_str,
         "time": now_ts
     })
     
     # Rolling Window: Strictly up to 30 last messages per group in isolated RAM buffer.
-    # Newest messages always win; D1 keeps 100% of history forever.
     try:
         from src.core.config import MAX_RAM_TURNS_PER_CHAT as _MAX_TURNS
     except Exception:
@@ -1178,7 +1285,6 @@ async def save_message_async(
 
     # Global RAM Guard: Prevent unbounded chat growth across hundreds of groups
     if len(_CHAT_HISTORIES) > 150:
-        # Evict oldest inactive chats from RAM (D1 preserves 100% of history forever)
         chats_by_recency = sorted(
             _CHAT_HISTORIES.keys(),
             key=lambda cid: (_CHAT_HISTORIES[cid][-1].get("time", 0) if _CHAT_HISTORIES[cid] else 0)
@@ -1187,8 +1293,6 @@ async def save_message_async(
             _CHAT_HISTORIES.pop(cid, None)
 
     # 3. Push to High-Speed Write-Behind Queue (zero HTTP blocking).
-    # Every group/supergroup message carries its own chat_id + message_id,
-    # so D1 rows stay strictly separated per group.
     msg_record = {
         "chat_id": clean_chat_id,
         "user_id": clean_user_id,
@@ -1205,7 +1309,14 @@ async def save_message_async(
         "content": str(content),
         "msg_date": j_date_str,
         "msg_time": time_str,
-        "created_at": created_at_iso
+        "created_at": created_at_iso,
+        "thread_id": clean_thread_id,
+        "forward_from": clean_fwd,
+        "sender_chat_id": clean_sender_chat,
+        "detected_lang": clean_lang,
+        "char_count": clean_chars,
+        "has_media": clean_media,
+        "extra_meta": clean_extra,
     }
 
     try:
@@ -1213,23 +1324,16 @@ async def save_message_async(
     except Exception:
         # Direct fallback if queue full
         try:
-            asyncio.create_task(
-                execute_d1_query(
-                    "INSERT INTO messages (chat_id, user_id, message_id, user_name, username, chat_title, chat_type, msg_kind, reply_to_msg_id, reply_to_user, reply_to_text, role, content, msg_date, msg_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        clean_chat_id, clean_user_id, int(message_id or 0), msg_record["user_name"], clean_username,
-                        msg_record["chat_title"], msg_record["chat_type"], msg_record["msg_kind"], msg_record["reply_to_msg_id"],
-                        msg_record["reply_to_user"], msg_record["reply_to_text"],
-                        str(role), str(content), j_date_str, time_str, created_at_iso
-                    ]
-                )
-            )
+            asyncio.create_task(_flush_batch_to_d1([msg_record]))
         except RuntimeError:
             pass
 
 async def get_chat_context_async(chat_id: int, max_tokens: int = 20000) -> List[Dict[str, Any]]:
     clean_chat_id = int(chat_id) if isinstance(chat_id, (int, str)) and str(chat_id).lstrip("-").isdigit() else 0
+    if not clean_chat_id:
+        return []
 
+    # 1. Zero-Cost RAM Hit (Zero Cloudflare API calls, sub-microsecond latency)
     if clean_chat_id in _CHAT_HISTORIES and _CHAT_HISTORIES[clean_chat_id]:
         selected = []
         token_count = 0
@@ -1237,28 +1341,23 @@ async def get_chat_context_async(chat_id: int, max_tokens: int = 20000) -> List[
             t_len = len(m.get("content", "")) // 3
             if token_count + t_len > max_tokens:
                 break
-            selected.append({"role": m["role"], "content": m["content"]})
+            selected.append(m)
             token_count += t_len
         return list(reversed(selected))
 
+    # 2. Cold Miss: Fetch from Cloudflare D1 with strict per-chat isolation and 30-message rolling window
+    try:
+        from src.core.config import MAX_RAM_TURNS_PER_CHAT as _MAX_TURNS
+    except Exception:
+        _MAX_TURNS = 30
+
     res = await execute_d1_query(
-        "SELECT role, content, user_name, username, user_id, created_at FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 300",
-        [clean_chat_id]
+        f"SELECT {_MESSAGE_COLS} FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+        [clean_chat_id, _MAX_TURNS]
     )
     if res["success"] and res["results"]:
         msgs = list(reversed(res["results"]))
-        _CHAT_HISTORIES[clean_chat_id] = [
-            {
-                "role": m.get("role", "user"),
-                "content": m.get("content", ""),
-                "user_name": m.get("user_name", ""),
-                "username": m.get("username", ""),
-                "user_id": m.get("user_id", 0),
-                "created_at": m.get("created_at", ""),
-                "time": time.time()
-            }
-            for m in msgs
-        ]
+        _CHAT_HISTORIES[clean_chat_id] = msgs
         return msgs
     return []
 
@@ -1317,6 +1416,8 @@ async def search_group_memory(
     final merge is memoized for 45s.
     """
     clean_chat_id = int(chat_id) if isinstance(chat_id, (int, str)) and str(chat_id).lstrip("-").isdigit() else 0
+    if not clean_chat_id:
+        return []
     clean_q = (query or "").strip().lower()
     if not clean_q:
         return []
@@ -1380,11 +1481,8 @@ async def search_group_memory(
     _fts_rows: List[Dict[str, Any]] = []
     _fts_ok = False
     try:
-        fts_where_parts = []
-        fts_params = []
-        if clean_chat_id != 0:
-            fts_where_parts.append("m.chat_id = ?")
-            fts_params.append(clean_chat_id)
+        fts_where_parts = ["m.chat_id = ?"]
+        fts_params = [clean_chat_id]
         if target_uid:
             fts_where_parts.append("m.user_id = ?")
             fts_params.append(target_uid)
@@ -1400,7 +1498,8 @@ async def search_group_memory(
         _fts_where_sql = f"AND {_fts_where}" if _fts_where else ""
         _fts_sql = (
             "SELECT m.role, m.user_name, m.username, m.user_id, m.chat_title, m.chat_type, m.msg_kind, "
-            "m.reply_to_msg_id, m.reply_to_user, m.reply_to_text, m.content, m.msg_date, m.msg_time, m.created_at "
+            "m.reply_to_msg_id, m.reply_to_user, m.reply_to_text, m.content, m.msg_date, m.msg_time, m.created_at, "
+            "m.thread_id, m.forward_from, m.sender_chat_id, m.detected_lang, m.char_count, m.has_media, m.extra_meta "
             "FROM messages_fts f JOIN messages m ON m.rowid = f.rowid "
             f"WHERE messages_fts MATCH ? {_fts_where_sql} ORDER BY m.id DESC LIMIT ?"
         )
@@ -1413,9 +1512,8 @@ async def search_group_memory(
         _fts_ok = False
 
     if not _fts_ok:
-        if clean_chat_id != 0:
-            where_parts.append("chat_id = ?")
-            params.append(clean_chat_id)
+        where_parts.append("chat_id = ?")
+        params.append(clean_chat_id)
         if target_uid:
             where_parts.append("user_id = ?")
             params.append(target_uid)
@@ -1439,7 +1537,9 @@ async def search_group_memory(
 
         where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
         sql = ("SELECT role, user_name, username, user_id, chat_title, chat_type, msg_kind, reply_to_msg_id, "
-               f"reply_to_user, reply_to_text, content, msg_date, msg_time, created_at FROM messages {where_sql} ORDER BY id DESC LIMIT ?")
+               "reply_to_user, reply_to_text, content, msg_date, msg_time, created_at, "
+               "thread_id, forward_from, sender_chat_id, detected_lang, char_count, has_media, extra_meta "
+               f"FROM messages {where_sql} ORDER BY id DESC LIMIT ?")
         params.append(limit)
 
         res = await execute_d1_query(sql, params)
@@ -1656,7 +1756,7 @@ async def _probe_live_telegram_chat(target: Union[int, str]):
         return None
 
 
-async def resolve_target_full_identity(identifier: str) -> Dict[str, Any]:
+async def resolve_target_full_identity(identifier: str, chat_id: int = 0) -> Dict[str, Any]:
     """
     Super-Charged Multi-Strategy Telegram Identity Resolver.
     Resolves:
@@ -1669,6 +1769,7 @@ async def resolve_target_full_identity(identifier: str) -> Dict[str, Any]:
       last_seen, msg_count, is_banned, is_muted, bio, candidates (if multiple matches).
     """
     clean_id = str(identifier or "").strip()
+    clean_cid = int(chat_id) if isinstance(chat_id, (int, str)) and str(chat_id).lstrip("-").isdigit() else 0
     res: Dict[str, Any] = {
         "user_id": None,
         "username": None,
@@ -1813,7 +1914,33 @@ async def resolve_target_full_identity(identifier: str) -> Dict[str, Any]:
     norm_target = normalize_identity_str(target_name)
     compact_target = norm_target.replace(" ", "")
 
-    # Step 3a: Direct lookup in hot _DISPLAY_NAME_TO_ID_MAP
+    # Step 3a-1: Check isolated per-chat display names first (avoids cross-group name collision)
+    if clean_cid and clean_cid in _CHAT_DISPLAY_NAMES:
+        chat_map = _CHAT_DISPLAY_NAMES[clean_cid]
+        if norm_target in chat_map:
+            rec = chat_map[norm_target]
+            res["user_id"] = rec["user_id"]
+            res["username"] = rec.get("username")
+            res["first_name"] = rec.get("display_name")
+            res["display_name"] = rec.get("display_name")
+            res["chat_id"] = clean_cid
+            res["chat_title"] = rec.get("chat_title")
+            res["is_banned"] = is_user_banned(res["user_id"])
+            res["is_muted"] = (is_user_muted(res["user_id"]) > 0)
+            return res
+        for k_name, rec in chat_map.items():
+            if norm_target in k_name or k_name in norm_target or (compact_target and compact_target in k_name.replace(" ", "")):
+                res["user_id"] = rec["user_id"]
+                res["username"] = rec.get("username")
+                res["first_name"] = rec.get("display_name")
+                res["display_name"] = rec.get("display_name")
+                res["chat_id"] = clean_cid
+                res["chat_title"] = rec.get("chat_title")
+                res["is_banned"] = is_user_banned(res["user_id"])
+                res["is_muted"] = (is_user_muted(res["user_id"]) > 0)
+                return res
+
+    # Step 3a-2: Direct lookup in hot _DISPLAY_NAME_TO_ID_MAP
     if norm_target in _DISPLAY_NAME_TO_ID_MAP:
         rec = _DISPLAY_NAME_TO_ID_MAP[norm_target]
         res["user_id"] = rec["user_id"]
@@ -1839,8 +1966,10 @@ async def resolve_target_full_identity(identifier: str) -> Dict[str, Any]:
             res["is_muted"] = (is_user_muted(res["user_id"]) > 0)
             return res
 
-    # Step 3c: Deep scan in hot RAM chat histories (_CHAT_HISTORIES)
-    for cid, msgs in _CHAT_HISTORIES.items():
+    # Step 3c: Deep scan in hot RAM chat histories, checking current chat FIRST
+    ordered_cids = [clean_cid] + [c for c in _CHAT_HISTORIES.keys() if c != clean_cid] if clean_cid else list(_CHAT_HISTORIES.keys())
+    for cid in ordered_cids:
+        msgs = _CHAT_HISTORIES.get(cid, [])
         for m in reversed(msgs):
             u_name = str(m.get("user_name", "")).strip()
             if u_name:

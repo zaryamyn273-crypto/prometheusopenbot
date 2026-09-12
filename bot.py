@@ -2439,8 +2439,37 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             _rq_text = (message.reply_to_message.text or message.reply_to_message.caption or "")[:200]
     except Exception:
         pass
+    _th_id = getattr(message, "message_thread_id", 0) or 0
+    _fwd_from = ""
+    try:
+        if getattr(message, "forward_from", None):
+            _fwd_from = f"@{message.forward_from.username}" if message.forward_from.username else (message.forward_from.first_name or "")
+        elif getattr(message, "forward_from_chat", None):
+            _fwd_from = message.forward_from_chat.title or (f"@{message.forward_from_chat.username}" if message.forward_from_chat.username else "")
+        elif getattr(message, "forward_sender_name", None):
+            _fwd_from = message.forward_sender_name or ""
+    except Exception:
+        pass
+    _snd_chat_id = 0
+    try:
+        if getattr(message, "sender_chat", None):
+            _snd_chat_id = int(message.sender_chat.id)
+    except Exception:
+        pass
+    _has_media = 1 if bool(message.photo or message.video or message.voice or message.audio or message.document or getattr(message, "sticker", None) or getattr(message, "video_note", None)) else 0
+    _char_count = len(user_text or "")
+    _extra_meta = {"has_caption": bool(message.caption)} if message.caption else {}
+
     # Zero-Wait Asynchronous Message Archiving (Fire-and-forget: does not block the critical response path)
-    asyncio.create_task(database.save_message_async(chat.id, user.id, "user", user_text, user_name=user_display, username=user_uname, chat_title=chat_title, message_id=message.message_id or 0, chat_type=_save_ctype, msg_kind=_save_kind, reply_to_msg_id=_rq_mid, reply_to_user=_rq_user, reply_to_text=_rq_text))
+    asyncio.create_task(database.save_message_async(
+        chat.id, user.id, "user", user_text,
+        user_name=user_display, username=user_uname, chat_title=chat_title,
+        message_id=message.message_id or 0, chat_type=_save_ctype, msg_kind=_save_kind,
+        reply_to_msg_id=_rq_mid, reply_to_user=_rq_user, reply_to_text=_rq_text,
+        thread_id=_th_id, forward_from=_fwd_from, sender_chat_id=_snd_chat_id,
+        detected_lang=tri_lang, char_count=_char_count, has_media=_has_media,
+        extra_meta=_extra_meta
+    ))
 
     # ANTI-JAILBREAK SCAN: deterministic pre-LLM filter for override/role-play/
     # exfil attempts. Runs BEFORE triage and quota so attacks cost the attacker
@@ -2577,7 +2606,12 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Persist assistant turn first (never lose it), then deliver media/text and
     # backfill the real Telegram message_id once the reply is actually sent.
-    await database.save_message_async(chat.id, context.bot.id, "assistant", ai_response, user_name="Prometheus", chat_title=chat_title, message_id=0)
+    await database.save_message_async(
+        chat.id, context.bot.id, "assistant", ai_response,
+        user_name="Prometheus", chat_title=chat_title, message_id=0,
+        chat_type=_save_ctype, thread_id=_th_id, detected_lang="fa",
+        char_count=len(ai_response or "")
+    )
 
     # Global safety net: NO addressed message may ever end without an answer.
     # Any unexpected exception below becomes a Persian apology, never silence.

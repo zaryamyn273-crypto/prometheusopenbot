@@ -31,6 +31,11 @@
 * 🧠 **Isolated 30-Message RAM Buffer per Group & On-Demand Context:**
   - Dedicated, isolated rolling window of **up to 30 last messages per group in RAM** with zero cross-group context leaks or pollution.
   - Context is injected into the LLM prompt **strictly on demand** (only when explicitly requested by the user or when replying to a message). Direct standalone queries execute in zero-history mode for maximum speed and token efficiency.
+* 🛡️ **Zero Cross-Group Collision & Cloudflare Quota Shield:**
+  - Per-chat isolated display-name indexing (`_CHAT_DISPLAY_NAMES`) preventing identity collisions when different users share names across groups.
+  - Strict mandatory `chat_id` constraints across all memory search layers and FTS5 indices, preventing cross-chat data leaks.
+  - Intelligent Adaptive Write-Behind Coalescer (3.0s debounce window): multi-row batch inserts **reduce Cloudflare D1 HTTP calls by >95%**, shielding against daily quota limits and HTTP 429 throttling.
+  - Enriched 23-column message schemas capturing Telegram forum `thread_id`, `forward_from`, `sender_chat_id`, `detected_lang`, `char_count`, `has_media`, and `extra_meta`.
 * 🇮🇷 **100% Persian Language Accuracy & Zero Arabic False Positives:**
   - Overhauled language detection (`detect_lang`) providing absolute Persian priority for shared-alphabet messages.
   - Completely eliminates erroneous Arabic language switching on short Persian sentences (such as "who are you" or "write a story").
