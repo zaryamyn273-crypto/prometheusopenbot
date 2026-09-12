@@ -226,12 +226,19 @@ async def ban_group_by_name_or_id_tool(
                 break
     else:
         clean_q = raw_query.lower()
+        _matches = []
         for g in groups:
             g_title = str(g.get("title", "")).lower()
+            if not g_title:
+                continue
             if clean_q in g_title or g_title in clean_q:
-                target_chat_id = g.get("chat_id")
-                target_title = g.get("title") or ""
-                break
+                _matches.append(g)
+        if len(_matches) > 1:
+            _names = ", ".join(f"{m.get('title') or 'group'} (`{m.get('chat_id')}`)" for m in _matches[:10])
+            return f"چند گروه با `{raw_query}` مطابقت دارد. لطفا شناسه دقیق را بدهید:\n{_names}"
+        if _matches:
+            target_chat_id = _matches[0].get("chat_id")
+            target_title = _matches[0].get("title") or ""
     if not target_chat_id:
         return f"❌ گروهی با نام یا مشخصه «{raw_query}» در لیست گروه‌های فعال ربات یافت نشد."
     await database.ban_target_async(
@@ -285,30 +292,64 @@ async def leave_group_by_admin_tool(
     target_title = ""
 
     # Check if target is a direct chat_id
+    await database.sync_memory_from_d1_async()
+    groups = await database.get_all_tracked_groups_async()
     if target_raw.lstrip("-").isdigit():
         target_chat_id = int(target_raw)
-    else:
-        # Search by title in active groups
-        groups = await database.get_all_tracked_groups_async()
+        if target_chat_id > 0:
+            return f"ID `{target_raw}` شناسه گروه نیست. شناسه گروه عدد منفی است (مثل -100123456789). لیست: /groups_prometheus"
         for g in groups:
-            if target_raw.lower() in (g.get("title") or "").lower():
-                target_chat_id = g.get("chat_id")
-                target_title = g.get("title")
+            if g.get("chat_id") == target_chat_id:
+                target_title = g.get("title") or ""
                 break
+    else:
+        # Search by title: never guess — refuse on zero or multiple matches.
+        _q = target_raw.lower()
+        matches = [g for g in groups if _q and _q in str(g.get("title") or "").lower()]
+        if not matches:
+            return f"گروهی با مشخصه `{target_raw}` پیدا نشد."
+        if len(matches) > 1:
+            _names = ", ".join(f"{m.get('title') or 'group'} (`{m.get('chat_id')}`)" for m in matches[:10])
+            return f"چند گروه با `{target_raw}` مطابقت دارد. لطفا شناسه دقیق را بدهید:\n{_names}"
+        target_chat_id = matches[0].get("chat_id")
+        target_title = matches[0].get("title") or ""
 
     if not target_chat_id:
-        return f"گروهی با مشخصه «{target_raw}» در لیست گروه‌های فعال ربات یافت نشد."
+        return f"گروهی با مشخصه `{target_raw}` پیدا نشد."
 
-    # Perform Telegram API leave chat
+    # Live-verify the target and resolve its real title (this chat ONLY).
     bot_inst = get_bot_instance()
+    live_title = ""
     if bot_inst:
         try:
-            await bot_inst.leave_chat(target_chat_id)
-        except Exception as e:
-            logger.warning(f"Could not leave chat {target_chat_id} directly: {e}")
+            _chat = await bot_inst.get_chat(target_chat_id)
+            live_title = (getattr(_chat, "title", "") or "").strip()
+        except Exception:
+            live_title = ""
+    if live_title:
+        target_title = live_title
+    name_str = f"`{target_title}` " if target_title else ""
 
-    # Remove from D1 database tracking
+    if not bot_inst:
+        return f"اتصال زنده به تلگرام در دسترس نیست؛ خروج از گروه {name_str}(`{target_chat_id}`) انجام نشد."
+
+    # Perform Telegram API leave chat (THIS chat only — never anything else).
+    try:
+        await bot_inst.leave_chat(target_chat_id)
+    except Exception as e:
+        logger.warning(f"leave_chat failed for {target_chat_id}: {e}")
+
+    # Honest verification: confirm we are really out before claiming success.
+    try:
+        _me = await bot_inst.get_me()
+        _mem = await bot_inst.get_chat_member(chat_id=target_chat_id, user_id=_me.id)
+        _st = str(getattr(_mem, "status", "")).lower()
+    except Exception:
+        _st = "left"
+    if _st not in ("left", "kicked"):
+        return f"خروج از گروه {name_str}(`{target_chat_id}`) ناموفق بود؛ ربات هنوز عضو است. هیچ تغییری در دیتابیس اعمال نشد."
+
+    # Mark inactive in D1/RAM (record + messages are KEPT).
     await database.remove_group_presence_async(target_chat_id)
 
-    name_str = f"«{target_title}» " if target_title else ""
-    return f"🚪 *فرمان خروج اجرا شد:*\nربات از گروه {name_str}(شناسه: `{target_chat_id}`) خارج شد. رکورد گروه به صورت غیرفعال در دیتابیس نگه داشته شد."
+    return f"خروج انجام شد: ربات از گروه {name_str}(`{target_chat_id}`) خارج شد. رکورد گروه به صورت غیرفعال نگه داشته شد."

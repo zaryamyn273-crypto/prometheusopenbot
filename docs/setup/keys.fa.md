@@ -63,11 +63,13 @@
 | `ROUTER_BASE_URL` | الزامی 🔴 | `https://api.openai.com/v1` | اندپوینت سازگار با OpenAI V1 |
 | `ROUTER_API_KEY` | الزامی 🔴 | - | کلید مدل هوش مصنوعی |
 | `ROUTER_MODEL` | اختیاری ⚪ | `gpt-4o-mini` | نام مدل |
+| `DAILY_USER_LIMIT` | اختیاری ⚪ | `40` | پاسخ کامل AI روزانه هر کاربر (ریست خودکار UTC؛ ادمین نامحدود) |
 | `CLOUDFLARE_ACCOUNT_ID` | اختیاری ⚪ | `""` | آیدی ۳۲ کاراکتری اکانت |
 | `CLOUDFLARE_API_TOKEN` | اختیاری ⚪ | `""` | توکن با دسترسی D1 و KV |
 | `CLOUDFLARE_D1_ID` | اختیاری ⚪ | `""` | UUID دیتابیس D1 |
 | `CLOUDFLARE_KV_ID` | اختیاری ⚪ | `""` | آیدی فضای KV |
 | `TAVILY_API_KEY` | اختیاری ⚪ | `""` | کلید سرچ Tavily |
+| `TAVILY_API_KEYS` | اختیاری ⚪ | `""` | کلیدهای اضافه با کاما (چرخشی) |
 | `ALLRATESTODAY_API_KEY` | اختیاری ⚪ | `""` | کلید نرخ طلا و ارز |
 | `GITHUB_TOKEN` | اختیاری ⚪ | `""` | توکن گیت‌هاب |
 | `SPOTIFY_CLIENT_ID` | اختیاری ⚪ | `""` | شناسه اسپاتیفای |

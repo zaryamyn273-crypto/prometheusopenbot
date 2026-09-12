@@ -34,7 +34,10 @@
 - **You don't need a key for everything:** only a Telegram token, an admin ID, and one OpenAI-compatible model key are required. Everything else (Tavily, Cloudflare, GitHub, Spotify, E2B) is optional — without them it still works, just with free fallbacks.
 - **It minds its own business in groups:** it only replies when addressed (reply, mention, or the word "Prometheus"). Everything else is silently archived.
 - **No on-server code execution:** AI-written code runs only in the E2B cloud sandbox; without a key the tool is DISABLED (no local fallback by design). Destructive shell never runs, not even on admin order.
-- **Not Persian-only:** it detects each user's Telegram language and answers in it (English, Russian, Spanish, French, ...); tool outputs are translated when needed.
+- **Not Persian-only:** the message text's language is detected (not just the Telegram client setting) and the final AI answer comes back in that language — Persian, English, Russian, Arabic, Turkish, ...; tool outputs are translated when needed.
+- **Fair daily quota:** every user gets `DAILY_USER_LIMIT` full AI answers per day (default 40) across all chats; auto-reset every 24h (00:00 UTC), no cron; admin is unlimited. `/limit` shows the remaining quota.
+- **No slash needed for the admin:** the admin's intent is understood from Persian/English text and executed directly ("leave group X", list-groups, ...) — never guessed, always live-verified.
+- **Group safety:** new joins need admin approval (approve/reject buttons in PV), live list from Telegram, records kept on leave, and leaves are always single-target and verified.
 
 ---
 
@@ -132,6 +135,10 @@ python tests/test_master.py       # full audit
 python tests/test_i18n.py         # bilingualism (offline)
 python tests/test_e2b.py          # sandbox (offline without key)
 python tests/run_test_battery.py  # multi-dimensional stress
+python tests/test_leave_match.py    # single-target leave (offline)
+python tests/test_daily_limit.py    # daily quota (offline)
+python tests/test_intent_router.py  # admin intent (offline)
+python tests/test_detect_lang.py    # language detection (offline)
 ```
 Build + Docker are checked on every push by GitHub Actions (badge above).
 

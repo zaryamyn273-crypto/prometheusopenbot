@@ -3,13 +3,15 @@
 Two-tier design (kept tiny on purpose):
 - Bot UI strings: ``fa`` + ``en`` dictionaries. Any other Telegram language
   falls back to ``en`` for bot chrome.
-- LLM reply language: full fidelity. :func:`lang_name` maps a Telegram
-  ``language_code`` to an English language name that is injected into the
-  system prompt, so the model answers in Russian, Spanish, French, ... even
-  though bot chrome only ships fa/en. Tool outputs (often Persian) are
-  translated by the model per the prompt rule.
+- LLM reply language: full fidelity. :func:`lang_name` maps a language code
+  to an English language name injected into the system prompt, and
+  :func:`detect_lang` reads the *message text itself* (script + keywords), so
+  the model answers in whatever language the user actually used — even when
+  the Telegram client setting says otherwise. Tool outputs (often Persian)
+  are translated by the model per the prompt rule.
 """
 
+import re
 from typing import Dict
 
 SUPPORTED = ("fa", "en")
@@ -68,6 +70,76 @@ def lang_name(code: object) -> str:
     return "English"
 
 
+_LATIN_HINTS = (
+    ("es", ("hola", "gracias", "por favor", "qué ", "estás", "cómo estás", "buenos")),
+    ("fr", ("bonjour", "merci", "s'il", "comment", "quoi", "ça va", "pourquoi")),
+    ("de", ("hallo", "danke", "bitte", "wie geht", "warum", "guten")),
+    ("it", ("ciao", "grazie", "come stai", "per favore", "buongiorno")),
+    ("pt", ("olá", "ola", "obrigado", "obrigada", "como vai", "tudo bem")),
+    ("tr", ("merhaba", "teşekkür", "tesekkur", "nasılsın", "nasilsin", "nedir", "nasıl ")),
+    ("nl", ("hallo", "dank je", "hoe gaat", "waarom", "goedemorgen")),
+    ("pl", ("cześć", "dzień dobry", "dziękuję", "dziękuje", "dlaczego", "jak się")),
+    ("id", ("halo", "terima kasih", "apa kabar", "tolong", "selamat")),
+    ("ru", ("privet", "spasibo", "pozhaluysta", "kak dela", "pochemu")),
+)
+
+
+def detect_lang(text: object) -> str:
+    """Detect the ISO-639 code of a message text (script first, keywords next).
+
+    Returns e.g. 'fa', 'en', 'ru', 'ar', 'es' ... or 'und' when there is no
+    detectable linguistic content (empty / numbers / emoji only). Latin text
+    without strong hints defaults to 'en'.
+    """
+    try:
+        s = str(text or "")
+    except Exception:
+        return "und"
+    if not s or not s.strip():
+        return "und"
+    low = s.lower()
+    # CJK / Indic / other scripts (checked before Arabic-script: no overlap).
+    if re.search(r"[\u3040-\u309f\u30a0-\u30ff]", s):
+        return "ja"
+    if re.search(r"[\uac00-\ud7af]", s):
+        return "ko"
+    if re.search(r"[\u0900-\u097f]", s):
+        return "hi"
+    if re.search(r"[\u0980-\u09ff]", s):
+        return "bn"
+    # CJK: kana/hangul decided above; remaining Han-only text is Chinese.
+    if re.search(r"[⺀-⻳一-鿿]", s):
+        return "zh"
+    if re.search(r"[\u0590-\u05ff]", s):
+        return "he"
+    # Cyrillic: Ukrainian-specific letters decide, else Russian.
+    if re.search(r"[\u0400-\u04ff]", s):
+        if re.search(r"[іїєґ]", low):
+            return "uk"
+        return "ru"
+    # Arabic script: Persian-specific letters (or fa keywords) decide.
+    if re.search(r"[\u0600-\u06ff]", s):
+        if re.search(r"[گچپژ]", s):
+            return "fa"
+        if re.search(r"(پرومته|ربات|ممنون|مرسی|چطوری|خوبی|سلام|درود|چیست|کجاست|چرا|چطور|لطفا|باشه|فعلا)", low):
+            return "fa"
+        return "ar"
+    # Turkish-specific diacritics are decisive (ç is shared with French,
+    # so it does NOT decide alone — fr/pt keywords handle those).
+    if re.search(r"[ğışöü]", low):
+        return "tr"
+    # Latin keyword hints (need letters at all, else 'und').
+    if not re.search(r"[a-z]", low):
+        return "und"
+    for code, words in _LATIN_HINTS:
+        try:
+            if any(w in low for w in words):
+                return code
+        except Exception:
+            continue
+    return "en"
+
+
 def t(lang: str, key: str, **kw: object) -> str:
     """Fetch a bot-chrome string. All strings are Telegram *Markdown*."""
     pack = STRINGS.get(lang) or STRINGS["en"]
@@ -123,6 +195,15 @@ STRINGS: Dict[str, Dict[str, str]] = {
         ),
         "group_approved_ok": "✅ گروه *{title}* (`{cid}`) فعال شد.",
         "group_rejected_ok": "🚫 گروه *{title}* (`{cid}`) رد شد؛ ربات خارج شد.",
+        "limit_status": (
+            "📊 *سهمیه روزانه تو:* {used} از {limit} استفاده شده؛ {left} باقی مانده.\n"
+            "ریست خودکار در {h} ساعت و {m} دقیقه."
+        ),
+        "limit_admin": "♾ *سهمیه تو نامحدود است* (فرمانده ارشد).",
+        "limit_exceeded": (
+            "⏳ *سهمیه روزانه تو تمام شد.*\n"
+            "سقف {limit} پاسخ در روز؛ از {h} ساعت و {m} دقیقه دیگر دوباره در خدمتم. (ریست خودکار هر 24 ساعت)"
+        ),
         "group_hello": (
             "👋 *پرومته فعال شد.*\n"
             "برای حرف زدن باهام: پیامم رو ریپلای کن، منشنم کن، یا اسم «پرومته» رو بیار.\n\n"
@@ -213,6 +294,15 @@ STRINGS: Dict[str, Dict[str, str]] = {
         ),
         "group_approved_ok": "✅ Group *{title}* (`{cid}`) activated.",
         "group_rejected_ok": "🚫 Group *{title}* (`{cid}`) rejected; bot left.",
+        "limit_status": (
+            "📊 *Your daily quota:* {used} of {limit} used; {left} left.\n"
+            "Auto-reset in {h}h {m}m."
+        ),
+        "limit_admin": "♾ *Your quota is unlimited* (master admin).",
+        "limit_exceeded": (
+            "⏳ *Your daily quota is over.*\n"
+            "Cap is {limit} answers/day; back in {h}h {m}m. (auto-reset every 24h)"
+        ),
         "group_hello": (
             "👋 *پرومته فعال شد.*\n"
             "برای حرف زدن باهام: پیامم رو ریپلای کن، منشنم کن، یا اسم «پرومته» رو بیار.\n\n"

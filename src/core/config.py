@@ -104,6 +104,10 @@ RATE_LIMIT_USER_WINDOW_SEC = 60
 RATE_LIMIT_USER_MAX_REQUESTS = 40
 RATE_LIMIT_ADMIN_MAX_REQUESTS = 600
 
+# Daily per-user quota (UTC day buckets, auto-reset every 24h). Admin exempt.
+# Global-scale design: hot path is pure RAM; D1 only persists/backfills.
+DAILY_USER_LIMIT = max(1, int(os.getenv("DAILY_USER_LIMIT", "40") or "40"))
+
 # ==========================================
 # 6. Global System Instruction & Persona
 # ==========================================

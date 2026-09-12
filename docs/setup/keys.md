@@ -94,11 +94,13 @@ are required to boot: `TELEGRAM_BOT_TOKEN`, `ADMIN_ID`, `ROUTER_API_KEY`.
 | `ROUTER_BASE_URL` | required 🔴 | `https://api.openai.com/v1` | OpenAI-compatible V1 endpoint |
 | `ROUTER_API_KEY` | required 🔴 | - | AI model auth key |
 | `ROUTER_MODEL` | optional ⚪ | `gpt-4o-mini` | Model name (e.g. `gpt-4o-mini`, `deepseek-chat`) |
+| `DAILY_USER_LIMIT` | optional ⚪ | `40` | Full AI answers per user per day (UTC auto-reset; admin unlimited) |
 | `CLOUDFLARE_ACCOUNT_ID` | optional ⚪ | `""` | 32-char Cloudflare account ID |
 | `CLOUDFLARE_API_TOKEN` | optional ⚪ | `""` | Cloudflare token with D1 + KV permission |
 | `CLOUDFLARE_D1_ID` | optional ⚪ | `""` | D1 database UUID |
 | `CLOUDFLARE_KV_ID` | optional ⚪ | `""` | Workers KV namespace ID |
 | `TAVILY_API_KEY` | optional ⚪ | `""` | Tavily AI search key |
+| `TAVILY_API_KEYS` | optional ⚪ | `""` | Extra Tavily keys, comma-separated (rotation) |
 | `ALLRATESTODAY_API_KEY` | optional ⚪ | `""` | Live gold/fiat rates key |
 | `GITHUB_TOKEN` | optional ⚪ | `""` | GitHub personal token (rate limits) |
 | `SPOTIFY_CLIENT_ID` | optional ⚪ | `""` | Spotify client ID |

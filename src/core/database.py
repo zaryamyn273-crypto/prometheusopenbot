@@ -14,7 +14,8 @@ from src.core.config import (
     CLOUDFLARE_API_TOKEN,
     CLOUDFLARE_D1_ID,
     CLOUDFLARE_KV_ID,
-    ADMIN_ID
+    ADMIN_ID,
+    DAILY_USER_LIMIT,
 )
 
 logger = logging.getLogger(__name__)
@@ -605,6 +606,13 @@ def init_db():
         invite_link TEXT DEFAULT '',
         status TEXT DEFAULT 'active'
     );
+    CREATE TABLE IF NOT EXISTS daily_usage (
+        user_id INTEGER NOT NULL,
+        day TEXT NOT NULL,
+        used INTEGER DEFAULT 1,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, day)
+    );
     CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_search ON messages(chat_id, content);
     CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(chat_id, user_id, id DESC);
@@ -636,7 +644,7 @@ def init_db():
             _have = {str(r.get("name", "")) for r in (_probe.get("results") or [])}
             _need_ddl = not {"messages", "admin_memories", "custom_data_store",
                              "banned_users", "muted_users", "user_mappings",
-                             "tracked_groups", "messages_fts"}.issubset(_have)
+                             "tracked_groups", "daily_usage", "messages_fts"}.issubset(_have)
     except Exception:
         _need_ddl = True
     if _need_ddl:
@@ -715,6 +723,19 @@ def sync_memory_from_d1_sync():
                 _ACTIVE_GROUPS[int(_cid)] = g
                 if str(g.get("status") or "active") == "pending":
                     _PENDING_GROUPS.add(int(_cid))
+            except Exception:
+                continue
+
+    # Daily quota backfill: today's counters survive restarts (no free quota).
+    try:
+        _du_res = execute_d1_query_sync("SELECT user_id, used FROM daily_usage WHERE day = ?", [_today_key()])
+    except Exception:
+        _du_res = {"success": False, "results": []}
+    if _du_res.get("success"):
+        for _r in (_du_res.get("results") or []):
+            try:
+                if _r.get("user_id") and int(_r.get("used") or 0) > 0:
+                    _DAILY_RAM[(int(_r["user_id"]), _today_key())] = int(_r["used"])
             except Exception:
                 continue
 
@@ -831,9 +852,103 @@ async def remove_group_presence_async(chat_id: int, purge_messages: bool = False
         await execute_d1_query("DELETE FROM messages WHERE chat_id = ?", [clean_chat_id])
         logger.info(f"Group {clean_chat_id} messages purged from Cloudflare D1 and RAM.")
 
+# ============================================================================
+# Daily per-user quota (global scale, 24h auto-reset via UTC day buckets).
+# Hot path is pure RAM (sub-ms, no network); D1 persists counts and backfills
+# them at startup, so restarts never grant free quota. No cron needed — the
+# day key rolls over automatically at 00:00 UTC.
+# ============================================================================
+_DAILY_RAM: Dict[tuple, int] = {}
+
+
+def _today_key() -> str:
+    try:
+        return time.strftime("%Y-%m-%d", time.gmtime())
+    except Exception:
+        return "1970-01-01"
+
+
+def seconds_until_daily_reset() -> int:
+    """Seconds until next 00:00 UTC (when every user's quota auto-resets)."""
+    try:
+        now = time.time()
+        day_start = now - (now % 86400)
+        return int(day_start + 86400 - now)
+    except Exception:
+        return 3600
+
+
+def _daily_prune() -> None:
+    """Bound RAM: keep only today's buckets (same pattern as rate limiter)."""
+    try:
+        if len(_DAILY_RAM) <= 20000:
+            return
+        today = _today_key()
+        for k in [k for k in _DAILY_RAM if k[1] != today]:
+            del _DAILY_RAM[k]
+    except Exception:
+        pass
+
+
+def get_daily_used(user_id: int) -> int:
+    """Sync RAM read of today's consumed quota (0 on miss)."""
+    try:
+        return int(_DAILY_RAM.get((int(user_id), _today_key()), 0))
+    except Exception:
+        return 0
+
+
+async def get_daily_usage_async(user_id: int) -> tuple:
+    """(used, limit) with D1 fallback when RAM missed (e.g. after restart)."""
+    try:
+        uid = int(user_id)
+    except Exception:
+        return 0, DAILY_USER_LIMIT
+    used = get_daily_used(uid)
+    if used:
+        return used, DAILY_USER_LIMIT
+    try:
+        res = await execute_d1_query(
+            "SELECT used FROM daily_usage WHERE user_id = ? AND day = ?",
+            [uid, _today_key()],
+        )
+        if res.get("success") and res.get("results"):
+            used = int(res["results"][0].get("used") or 0)
+            if used > 0:
+                _DAILY_RAM[(uid, _today_key())] = used
+    except Exception:
+        pass
+    return used, DAILY_USER_LIMIT
+
+
+async def bump_daily_usage_async(user_id: int) -> tuple:
+    """Consume one unit of today's quota. Returns (allowed, used, limit).
+
+    D1 persistence is best-effort (graceful when Cloudflare is unreachable —
+    RAM still enforces the limit for this process lifetime).
+    """
+    try:
+        uid = int(user_id)
+    except Exception:
+        return True, 0, DAILY_USER_LIMIT
+    _daily_prune()
+    day = _today_key()
+    used = get_daily_used(uid) + 1
+    _DAILY_RAM[(uid, day)] = used
+    try:
+        await execute_d1_query(
+            "INSERT INTO daily_usage (user_id, day, used, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(user_id, day) DO UPDATE SET used = excluded.used, updated_at = CURRENT_TIMESTAMP",
+            [uid, day, used],
+        )
+    except Exception:
+        pass
+    return used <= DAILY_USER_LIMIT, used, DAILY_USER_LIMIT
+
+
 async def get_all_tracked_groups_async() -> List[Dict[str, Any]]:
     try:
-        res = await execute_d1_query("SELECT chat_id, title, chat_type, added_at, username, invite_link, status FROM tracked_groups ORDER BY added_at DESC")
+        res = await execute_d1_query("SELECT chat_id, title, chat_type, added_by, added_at, username, invite_link, status FROM tracked_groups ORDER BY added_at DESC")
     except Exception:
         res = {"success": False, "results": []}
     if not res.get("success"):

@@ -31,12 +31,16 @@ from src.core.config import (
     RATE_LIMIT_ADMIN_MAX_REQUESTS
 )
 from src.core import database, config
-from src.core.i18n import normalize_lang, lang_name, t
+from src.core.i18n import normalize_lang, lang_name, t, detect_lang
 # NOTE: ai_service + tool modules are imported lazily inside handlers
 # (see _maybe_translate / triage) so trivial turns never load the full stack.
 from src.ui import admin_panel
 from src.utils import telegram_formatter
 from src.utils.display_name import username_to_persian_name
+
+# Slash-commands owned by CommandHandlers (filled by _pcmd at startup).
+# main_message_handler skips these so the AI agent never re-executes them.
+KNOWN_BOT_COMMANDS = set()
 
 # Setup Logging
 logging.basicConfig(
@@ -673,13 +677,33 @@ async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⛔ دسترسی غیرمجاز! این بخش مختص فرمانده ارشد سیستم است.")
         return
     target = " ".join(context.args).strip() if context.args else ""
-    if message.reply_to_message and not target:
-        pass
     if not target:
         await reply_safely(message, "🚪 *خروج از گروه:*\nشناسه عددی یا بخشی از نام گروه را وارد کنید. مثال:\n`/leave_prometheus -100123456789`\nبرای دیدن لیست گروه‌ها: `/groups_prometheus`")
         return
     res = await group_manager.leave_group_by_admin_tool(chat_identifier=target, caller_id=user.id)
     await reply_safely(message, res)
+
+async def limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows the caller's daily AI quota: /limit or /limit_prometheus (groups + PV, quota-free)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    ulang, _ = _ulang_of(update)
+    try:
+        _d = detect_lang(message.text or message.caption or "")
+    except Exception:
+        _d = "und"
+    nlang = _d if _d in ("fa", "en") else ulang
+    if is_admin(user.id):
+        await reply_safely(message, t(nlang, "limit_admin"))
+        return
+    try:
+        _used, _qlim = await database.get_daily_usage_async(user.id)
+        _rs = database.seconds_until_daily_reset()
+    except Exception:
+        _used, _qlim, _rs = 0, 0, 3600
+    await reply_safely(message, t(nlang, "limit_status", used=_used, limit=_qlim, left=max(0, _qlim - _used), h=_rs // 3600, m=(_rs % 3600) // 60))
 
 async def net_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -1369,6 +1393,19 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not user or not message or _banned_here:
         return
 
+    # COMMAND OWNERSHIP: a slash-command owned by a CommandHandler must not be
+    # re-executed by the AI agent. Double execution once made the bot leave
+    # BOTH the requested target group AND the group where the command was sent.
+    # Unknown /typo commands still reach the agent.
+    try:
+        _cmd_text = (message.text or message.caption or "")
+        if _cmd_text.startswith("/"):
+            _tok = _cmd_text[1:].split()[0].split("@")[0].lower()
+            if _tok in KNOWN_BOT_COMMANDS:
+                return
+    except Exception:
+        pass
+
     # TEMP MUTE: admin-silenced users get ZERO bot replies until expiry.
     # Their messages are still archived to D1 (memory intact), but the bot
     # never answers, reacts, or transcribes for them while muted.
@@ -1412,6 +1449,15 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     ulang, ulang_name = _ulang_of(update)
     user_text = message.text or message.caption or ""
+    # World users: detect THIS message's language (script + keywords), so the
+    # AI answers in whatever language the user actually used — even when the
+    # Telegram client setting says otherwise. fa/en chrome keeps the client.
+    try:
+        detected_lang = detect_lang(user_text)
+    except Exception:
+        detected_lang = "und"
+    tri_lang = detected_lang if detected_lang in ("fa", "en") else ulang
+    ai_lang_code = detected_lang if (detected_lang and detected_lang != "und") else (getattr(user, "language_code", "") or "fa")
     user_uname = user.username or ""
     fa_from_uname = username_to_persian_name(user_uname) if (user_uname and ulang == "fa") else ""
     user_display = fa_from_uname or user.first_name or ("کاربر" if ulang == "fa" else "user")
@@ -1629,6 +1675,21 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         "@prometheusbaibot" in _first_word
     ))
     _is_direct_command = _is_prom_cmd_in_group if not is_pv else bool(user_text and user_text.strip().startswith("/"))
+
+    # ADMIN INTENT ROUTER: the admin's natural order (fa/en/..., no slash
+    # needed) executes deterministically here — zero LLM cost, zero ambiguity
+    # for destructive actions. Anything unrecognized falls through to AI.
+    if is_admin(user.id):
+        try:
+            from src.tools.admin import intent_router as _intent_mod
+            _intent_res = await _intent_mod.try_admin_intent_async(
+                user_text, user.id, current_chat_id=(chat.id if chat else None))
+        except Exception as _e:
+            logger.debug(f"intent router error: {_e}")
+            _intent_res = None
+        if _intent_res:
+            await reply_safely(message, _intent_res)
+            return
 
     if not is_pv:
         if not (is_reply_to_bot or is_mentioned or has_bot_call or _is_direct_command):
@@ -1976,7 +2037,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # power (no prefetch tasks, no typing loop, no KV writes, no AI import).
     # Only a miss falls through to the Tier-2 machinery below.
     _tri_res = await _triage_fast_turn(
-        message, chat, user, user_text, user_display, ulang,
+        message, chat, user, user_text, user_display, tri_lang,
         image_bytes, bool(message.reply_to_message))
     if _tri_res is not None:
         _tri_text, _tri_extra = _tri_res
@@ -1995,6 +2056,22 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 pass
         return
+
+    # DAILY QUOTA (24h auto-reset, UTC day buckets): non-admins get
+    # DAILY_USER_LIMIT full AI turns/day across ALL chats. Admin exempt.
+    # Triage answers above are free; only Tier-2 turns consume quota.
+    if not is_admin(user.id):
+        try:
+            _allowed, _, _qlim = await database.bump_daily_usage_async(user.id)
+        except Exception:
+            _allowed, _, _qlim = True, 0, 0
+        if not _allowed:
+            try:
+                _rs = database.seconds_until_daily_reset()
+                await reply_safely(message, t(tri_lang, "limit_exceeded", limit=_qlim, h=_rs // 3600, m=(_rs % 3600) // 60))
+            except Exception:
+                pass
+            return
 
     # Background self-use prefetch: rewrite + intent-tag + tool-hint while the
     # typing indicator runs, so the AI turn starts with hot context and the
@@ -2064,7 +2141,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             caller_username=user_uname,
             is_private_chat=is_pv,
             has_reply_context=has_reply,
-            user_lang_code=(user.language_code or "fa"),
+            user_lang_code=ai_lang_code,
         )
     finally:
         typing_active = False
@@ -2416,6 +2493,7 @@ def build_application():
 
     # Commands (Filtered so in groups ONLY commands ending in _prometheus or targeting @Prometheusbaibot trigger)
     def _pcmd(cmd_name: str, handler_fn):
+        KNOWN_BOT_COMMANDS.add(cmd_name)
         return CommandHandler(cmd_name, handler_fn, filters=PROMETHEUS_CMD_FILTER)
 
     app.add_handler(_pcmd("start", start_command))
@@ -2459,6 +2537,8 @@ def build_application():
     app.add_handler(_pcmd("groups_prometheus", groups_command))
     app.add_handler(_pcmd("leave", leave_command))
     app.add_handler(_pcmd("leave_prometheus", leave_command))
+    app.add_handler(_pcmd("limit", limit_command))
+    app.add_handler(_pcmd("limit_prometheus", limit_command))
     app.add_handler(_pcmd("bangroup", bangroup_command))
     app.add_handler(_pcmd("bangroup_prometheus", bangroup_command))
     app.add_handler(_pcmd("remember", remember_command))
