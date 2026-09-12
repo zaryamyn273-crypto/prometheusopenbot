@@ -2232,6 +2232,23 @@ async def post_init_callback(application):
             await asyncio.sleep(300.0)
     asyncio.create_task(self_health_daemon())
 
+    # Liveness heartbeat for /healthz: proves the event loop itself is alive
+    # (a wedged loop stops beating -> probe 503 -> orchestrator restarts us).
+    async def _liveness_beater():
+        try:
+            from src.core import health as _health
+            while True:
+                try:
+                    _health.heartbeat()
+                except Exception:
+                    pass
+                await asyncio.sleep(15.0)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+    asyncio.create_task(_liveness_beater())
+
     # Keep-Alive warmer: ONLY when a router key exists, and every 120s
     # (not 20s) so Railway free tiers don't burn quota/traffic.
     async def keep_ai_router_warm():
@@ -2253,6 +2270,16 @@ async def post_init_callback(application):
     asyncio.create_task(keep_ai_router_warm())
 
 def build_application():
+    # Strict typed validation FIRST (Pydantic schema): malformed env fails here
+    # with a clear bilingual message instead of a cryptic KeyError mid-run.
+    try:
+        from src.core.settings import validate_startup_settings, summarize_active_services
+        _settings = validate_startup_settings()
+        logger.info("Settings schema OK: %s", summarize_active_services(_settings))
+    except SystemExit:
+        raise
+    except Exception as _e:
+        logger.warning(f"Settings validation skipped: {_e}")
     # Fail-fast with a CLEAR Persian log so Railway users instantly see what's missing.
     try:
         _issues = config.validate_startup_config()
@@ -2267,7 +2294,7 @@ def build_application():
             "ON" if has_router() else "OFFLINE (free tools only)",
             "ON" if has_tavily() else "OFF (free DDG/Bing)",
             "ON" if has_cloudflare() else "OFF (RAM only)",
-            "ON" if has_e2b() else "OFF (local sandbox)",
+            "ON" if has_e2b() else "OFF (code exec DISABLED)",
             getattr(config, "ENABLE_FINANCIAL_SYNC", True),
         )
     except Exception:
@@ -2384,6 +2411,11 @@ def build_application():
 
 if __name__ == "__main__":
     logger.info("Starting Prometheus Super Agent Bot...")
+    try:
+        from src.core import health as _health_main
+        _health_main.start_health_server()
+    except Exception as _e:
+        logger.warning(f"Health server failed to start: {_e}")
     app = build_application()
     # Concurrent update polling with drop_pending_updates=False ensures no update drops while maintaining full parallelism
     app.run_polling(drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)

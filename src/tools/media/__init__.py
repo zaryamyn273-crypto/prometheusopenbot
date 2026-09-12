@@ -10,7 +10,9 @@ from typing import Dict, Any, Optional, List
 from src.tools.registry import register_tool
 from src.core import database
 from src.core.http import shared_client_ctx
-from src.tools.media import transcription  # noqa: F401  (registers transcribe_audio_tool)
+from src.tools.media import transcription  # noqa - side effect: registers transcribe_audio_tool
+
+__all__ = ["transcription"]
 
 logger = logging.getLogger(__name__)
 

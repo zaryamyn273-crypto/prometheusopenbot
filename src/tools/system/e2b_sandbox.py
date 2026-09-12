@@ -25,12 +25,11 @@ from src.core.config import ADMIN_ID
 logger = logging.getLogger(__name__)
 
 _E2B_MISSING_MSG = (
-    "⚠️ *سندباکس ابری E2B فعال نیست.*\n\n"
-    "برای اجرای ایزوله در کلاد:\n"
+    "⚠️ *سندباکس ابری E2B فعال نیست — اجرای کد خاموش است.*\n\n"
+    "به دلایل امنیتی هیچ اجرای لوکالی وجود ندارد. برای فعال‌سازی:\n"
     "۱. از https://e2b.dev/dashboard?tab=keys کلید بگیرید (`e2b_...`)\n"
     "۲. در Railway متغیر `E2B_API_KEY` را ست کنید\n"
-    "۳. `pip install e2b-code-interpreter` (داخل requirements هست)\n\n"
-    "تا آن موقع از سندباکس لوکال استفاده می‌شود."
+    "۳. `pip install e2b-code-interpreter` (داخل requirements هست)"
 )
 
 _DANGER_TOKENS = (

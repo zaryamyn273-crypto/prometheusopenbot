@@ -1,10 +1,6 @@
 import os
-import sys
-import io
 import re
 import ast
-import json
-import time
 import platform
 import psutil
 import logging
@@ -142,7 +138,7 @@ def mask_sensitive_shell_output(output: str, is_private_chat: bool) -> tuple[str
 
 @register_tool(
     name="execute_python_code",
-    description="اجرای کد پایتون (مختص فرمانده ارشد؛ اگر E2B_API_KEY ست باشد در سندباکس ابری E2B، وگرنه لوکال)",
+    description="اجرای کد پایتون فقط در سندباکس ابری E2B (مختص فرمانده ارشد؛ بدون E2B_API_KEY غیرفعال است، هیچ اجرای لوکالی وجود ندارد)",
     category="admin"
 )
 async def execute_python_code(code: str, caller_id: int = 0, is_private_chat: bool = False) -> str:
@@ -168,7 +164,6 @@ async def execute_python_code(code: str, caller_id: int = 0, is_private_chat: bo
     if is_destructive_shell_command(clean_code):
         return "⛔ این دستور شل مخرب/حساس است و هرگز اجرا نمی‌شود (حتی به دستور ادمین)."
 
-    is_master = True
     try:
         validate_python_code(clean_code)
     except ValueError as e:
@@ -176,176 +171,42 @@ async def execute_python_code(code: str, caller_id: int = 0, is_private_chat: bo
     except PermissionError as e:
         return f"⛔ کد به دلایل امنیتی مسدود شد:\n{e}"
 
-    # Secrets never leave the bot — blocked on BOTH backends.
+    # Secrets never leave the bot.
     _lower_sec = clean_code.lower()
     if any(t in _lower_sec for t in (".env", "telegram_bot_token", "router_api_key", "e2b_api_key", "cloudflare")):
         return "⛔ کد به دلایل امنیتی مسدود شد: دسترسی به سکرت/توکن ممنوع است."
 
-    # Cloud-first: E2B sandbox is isolated (network/pip allowed) and keeps
-    # Railway free-tier RAM/CPU at zero. Any E2B failure falls through to local.
+    # E2B-ONLY execution. There is deliberately NO local fallback: a local
+    # Python "sandbox" without cgroups/containers is security theater and a
+    # straight path to server RCE via indirect prompt injection. Without a
+    # configured E2B key the tool is DISABLED (see SECURITY.md).
     try:
         from src.core.config import has_e2b as _has_e2b_cfg
         _e2b_on = bool(_has_e2b_cfg())
     except Exception:
         _e2b_on = False
-    if _e2b_on:
+    if not _e2b_on:
         try:
-            from src.tools.system.e2b_sandbox import run_e2b_python as _e2b_run
-            _e2b_out = await _e2b_run(clean_code)
-            # run_e2b_python only raises on transport errors; a normal
-            # execution (even with code error inside) returns formatted text.
-            if _e2b_out and "فعال نیست" not in _e2b_out and "نصب نیست" not in _e2b_out:
-                try:
-                    masked, _ = mask_sensitive_shell_output(_e2b_out, is_private_chat=is_private_chat)
-                    return masked
-                except Exception:
-                    return _e2b_out
-            # Missing key/package message → fall through to local sandbox below.
-            logger.debug(f"E2B unavailable, using local sandbox: {_e2b_out[:120]}")
-        except Exception as _e:
-            logger.warning(f"E2B cloud run failed, falling back to local: {_e}")
-
-    # Extra hardening for the LOCAL backend only: block network/sys modules
-    # (E2B above already allows them safely in the cloud).
-    _lower = clean_code.lower()
-    _danger_tokens = ["__builtins__", "__class__", "__globals__", "getattr", "setattr",
-                      "importlib", "import os", "import sys", "import subprocess",
-                      "from os", "from sys", "os.system", "os.popen", "subprocess.",
-                      "socket", "urllib", "requests", "httpx", "/etc/passwd", "/etc/shadow",
-                      ".env", "telegram_bot_token", "router_api_key"]
-    if any(t in _lower for t in _danger_tokens):
-        return "⛔ کد به دلایل امنیتی مسدود شد: استفاده از ماژول‌های سیستمی/شبکه یا دسترسی به سکرت ممنوع است."
-
-    # Watchdog: user code runs in a SEPARATE PROCESS killed on timeout.
-    # (Threads can't work: a `while True: pass` hogs the GIL and starves the
-    # waiter. Only process termination truly stops runaway code.)
-    import multiprocessing as _mp
-
-    def _run_guarded(_out_q): 
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        redirected_output = io.StringIO()
-        redirected_error = io.StringIO()
-        sys.stdout = redirected_output
-        sys.stderr = redirected_error
-        if is_master:
-            import math as _math
-            import re as _re
-            # Hardened: NO os/sys/__builtins__ full access. Only pure libs.
-            safe_globals = {
-                "__builtins__": {
-                    "print": print, "range": range, "len": len, "int": int, "float": float,
-                    "str": str, "bool": bool, "list": list, "dict": dict, "set": set,
-                    "tuple": tuple, "sum": sum, "max": max, "min": min, "abs": abs,
-                    "round": round, "sorted": sorted, "enumerate": enumerate, "zip": zip,
-                    "map": map, "filter": filter, "isinstance": isinstance, "isinstance": isinstance,
-                    "pow": pow, "divmod": divmod, "any": any, "all": all,
-                },
-                "json": json,
-                "time": time,
-                "math": _math,
-                "re": _re,
-                "platform": platform,
-            }
-        else:
-            safe_globals = {
-                "__builtins__": {
-                    "print": print, "range": range, "len": len, "int": int, "float": float,
-                    "str": str, "bool": bool, "list": list, "dict": dict, "set": set,
-                    "tuple": tuple, "sum": sum, "max": max, "min": min, "abs": abs,
-                    "round": round, "sorted": sorted, "enumerate": enumerate, "zip": zip,
-                    "map": map, "filter": filter, "isinstance": isinstance
-                }
-            }
-        try:
-            exec(clean_code, safe_globals)
-            out = redirected_output.getvalue()
-            err = redirected_error.getvalue()
-            res = out if out else (err if err else "کد با موفقیت اجرا شد (بدون خروجی چاپی).")
-            badge = "👑 *نتیجه شل قدرتمند فرمانده (Python Super-Shell)*:" if is_master else "🐍 *نتیجه اجرای کد پایتون*:"
-            _out_q.put(f"{badge}\n\n```\n{res.strip()[:3500]}\n```")
-        except Exception as e:
-            try:
-                _out_q.put(f"❌ خطای زمان اجرا:\n`{str(e)}`")
-            except Exception:
-                pass
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-
-    # Sandbox IPC without semaphores: result travels through an anonymous pipe.
-    # (multiprocessing.Queue/SemLock need /dev/shm, which sandboxes often deny.)
-    import os as _os
+            from src.core.i18n import t as _t
+            return _t("fa", "code_disabled")
+        except Exception:
+            return "⛔ اجرای کد خاموش است (E2B_API_KEY ست نشده)."
     try:
-        ctx = _mp.get_context("fork")
-    except Exception:
-        ctx = _mp
-    read_fd, write_fd = _os.pipe()
-
-    def _run_guarded_pipe(_wfd: int):
-        import os as _os2
-        try:
-            _os2.close(read_fd)
-        except Exception:
-            pass
-        try:
-            _pipe = _os2.fdopen(_wfd, "w", encoding="utf-8")
-            class _Q:
-                def put(self, v):
-                    try:
-                        _pipe.write(str(v) + "\n<<<PROMETHEUS_END>>>\n")
-                        _pipe.flush()
-                    except Exception:
-                        pass
-            _run_guarded(_Q())
+        from src.tools.system.e2b_sandbox import run_e2b_python as _e2b_run
+        _e2b_out = await _e2b_run(clean_code)
+        if _e2b_out:
             try:
-                _pipe.close()
+                masked, _ = mask_sensitive_shell_output(_e2b_out, is_private_chat=is_private_chat)
+                return masked
             except Exception:
-                pass
-        except Exception as _e:
-            try:
-                with _os2.fdopen(_wfd, "w", encoding="utf-8") as _pipe2:
-                    _pipe2.write(f"❌ خطای پایپ: {_e}\n<<<PROMETHEUS_END>>>\n")
-                    _pipe2.flush()
-            except Exception:
-                pass
-
-    worker = ctx.Process(target=_run_guarded_pipe, args=(write_fd,), daemon=True)
-    worker.start()
-    _os.close(write_fd)
-    worker.join(timeout=5.0)
-    if worker.is_alive():
-        try:
-            worker.terminate()
-        except Exception:
-            pass
-        worker.join(timeout=2.0)
-        try:
-            if worker.is_alive() and hasattr(worker, "kill"):
-                worker.kill()
-                worker.join(timeout=2.0)
-        except Exception:
-            pass
-        try:
-            _os.close(read_fd)
-        except Exception:
-            pass
-        return "⏱ *زمان اجرای کد (۵ ثانیه) به پایان رسید* — احتمالاً حلقه بی‌نهایت دارد."
-    chunks = []
+                return _e2b_out
+    except Exception as _e:
+        logger.warning(f"E2B cloud run failed: {_e}")
     try:
-        with _os.fdopen(read_fd, "r", encoding="utf-8", errors="replace") as _rp:
-            while True:
-                piece = _rp.read(65536)
-                if not piece:
-                    break
-                chunks.append(piece)
+        from src.core.i18n import t as _t2
+        return _t2("fa", "code_disabled")
     except Exception:
-        pass
-    raw = "".join(chunks)
-    final_output = raw.split("<<<PROMETHEUS_END>>>")[0].strip() if "<<<PROMETHEUS_END>>>" in raw else raw.strip()
-    final_output = final_output or "کد با موفقیت اجرا شد (بدون خروجی چاپی)."
-    masked_res, _ = mask_sensitive_shell_output(final_output, is_private_chat=is_private_chat)
-    return masked_res
+        return "⛔ اجرای کد خاموش است (E2B_API_KEY ست نشده)."
 
 # ==========================================
 # 2. Server Diagnostics & Telemetry

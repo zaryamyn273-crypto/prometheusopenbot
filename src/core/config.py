@@ -53,8 +53,8 @@ for _k in ([TAVILY_API_KEY] if TAVILY_API_KEY else []) + _raw_tavily:
 TAVILY_API_URL = os.getenv("TAVILY_API_URL", "https://api.tavily.com/search")
 
 # --- E2B Cloud Sandbox (OPTIONAL — اجرای ایزوله کد در کلاد) ---
-# بدون کلید، ربات از سندباکس لوکال (multiprocessing) استفاده می‌کند.
-# با کلید، execute_python_code اول E2B ابری را امتحان می‌کند (امن‌تر + بدون لود Railway).
+# بدون کلید، ابزار اجرای کد غیرفعال است (هیچ فال‌بک لوکالی وجود ندارد).
+# با کلید، execute_python_code در E2B ابری اجرا می‌شود (امن‌تر + بدون لود Railway).
 # کلید را از https://e2b.dev/dashboard?tab=keys بگیرید (e2b_...).
 E2B_API_KEY = os.getenv("E2B_API_KEY", "")
 E2B_TEMPLATE = os.getenv("E2B_TEMPLATE", "")
@@ -151,7 +151,7 @@ SYSTEM_PROMPT = """شما «پرومته سوپر ایجنت» (Prometheus Super
    - اخبار زنده، جدیدترین تحولات، نسخه‌ها و جستجوی لحظه‌ای: اگر ابزار `tavily_search` در دسترس بود (کلید ست شده) از آن استفاده کن، وگرنه از `web_search` یا `live_news` رایگان استفاده نما.
    - محاسبات ریاضی و آمار ➔ `calculate_math_expression` یا `statistics_summary`
    - تقویم، ساعت رسمی و تاریخ شمسی ➔ `get_current_datetime_info`
-   - اجرای کد پایتون و شل قدرتمند سیستم روی سرور ➔ `execute_python_code` (ابری-E2B اول، لوکال دوم؛ کاملاً شخصی و مختص فرمانده ارشد)
+   - اجرای کد پایتون فقط در سندباکس ابری E2B ➔ `execute_python_code` یا مستقیم `e2b_run_code` (کاملاً شخصی و مختص فرمانده ارشد؛ بدون `E2B_API_KEY` ابزار غیرفعال است و هیچ اجرای لوکالی انجام نمی‌شود)
    - اجرای ایزوله در سندباکس ابری E2B (نصب پکیج/pip، کدهای نیازمند اینترنت، جاوااسکریپت) ➔ `e2b_run_code` یا `e2b_run_command` (مختص فرمانده؛ بدون `E2B_API_KEY` غیرفعال است)
    - وضعیت اتصال E2B ➔ `e2b_status`
    - وضعیت سیستم و تله‌متری سرور ➔ `admin_system_diagnostics`

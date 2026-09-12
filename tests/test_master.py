@@ -83,10 +83,13 @@ async def run_master_audit():
     assert 'telegra.ph' in tele
     print('   ✅ Native Audio Player, QR Generator, Telegraph Publisher: OK')
 
-    # 7. System Sandbox & Admin Tools
+    # 7. System Sandbox & Admin Tools (E2B-only: local exec is DISABLED by design)
     print('\n7. Sandbox & System Diagnostics:')
     py_exec = await system.execute_python_code('print(list(range(5)))', caller_id=config.ADMIN_ID)
-    assert '[0, 1, 2, 3, 4]' in py_exec
+    if config.has_e2b():
+        assert '[0, 1, 2, 3, 4]' in py_exec
+    else:
+        assert 'خاموش' in py_exec or 'DISABLED' in py_exec or 'E2B_API_KEY' in py_exec
     diag = system.admin_system_diagnostics()
     assert 'CPU' in diag and 'RAM' in diag
     print('   ✅ Python Sandbox & Server Diagnostics: OK')

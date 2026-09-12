@@ -119,7 +119,11 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "search_usage": "عبارت جستجو رو بنویس.",
         "calc_usage": "فرمول ریاضی رو بنویس.",
         "code_usage": "کد پایتون رو بنویس:\nمثال: `/code print(2**32)`",
-        "sh_usage": "💻 *ترمینال پرومته (مختص فرمانده):*\nدستور لینوکس رو بنویس:\nمثال: `/sh uptime`",
+        "code_disabled": (
+            "⛔ *اجرای کد روی سرور خاموش است.*\n"
+            "به دلایل امنیتی، کد فقط داخل سندباکس ابری E2B اجرا می‌شود.\n"
+            "برای فعال‌سازی، `E2B_API_KEY` را ست کنید (رایگان: e2b.dev)."
+        ),        "sh_usage": "💻 *ترمینال پرومته (مختص فرمانده):*\nدستور لینوکس رو بنویس:\nمثال: `/sh uptime`",
         "e2b_usage": "☁️ *سندباکس ابری E2B:*\nمثال پایتون: `/e2b print(2**32)`\nمثال جاوااسکریپت: `/e2b js console.log(2**32)`\nوضعیت: `/e2bstatus`",
         "e2bsh_usage": "☁️ مثال: `/e2bsh pip list` یا `/e2bsh python --version`",
         "loading": "⏳ یه لحظه...",
@@ -190,6 +194,11 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "search_usage": "Send a search query.",
         "calc_usage": "Send a math formula.",
         "code_usage": "Send Python code:\nExample: `/code print(2**32)`",
+        "code_disabled": (
+            "⛔ *On-server code execution is DISABLED.*\n"
+            "For security, code only runs inside the E2B cloud sandbox.\n"
+            "To enable, set `E2B_API_KEY` (free: e2b.dev)."
+        ),
         "sh_usage": "💻 *Prometheus terminal (commander only):*\nSend a Linux command:\nExample: `/sh uptime`",
         "e2b_usage": "☁️ *E2B cloud sandbox:*\nPython example: `/e2b print(2**32)`\nJavaScript example: `/e2b js console.log(2**32)`\nStatus: `/e2bstatus`",
         "e2bsh_usage": "☁️ Example: `/e2bsh pip list` or `/e2bsh python --version`",
