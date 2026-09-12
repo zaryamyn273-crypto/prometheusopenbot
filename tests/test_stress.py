@@ -9,7 +9,6 @@ Reports PASS/FAIL/ERROR per tool + category summary. Does NOT send Telegram mess
 import asyncio
 import sys
 import time
-import traceback
 
 from src.core.config import ADMIN_ID
 ADMIN = ADMIN_ID or 123456789
@@ -153,7 +152,6 @@ def _verdict(name, out):
 
 
 async def run_one(name, sem):
-    from src.tools import internal  # noqa: ensure internal registered  # pylint: disable=unused-import
     kwargs, timeout = CASES.get(name, ({}, 30))
     t0 = time.time()
     async with sem:

@@ -14,15 +14,13 @@ import asyncio
 import os
 import sys
 import time
-import json
 import re
-import traceback
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.core import database, config
+from src.core import database
 from src.core.config import ADMIN_ID
 from src.tools.database import (
     cloudflare_d1_store_record,
@@ -47,11 +45,10 @@ from src.tools.system import (
 from src.tools.admin.group_manager import (
     list_joined_groups_tool,
     list_public_channels_tool,
-    set_bot_instance,
 )
 import bot
 from telegram import Update, User, Chat, Message
-from telegram.constants import ChatType, ParseMode
+from telegram.constants import ChatType
 from telegram.ext import ContextTypes, ApplicationHandlerStop
 
 results = []

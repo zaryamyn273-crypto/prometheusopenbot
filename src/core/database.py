@@ -302,7 +302,7 @@ async def warm_l1_from_cloud_async() -> int:
 
 async def get_cache_health_async() -> Dict[str, Any]:
     """Reports L1 size, KV circuit state, D1 reachability and D1 queue depth."""
-    global _KV_LAST_CLOUD_ERROR
+    # NOTE: _KV_LAST_CLOUD_ERROR is only read here (no global decl needed).
     # Memoize the D1 probe for 30s so health daemons don't hammer D1
     try:
         if _HEALTH_MEMO.get("data") and (time.time() - float(_HEALTH_MEMO.get("at", 0))) < 30.0:
@@ -487,7 +487,7 @@ async def _d1_batch_writer_loop():
     Continuous Background Queue Worker:
     Drains messages from the memory queue and flushes them in batches with zero crashes.
     """
-    global _D1_WRITE_QUEUE
+    # NOTE: _D1_WRITE_QUEUE is only read here (created in ensure_batch_worker).
     while True:
         try:
             if _D1_WRITE_QUEUE is None:
@@ -666,7 +666,8 @@ def init_db():
         logger.warning(f"D1 startup sync skipped: {e}")
 
 def sync_memory_from_d1_sync():
-    global _MEMORY_DIRECTIVES, _BANNED_USERS, _BANNED_USERNAMES, _USERNAME_TO_ID_MAP, _ACTIVE_GROUPS
+    # Only rebound names need `global` (_USERNAME_TO_ID_MAP/_ACTIVE_GROUPS are mutated in place).
+    global _MEMORY_DIRECTIVES, _BANNED_USERS, _BANNED_USERNAMES
     mem_res = execute_d1_query_sync("SELECT directive FROM admin_memories ORDER BY id ASC")
     if mem_res["success"]:
         _MEMORY_DIRECTIVES = [row["directive"] for row in mem_res["results"] if "directive" in row]
@@ -714,7 +715,8 @@ def sync_memory_from_d1_sync():
 
 async def sync_memory_from_d1_async():
     """Continuously refreshes perpetual memory, ban list, and tracked groups from Cloudflare D1."""
-    global _MEMORY_DIRECTIVES, _BANNED_USERS, _BANNED_USERNAMES, _USERNAME_TO_ID_MAP, _ACTIVE_GROUPS
+    # Only rebound names need `global` (_USERNAME_TO_ID_MAP/_ACTIVE_GROUPS are mutated in place).
+    global _MEMORY_DIRECTIVES, _BANNED_USERS, _BANNED_USERNAMES
     mem_res = await execute_d1_query("SELECT directive FROM admin_memories ORDER BY id ASC")
     if mem_res["success"]:
         _MEMORY_DIRECTIVES = [row["directive"] for row in mem_res["results"] if "directive" in row]

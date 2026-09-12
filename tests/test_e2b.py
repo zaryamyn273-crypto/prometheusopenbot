@@ -24,8 +24,8 @@ def _has_key() -> bool:
 
 def _has_pkg() -> bool:
     try:
-        import e2b_code_interpreter  # noqa: F401
-        return True
+        import importlib.util
+        return importlib.util.find_spec("e2b_code_interpreter") is not None
     except Exception:
         return False
 

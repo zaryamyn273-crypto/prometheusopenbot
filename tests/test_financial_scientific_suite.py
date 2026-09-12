@@ -1,11 +1,9 @@
 
 import asyncio
 import time
-import json
 import traceback
 import sys
 import os
-from typing import Any, Dict, List
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import src.tools.financial as fin
@@ -260,9 +258,9 @@ def generate_report(financial_results, scientific_results):
     lines.append("=" * 80)
     lines.append("PROMETHEUS BOT TOOL VERIFICATION REPORT: FINANCIAL & SCIENTIFIC MODULES")
     lines.append("=" * 80)
-    lines.append(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
-    lines.append(f"Environment: Python venv at /home/dsh/workspace/venv/bin/python")
-    lines.append(f"Modules Tested: src/tools/financial, src/tools/scientific")
+    lines.append("Timestamp: " + time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()))
+    lines.append("Environment: Python " + sys.version.split()[0])
+    lines.append("Modules Tested: src/tools/financial, src/tools/scientific")
     lines.append(f"Total Test Cases Executed: {total_tests}")
     lines.append(f"Unhandled Exceptions / Crashes: {len(crashes)}")
     lines.append("=" * 80)

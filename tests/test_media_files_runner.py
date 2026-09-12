@@ -4,7 +4,6 @@ import io
 import os
 import sys
 import json
-import traceback
 from PIL import Image
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -35,7 +34,6 @@ async def test_download_music_track():
             print(f"Testing download_music_track: {label} ({query})...")
             res = await asyncio.wait_for(download_music_track(query), timeout=35.0)
             status = "PASS"
-            res_type = type(res).__name__
             summary = ""
             if isinstance(res, dict):
                 t = res.get("type")
@@ -154,7 +152,7 @@ async def test_transcribe_audio_tool():
         # Create a tiny 1-second silent WAV / MP3 file or use a dummy file
         import tempfile
         # Generate minimal silent wav
-        import wave, struct
+        import wave
         temp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         with wave.open(temp_wav.name, "w") as wf:
             wf.setnchannels(1)
@@ -322,9 +320,9 @@ def test_optimize_image_for_vision():
         sub_results.append({
             "case": "Corrupted bytes",
             "status": "PASS",
-            "summary": f"Fallback triggered gracefully. No unhandled exception, returned raw base64 ({b64_str})"
+            "summary": "Fallback triggered gracefully. No unhandled exception, returned raw base64 (" + b64_str + ")"
         })
-        print(f"  -> PASS: Corrupted bytes handled via fallback gracefully")
+        print("  -> PASS: Corrupted bytes handled via fallback gracefully")
     except Exception as e:
         sub_results.append({"case": "Corrupted bytes", "status": "FAIL", "summary": str(e)})
         print(f"  -> FAIL: {e}")

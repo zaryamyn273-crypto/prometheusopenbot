@@ -5,7 +5,7 @@ import asyncio
 import time
 from src.core import database, ai_service, config
 from src.tools import (
-    registry, scientific, financial, web_network, system, media, github, files as file_reader, database as database_tools
+    registry, scientific, financial, web_network, system, media, github
 )
 from src.utils import telegram_formatter
 
