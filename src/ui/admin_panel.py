@@ -1,4 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+import html
 from src.core import database
 # NOTE: system + group_manager are imported lazily inside functions (psutil and
 # friends stay unloaded until an admin actually opens telemetry/groups).
@@ -202,7 +203,7 @@ async def get_banned_users_text_async() -> str:
         uname = f"@{r.get('username')}" if r.get("username") else "بدون یوزرنیم"
         fname = r.get("first_name") or "—"
         reason = r.get("reason") or "تخلف از قوانین"
-        out.append(f"<b>{i}.</b> <code>{uid}</code> | <b>{fname}</b> ({uname})\n   علت: <i>{reason}</i>")
+        out.append(f"<b>{i}.</b> <code>{html.escape(str(uid))}</code> | <b>{html.escape(str(fname))}</b> ({html.escape(str(uname))})\n   علت: <i>{html.escape(str(reason)[:200])}</i>")
     
     if len(records) > 20:
         out.append(f"\n... و {len(records) - 20} کاربر دیگر")
@@ -230,6 +231,6 @@ async def get_recent_d1_messages_text_async() -> str:
         role = "🤖 پرومته" if r.get("role") == "assistant" else f"👤 {user}"
         preview = str(r.get("content", ""))[:45].replace("\n", " ")
         t = r.get("msg_time") or ""
-        lines.append(f"• [{t}] <b>{grp}</b> | {role}: <code>{preview}...</code>")
+        lines.append(f"• [{html.escape(str(t))}] <b>{html.escape(str(grp))}</b> | {html.escape(str(role))}: <code>{html.escape(preview)}...</code>")
     
     return "\n".join(lines)

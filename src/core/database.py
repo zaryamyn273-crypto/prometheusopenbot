@@ -1350,7 +1350,7 @@ async def search_group_memory(
             fts_where_parts.append("m.msg_kind = ?")
             fts_params.append(str(msg_kind).lower())
 
-        _fts_q = " ".join(f'"{w}"' for w in tokens[:6]) or f'"{clean_q}"'
+        _fts_q = " ".join(f'"{w.replace(chr(34), "")}"' for w in tokens[:6]) or f'"{clean_q.replace(chr(34), "")}"'
         _fts_where = " AND ".join(fts_where_parts)
         _fts_where_sql = f"AND {_fts_where}" if _fts_where else ""
         _fts_sql = (

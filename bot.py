@@ -1,4 +1,5 @@
 import io
+import html
 import json
 import time
 import logging
@@ -403,7 +404,7 @@ async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Show all active perpetual directives
         directives = database.get_all_admin_memories()
         if directives:
-            formatted = "\n".join(f"• <code>{d}</code>" for d in directives)
+            formatted = "\n".join(f"• <code>{html.escape(str(d)[:300])}</code>" for d in directives)
             await message.reply_text(
                 f"🧠 <b>قوانین و فرامین ابدی فعال در حافظه D1:</b>\n\n{formatted}\n\nبرای ثبت دستور جدید:\n<code>/remember &lt;متن دستور&gt;</code>\nبرای فراموشی:\n<code>/forget &lt;متن یا بخشی از دستور&gt;</code>",
                 parse_mode=ParseMode.HTML
@@ -415,7 +416,7 @@ async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Add directive instantly
     await database.add_admin_memory_async(directive_text)
     await message.reply_text(
-        f"👑 <b>فرمان حاکمیتی با سرعت نور ثبت شد:</b>\nدستور زیر بلافاصله در حافظه بلادرنگ و دیتابیس ابدی Cloudflare D1 فعال گردید:\n\n«<code>{directive_text}</code>»",
+        f"👑 <b>فرمان حاکمیتی با سرعت نور ثبت شد:</b>\nدستور زیر بلافاصله در حافظه بلادرنگ و دیتابیس ابدی Cloudflare D1 فعال گردید:\n\n«<code>{html.escape(directive_text[:300])}</code>»",
         parse_mode=ParseMode.HTML
     )
 
@@ -433,7 +434,7 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await database.remove_admin_memory_async(keyword)
     await message.reply_text(
-        f"🗑 <b>فرمان اجرا شد:</b>\nدستور منطبق با «<code>{keyword}</code>» بلافاصله از حافظه فعال سیستم و دیتابیس D1 حذف گردید.",
+        f"🗑 <b>فرمان اجرا شد:</b>\nدستور منطبق با «<code>{html.escape(keyword[:200])}</code>» بلافاصله از حافظه فعال سیستم و دیتابیس D1 حذف گردید.",
         parse_mode=ParseMode.HTML
     )
 
@@ -856,7 +857,7 @@ async def sh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             group_notice = "\n\n🔒 <i>[برای اطلاعات کامل به پیوی مراجعه بکنید.]</i>" if (not is_pv and not redacted) else ""
             await message.reply_text(
-                f"💻 <b>فرمان لینوکس اجرا شد:</b> <code>{cmd_text}</code>\n\n<pre><code>{masked_str}</code></pre>{group_notice}",
+                f"💻 <b>فرمان لینوکس اجرا شد:</b> <code>{html.escape(cmd_text[:300])}</code>\n\n<pre><code>{html.escape(masked_str)}</code></pre>{group_notice}",
                 parse_mode=ParseMode.HTML
             )
         except asyncio.TimeoutError:
@@ -866,7 +867,7 @@ async def sh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             await message.reply_text("⏱ زمان اجرای دستور شل به پایان رسید (Timeout 12s).")
     except Exception as e:
-        await message.reply_text(f"❌ خطای اجرای شل:\n<code>{str(e)}</code>", parse_mode=ParseMode.HTML)
+        await message.reply_text(f"❌ خطای اجرای شل:\n<code>{html.escape(str(e)[:300])}</code>", parse_mode=ParseMode.HTML)
 
 
 async def e2b_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1076,7 +1077,7 @@ async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_txt = "🚫 مسدود (Banned)" if is_banned else "🟢 فعال (Active)"
         await reply_safely(
             message,
-            f"🎯 <b>شناسه عددی پیام ریپلای‌شده:</b>\n• <b>شناسه عددی (ID):</b> <code>{uid}</code>\n• <b>نام:</b> <b>{fname}</b>\n• <b>یوزرنیم:</b> <code>{uname}</code>\n• <b>وضعیت:</b> {status_txt}\n\n<i>💡 برای بن کردن:</i> <code>/ban {uid}</code>"
+            f"🎯 <b>شناسه عددی پیام ریپلای‌شده:</b>\n• <b>شناسه عددی (ID):</b> <code>{uid}</code>\n• <b>نام:</b> <b>{html.escape(str(fname))}</b>\n• <b>یوزرنیم:</b> <code>{html.escape(str(uname))}</code>\n• <b>وضعیت:</b> {status_txt}\n\n<i>💡 برای بن کردن:</i> <code>/ban {uid}</code>"
         )
         return
 
@@ -1324,9 +1325,31 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.delete()
         return
 
+    # QUOTA GATE for cost-bearing callbacks: non-admin button taps consume
+    # daily quota just like text turns (they call the same LLM/tools).
+    async def _cb_quota_ok() -> bool:
+        try:
+            if is_admin(user.id):
+                return True
+            _ok, _u, _l = await database.bump_daily_usage_async(user.id)
+            if not _ok:
+                _rs = database.seconds_until_daily_reset()
+                try:
+                    _ul, _ = _ulang_of(update)
+                except Exception:
+                    _ul = "en"
+                await query.answer()
+                await reply_safely(query.message, t(_ul, "limit_exceeded", limit=_l, h=_rs // 3600, m=(_rs % 3600) // 60))
+                return False
+            return True
+        except Exception:
+            return True
+
     # Weather quick buttons
     if data.startswith("qweather_"):
         await query.answer(t(normalize_lang(user.language_code), "loading"))
+        if not await _cb_quota_ok():
+            return
         city = data.replace("qweather_", "")
         from src.tools import web_network as _wn_qw
         res = await _wn_qw.get_weather(city)
@@ -1340,15 +1363,21 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(telegram_formatter.markdown_to_telegram_html(t(ulang_tb, "toolbox_title")), reply_markup=admin_panel.get_tools_keyboard(), parse_mode=ParseMode.HTML)
     elif data == "tool_crypto":
         await query.answer(t(normalize_lang(user.language_code), "loading"))
+        if not await _cb_quota_ok():
+            return
         from src.tools import financial as _fin_cb
         res = await _fin_cb.get_crypto_overview()
         await reply_safely(query.message, await _maybe_translate(update, res))
     elif data == "tool_gold":
         await query.answer(t(normalize_lang(user.language_code), "loading"))
+        if not await _cb_quota_ok():
+            return
         res = await _fin_cb.get_gold_and_coin_price()
         await reply_safely(query.message, await _maybe_translate(update, res))
     elif data == "tool_news":
         await query.answer(t(normalize_lang(user.language_code), "loading"))
+        if not await _cb_quota_ok():
+            return
         from src.tools import web_network as _wn_news
         res = await _wn_news.live_news("general")
         await reply_safely(query.message, await _maybe_translate(update, f"📰 *اخبار فوری جهان:*\n\n{res}"))
@@ -1362,6 +1391,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await reply_safely(query.message, t(ulang_nm, "network_menu"), reply_markup=admin_panel.get_network_tools_keyboard())
     elif data == "tool_time":
         await query.answer(t(normalize_lang(user.language_code), "loading"))
+        if not await _cb_quota_ok():
+            return
         from src.tools import scientific as _sci_cb
         t_info = _sci_cb.get_current_datetime_info()
         await reply_safely(query.message, await _maybe_translate(update, t_info))
@@ -1682,10 +1713,24 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 if directive_content.startswith(p):
                     directive_content = directive_content[len(p):].lstrip(" :,!-").strip()
             final_directive = f"{directive_content} (مرجع: {replied_text})" if (directive_content and replied_text) else (replied_text or directive_content)
+            # MEMORY-POISON GUARD: quoted text may come from ANY user — scan the
+            # fused directive before it becomes permanent admin memory.
+            try:
+                from src.core.guard import contains_injection as _mem_scan
+                _mem_hit = _mem_scan(final_directive)
+            except Exception:
+                _mem_hit = ""
+            if _mem_hit:
+                try:
+                    logger.warning(f"memory-poison blocked: admin={user.id} chat={chat.id}")
+                except Exception:
+                    pass
+                await message.reply_text("🛡 این متن با قوانین امنیتی ناسازگار است و در حافظه ثبت نشد.", parse_mode=ParseMode.HTML)
+                return
             if final_directive:
                 await database.add_admin_memory_async(final_directive)
                 await message.reply_text(
-                    f"👑 <b>فرمان حاکمیتی ثبت شد:</b>\n«<code>{final_directive}</code>»\nبلافاصله در حافظه بلادرنگ و دیتابیس D1 فعال گردید.",
+                    f"👑 <b>فرمان حاکمیتی ثبت شد:</b>\n«<code>{html.escape(final_directive[:300])}</code>»\nبلافاصله در حافظه بلادرنگ و دیتابیس D1 فعال گردید.",
                     parse_mode=ParseMode.HTML
                 )
                 return
@@ -2132,6 +2177,26 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         pass
     # Zero-Wait Asynchronous Message Archiving (Fire-and-forget: does not block the critical response path)
     asyncio.create_task(database.save_message_async(chat.id, user.id, "user", user_text, user_name=user_display, username=user_uname, chat_title=chat_title, message_id=message.message_id or 0, chat_type=_save_ctype, msg_kind=_save_kind, reply_to_msg_id=_rq_mid, reply_to_user=_rq_user, reply_to_text=_rq_text))
+
+    # ANTI-JAILBREAK SCAN: deterministic pre-LLM filter for override/role-play/
+    # exfil attempts. Runs BEFORE triage and quota so attacks cost the attacker
+    # nothing and the victim's quota nothing. Legit text passes through.
+    if not is_admin(user.id):
+        try:
+            from src.core.guard import contains_injection as _scan_inj
+            _inj_reason = _scan_inj(user_text)
+        except Exception:
+            _inj_reason = ""
+        if _inj_reason:
+            try:
+                logger.warning(f"injection blocked: user={user.id} chat={chat.id} reason={_inj_reason}")
+            except Exception:
+                pass
+            try:
+                await reply_safely(message, t(tri_lang, "injection_refused"))
+            except Exception:
+                pass
+            return
 
     # --- Tier 0/1 triage FIRST: trivial turns are answered here with minimal
     # power (no prefetch tasks, no typing loop, no KV writes, no AI import).

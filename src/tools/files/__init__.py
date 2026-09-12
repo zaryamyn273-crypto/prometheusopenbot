@@ -24,14 +24,25 @@ def read_document_file(file_path: str, max_chars: int = 4000) -> str:
     :param max_chars: حداکثر تعداد کاراکترهای استخراجی
     """
     clean_path = file_path.strip()
-    # Security Sandbox Protection: Never expose bot source code or sensitive tokens/configs
-    norm_p = os.path.abspath(clean_path)
-    forbidden_sources = [
-        "bot.py", ".env", "config.py", "database.py", "ai_service.py",
-        "/etc/shadow", "/etc/passwd", "token", "secret", "private_key", ".git"
-    ]
-    if any(fb in norm_p.lower() for fb in forbidden_sources) or norm_p.endswith((".py", ".env", ".pem", ".key")):
-        return "⛔ دسترسی غیرمجاز: خواندن سورس‌کدهای اصلی ربات، کلیدها یا پیکربندی‌های محرمانه سیستم اکیداً مسدود است."
+    # Security Sandbox Protection: the LLM may only read files the bot itself
+    # downloaded into /tmp (Telegram docs, fetched files). Everything else —
+    # source, configs, /etc, /proc, home dirs, symlinks escaping /tmp — is
+    # refused. realpath() kills symlink bypass; extension cap kills binaries.
+    try:
+        real_p = os.path.realpath(clean_path)
+    except Exception:
+        return "⛔ مسیر فایل نامعتبر است."
+    allowed_roots = (os.path.realpath("/tmp") + os.sep,)
+    if not real_p.startswith(allowed_roots):
+        return "⛔ دسترسی غیرمجاز: فقط فایل‌های دانلودشده در پوشه موقت (/tmp) خوانده می‌شوند."
+    if real_p.lower().endswith((".py", ".env", ".pem", ".key", ".sqlite", ".db", ".so", ".sh")):
+        return "⛔ دسترسی غیرمجاز: خواندن سورس‌کد، کلیدها یا فایل‌های اجرایی مسدود است."
+    try:
+        if os.path.getsize(real_p) > 25 * 1024 * 1024:
+            return "⛔ فایل بزرگ‌تر از ۲۵ مگابایت خوانده نمی‌شود."
+    except Exception:
+        return f"فایل در مسیر '{file_path}' یافت نشد."
+    clean_path = real_p
 
     if not os.path.exists(clean_path):
         return f"فایل در مسیر '{file_path}' یافت نشد."

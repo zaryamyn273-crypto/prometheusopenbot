@@ -36,7 +36,7 @@
 - **En el servidor no se ejecuta código:** el código del IA solo corre en el sandbox cloud de E2B; sin clave la herramienta está desactivada (sin fallback local por diseño). La shell destructiva nunca se ejecuta, ni siquiera por orden del admin.
 - **No solo persa:** detecta el idioma del texto (no solo el ajuste de Telegram) y responde en él — persa, inglés, ruso, árabe, turco...; las salidas se traducen cuando hace falta.
 - **Cuota diaria justa:** cada usuario recibe `DAILY_USER_LIMIT` (40 por defecto) respuestas completas de IA al día en todos los chats; reinicio automático cada 24 h (00:00 UTC), sin cron; admin ilimitado y puede ajustar la cuota de cada uno (`/setquota`, `/resetquota`). `/limit` muestra el saldo.
-- **El admin no necesita slash:** las órdenes en lenguaje natural se ejecutan directamente («leave group X», lista de grupos...) — sin adivinar, con verificación en vivo.
+- **El admin no necesita slash:** las órdenes en lenguaje natural se ejecutan directamente («leave group X», lista de grupos, «set quota for X to 100»...) — sin adivinar, con verificación en vivo.
 - **Seguridad de grupos:** entrar requiere aprobación del admin (botones en privado), lista en vivo desde Telegram, historial conservado al salir, y salidas siempre puntuales y verificadas.
 
 ---
@@ -73,6 +73,8 @@ Pipeline: update de Telegram → gatekeepers → archivo en D1 en fondo → **tr
 
 - El código del IA solo corre en E2B cloud; sin clave: DESACTIVADO, sin ejecución local.
 - Secretos enmascarados como `[SECRET]`; admin solo por `ADMIN_ID` numérico.
+- Anti-jailbreak en 3 capas: preescaneo determinista, bloque de inmunidad en el prompt, puertas de admin.
+- Guardia SSRF: fetch solo a hosts públicos; lector de archivos limitado a `/tmp`; HTML escapado.
 - Modelo de amenazas + divulgación responsable: [SECURITY.md](SECURITY.md)
 
 ---
@@ -89,6 +91,7 @@ python tests/test_daily_limit.py    # cuota diaria (offline)
 python tests/test_intent_router.py  # órdenes del admin (offline)
 python tests/test_detect_lang.py    # detección de idioma (offline)
 python tests/test_quota_override.py # cuotas de admin (offline)
+python tests/test_adversarial.py    # anti-jailbreak/SSRF/puertas (offline)
 ```
 Cada push lo verifica GitHub Actions (badge arriba).
 

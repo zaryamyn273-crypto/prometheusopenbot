@@ -210,6 +210,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "quota_invalid": "❌ عدد نامعتبر است. بین 1 تا 10000 بگو.",
         "quota_need_target": "❌ کاربر مشخص نیست. ریپلای کن، یا آیدی عددی / @یوزرنیم بده.",
         "quota_show": "📊 سهمیه {name} (`{uid}`): {used} از {limit} استفاده شده.",
+        "injection_refused": "🛡 این درخواست با قوانین امنیتی ربات ناسازگار است و اجرا نشد. سؤال دیگری داری در خدمتم.",
         "group_hello": (
             "👋 *پرومته فعال شد.*\n"
             "برای حرف زدن باهام: پیامم رو ریپلای کن، منشنم کن، یا اسم «پرومته» رو بیار.\n\n"
@@ -315,6 +316,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "quota_invalid": "❌ Invalid number. Use 1 to 10000.",
         "quota_need_target": "❌ No user specified. Reply, or send a numeric ID / @username.",
         "quota_show": "📊 Quota of {name} (`{uid}`): {used} of {limit} used.",
+        "injection_refused": "🛡 This request conflicts with the bot's security rules and was not executed. Anything else I can help with?",
         "group_hello": (
             "👋 *پرومته فعال شد.*\n"
             "برای حرف زدن باهام: پیامم رو ریپلای کن، منشنم کن، یا اسم «پرومته» رو بیار.\n\n"

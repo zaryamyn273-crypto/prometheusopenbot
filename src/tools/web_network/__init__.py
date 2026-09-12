@@ -741,6 +741,11 @@ async def fetch_webpage_content(url: str, max_chars: int = 4000) -> str:
     clean_u = url.strip()
     if not clean_u.startswith("http"):
         clean_u = f"https://{clean_u}"
+    try:
+        from src.utils.net_guard import assert_public_url as _guard_url
+        clean_u = _guard_url(clean_u)
+    except Exception:
+        return "⛔ این آدرس مجاز نیست (اهداف داخلی/خصوصی مسدود است)."
 
     cache_key = f"WEBPAGE_{clean_u}"
     cached = await database.kv_get_cache_async(cache_key)
@@ -799,6 +804,11 @@ async def check_website_status(target: str) -> str:
     clean_t = target.strip()
     if not clean_t.startswith("http"):
         clean_t = f"https://{clean_t}"
+    try:
+        from src.utils.net_guard import assert_public_url as _guard_url
+        clean_t = _guard_url(clean_t)
+    except Exception:
+        return "⛔ این هدف مجاز نیست (اهداف داخلی/خصوصی مسدود است)."
 
     client = get_async_client()
     loop = asyncio.get_running_loop()

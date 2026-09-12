@@ -36,7 +36,7 @@
 - **No on-server code execution:** AI-written code runs only in the E2B cloud sandbox; without a key the tool is DISABLED (no local fallback by design). Destructive shell never runs, not even on admin order.
 - **Not Persian-only:** the message text's language is detected (not just the Telegram client setting) and the final AI answer comes back in that language — Persian, English, Russian, Arabic, Turkish, ...; tool outputs are translated when needed.
 - **Fair daily quota:** every user gets `DAILY_USER_LIMIT` full AI answers per day (default 40) across all chats; auto-reset every 24h (00:00 UTC), no cron; admin is unlimited and can raise/lower anyone's quota (`/setquota`, `/resetquota`, or reply "quota 100"). `/limit` shows the remaining quota.
-- **No slash needed for the admin:** the admin's intent is understood from Persian/English text and executed directly ("leave group X", list-groups, ...) — never guessed, always live-verified.
+- **No slash needed for the admin:** the admin's intent is understood from Persian/English text and executed directly ("leave group X", list-groups, "set quota for X to 100", ...) — never guessed, always live-verified.
 - **Group safety:** new joins need admin approval (approve/reject buttons in PV), live list from Telegram, records kept on leave, and leaves are always single-target and verified.
 
 ---
@@ -124,6 +124,8 @@ The bot runs on a modern multi-layer pipeline:
 
 - AI-written code runs only in the E2B cloud sandbox (no key: DISABLED, no local fallback).
 - Secrets masked as `[SECRET]`; admin auth by numeric ID only.
+- 3-layer anti-jailbreak: deterministic pre-LLM message scan (override/role/fake-admin patterns, fa+en), prompt immunity block (instruction hierarchy + data/instruction split), admin tool gating (admin schemas never shown to users).
+- SSRF guard: URL fetch limited to public hosts (no loopback/private/metadata); file reader jailed to `/tmp`; HTML outputs escaped.
 - Full threat model + responsible disclosure: [SECURITY.md](SECURITY.md)
 
 ---
@@ -140,6 +142,7 @@ python tests/test_daily_limit.py    # daily quota (offline)
 python tests/test_intent_router.py  # admin intent (offline)
 python tests/test_detect_lang.py    # language detection (offline)
 python tests/test_quota_override.py # adjustable quotas (offline)
+python tests/test_adversarial.py    # anti-jailbreak/SSRF/admin-gates (offline)
 ```
 Build + Docker are checked on every push by GitHub Actions (badge above).
 

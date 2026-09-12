@@ -28,6 +28,12 @@ DESTRUCTIVE_SHELL_PATTERNS = [
     r"\bfdisk\b", r"\bparted\b", r"\bgdisk\b", r"wipefs", r"\bshred\b.*\/dev\/",
     r">\s*/dev/sd[a-z]", r">\s*/dev/nvme", r"chmod\s+-R\s+777\s+/",
     r"chown\s+-R\s+\S+\s+/\s",
+    # exfil / reverse-shell / env-dump: blocked even for the admin
+    r"\bcurl\b.*\b(bash|sh)\b", r"\bwget\b.*\b(bash|sh)\b",
+    r"\bnc\s+-[a-z]*e\b", r"\bncat\s+.*--exec\b", r"\bsocat\b",
+    r"/dev/tcp/", r"/dev/udp/",
+    r"\benv\b", r"\bprintenv\b", r"\bset\b\s*$",
+    r"\bcat\b\s+.*\.env\b", r"\bcat\b\s+/proc/self/environ",
 ]
 
 
@@ -271,6 +277,15 @@ async def extract_user_id_tool(
     query: Optional[str] = None,
     caller_id: int = 0
 ) -> str:
+    try:
+        from src.core.config import ADMIN_ID as _ADMIN
+    except Exception:
+        _ADMIN = 0
+    try:
+        if int(caller_id or 0) != int(_ADMIN):
+            return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
+    except Exception:
+        return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
     raw_query = str(target or name or username or query or "").strip()
     if not raw_query:
         return "❌ لطفاً نام نمایشی، یوزرنیم یا متنی از کاربر مورد نظر را مشخص فرمایید."

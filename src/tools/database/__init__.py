@@ -25,13 +25,19 @@ async def cloudflare_kv_store(
     data: Optional[str] = None,
     v: Optional[str] = None,
     ttl_seconds: int = 86400,
-    ttl: Optional[int] = None
+    ttl: Optional[int] = None,
+    caller_id: int = 0
 ) -> str:
     """
     :param key: کلید یا شناسه داده برای ذخیره‌سازی (مانند user_note, project_config, api_status)
     :param value: متن کامل داده، کانفیگ، یادداشت یا JSON برای ذخیره
     :param ttl_seconds: مدت زمان ماندگاری به ثانیه (پیش‌فرض: ۸۶۴۰۰ ثانیه معادل ۲۴ ساعت)
     """
+    try:
+        if int(caller_id or 0) != int(ADMIN_ID):
+            return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
+    except Exception:
+        return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
     raw_key = key or name or k or ""
     raw_val = value or val or data or v or ""
     final_ttl = ttl or ttl_seconds or 86400
@@ -53,11 +59,17 @@ async def cloudflare_kv_store(
 async def cloudflare_kv_retrieve(
     key: Optional[str] = None,
     name: Optional[str] = None,
-    k: Optional[str] = None
+    k: Optional[str] = None,
+    caller_id: int = 0
 ) -> str:
     """
     :param key: کلید یا شناسه داده‌ای که قبلاً ذخیره شده است
     """
+    try:
+        if int(caller_id or 0) != int(ADMIN_ID):
+            return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
+    except Exception:
+        return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
     raw_key = key or name or k or ""
     clean_k = str(raw_key).strip().replace(" ", "_")
     if not clean_k:
@@ -76,13 +88,19 @@ async def cloudflare_kv_retrieve(
 async def cloudflare_d1_store_record(
     key: str,
     value: str,
-    category: str = "general"
+    category: str = "general",
+    caller_id: int = 0
 ) -> str:
     """
     :param key: عنوان یا کلید یکتا برای داده
     :param value: محتوای متنی، کد، تنظیمات یا JSON برای ذخیره ابدی
     :param category: دسته‌بندی اختیاری (مثال: configs, notes, rules)
     """
+    try:
+        if int(caller_id or 0) != int(ADMIN_ID):
+            return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
+    except Exception:
+        return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
     clean_k = key.strip()
     if not clean_k:
         return "کلید داده نمی‌تواند خالی باشد."
