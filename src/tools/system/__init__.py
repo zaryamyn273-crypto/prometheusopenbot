@@ -248,6 +248,20 @@ def admin_system_diagnostics(caller_id: int = 0) -> str:
         disk_free_gb = disk.free / (1024 ** 3)
         disk_total_gb = disk.total / (1024 ** 3)
 
+        try:
+            from src.core.pipeline.telemetry import PerformanceTelemetry
+            telemetry = PerformanceTelemetry.summary()
+            telem_txt = (
+                f"\n\n⚡ *تله‌متری پایپ‌لاین و شتاب‌دهی موتور پرومته*:\n"
+                f"• *کل نوبت‌های پردازش*: `{telemetry['total_turns']}`\n"
+                f"• *پاسخ‌های فست‌پث (<1ms)*: `{telemetry['fast_path_turns']}`\n"
+                f"• *نوبت‌های استدلال عمیق*: `{telemetry['llm_turns']}`\n"
+                f"• *ابزارهای اجراشده*: `{telemetry['tool_calls']}`\n"
+                f"• *میانگین تاخیر نوبت*: *{telemetry['avg_latency_ms']} میلی‌ثانیه*"
+            )
+        except Exception:
+            telem_txt = ""
+
         return (
             f"🖥 *وضعیت و تله‌متری سرور پرومته*:\n\n"
             f"• *سیستم‌عامل*: `{platform.system()} {platform.release()}`\n"
@@ -257,6 +271,7 @@ def admin_system_diagnostics(caller_id: int = 0) -> str:
             f"• *آپ‌تایم سرور*: {up_txt}\n"
             f"• *نسخه پایتون*: `{platform.python_version()}`\n"
             f"• *وضعیت کلی*: 🟢 *عملیاتی و ۱۰۰٪ پایدار*"
+            f"{telem_txt}"
         )
     except Exception as e:
         return f"خطا در دریافت اطلاعات تله‌متری سرور: {str(e)}"

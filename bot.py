@@ -33,6 +33,7 @@ from src.core.config import (
 )
 from src.core import database, config
 from src.core.i18n import normalize_lang, lang_name, t, detect_lang
+from src.core.pipeline.telemetry import PerformanceTelemetry
 # NOTE: ai_service + tool modules are imported lazily inside handlers
 # (see _maybe_translate / triage) so trivial turns never load the full stack.
 from src.ui import admin_panel
@@ -1582,6 +1583,8 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not user or not message or _banned_here:
         return
 
+    _turn_t0 = time.perf_counter()
+
     # COMMAND OWNERSHIP: a slash-command owned by a CommandHandler must not be
     # re-executed by the AI agent. Double execution once made the bot leave
     # BOTH the requested target group AND the group where the command was sent.
@@ -2510,6 +2513,11 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await reply_safely(message, t(ulang_dl, "delivery_failed"))
         except Exception:
             pass
+
+    try:
+        PerformanceTelemetry.record_turn((time.perf_counter() - _turn_t0) * 1000.0, is_fast_path=False)
+    except Exception:
+        pass
     return
 
 async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, chat_title):

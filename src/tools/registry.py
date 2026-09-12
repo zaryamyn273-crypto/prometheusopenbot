@@ -1,15 +1,33 @@
 import inspect
 import functools
 import importlib
+import json
 import logging
 import re
 import threading
-from typing import Callable, Dict, Any, List, Optional
+import time
+from typing import Callable, Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 # Global registry of all executable tools
 REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+# Microsecond Idempotent Tool Result Cache
+_IDEMPOTENT_TOOL_TTLS: Dict[str, float] = {
+    "calculate_math_expression": 3600.0,
+    "convert_units": 3600.0,
+    "generate_hash_digest": 3600.0,
+    "base64_encode_decode": 3600.0,
+    "url_encode_decode": 3600.0,
+    "color_converter_tool": 3600.0,
+    "statistics_summary": 3600.0,
+    "generate_qr_code_tool": 1800.0,
+    "generate_barcode_tool": 1800.0,
+    "resolve_dns": 180.0,
+    "check_ssl_certificate": 300.0,
+}
+_IDEMPOTENT_CACHE: Dict[str, Tuple[float, Any]] = {}
 
 # =========================================================================
 # Lazy tool loading: tool modules are imported ONLY when actually needed.
@@ -714,6 +732,20 @@ async def execute_registered_tool(
     if coerce_error:
         return coerce_error
 
+    # --- Idempotent Tool Cache Lookup (<0.01ms) ---
+    cache_ttl = _IDEMPOTENT_TOOL_TTLS.get(name)
+    cache_key = None
+    if cache_ttl is not None:
+        try:
+            cache_key = f"{name}:{json.dumps(call_kwargs, sort_keys=True, default=str)}"
+            now_ts = time.time()
+            if cache_key in _IDEMPOTENT_CACHE:
+                exp_ts, cached_res = _IDEMPOTENT_CACHE[cache_key]
+                if now_ts < exp_ts:
+                    return cached_res
+        except Exception:
+            cache_key = None
+
     try:
         if tool_meta["is_async"]:
             primary_out = await func(**call_kwargs)
@@ -724,6 +756,13 @@ async def execute_registered_tool(
         primary_out = f"خطا در اجرای ابزار {name}: {str(e)}"
 
     if not _looks_like_failure(primary_out):
+        if cache_ttl is not None and cache_key is not None:
+            _IDEMPOTENT_CACHE[cache_key] = (time.time() + cache_ttl, primary_out)
+            if len(_IDEMPOTENT_CACHE) > 1000:
+                _now = time.time()
+                for _k in list(_IDEMPOTENT_CACHE.keys())[:200]:
+                    if _IDEMPOTENT_CACHE.get(_k, (0, None))[0] <= _now:
+                        _IDEMPOTENT_CACHE.pop(_k, None)
         return primary_out
 
     # --- Automatic resilient fallback: try 1-2 backup tools with mapped args ---
