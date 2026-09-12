@@ -89,9 +89,11 @@ def is_admin(user_id: int) -> bool:
 def _ulang_of(update) -> tuple:
     """(lang, lang_name) for a Telegram update: 'fa' for Persian clients, else 'en' chrome + full LLM language."""
     try:
-        code = (getattr(update.effective_user, "language_code", "") or "fa")
+        code = getattr(update.effective_user, "language_code", "") or "fa"
     except Exception:
         code = "fa"
+    if not isinstance(code, str):
+        code = "fa"  # non-string (shouldn't happen live; keeps legacy default)
     return normalize_lang(code), lang_name(code)
 
 

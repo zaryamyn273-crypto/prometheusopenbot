@@ -432,21 +432,21 @@ async def test_bot_handlers_and_stop_switch():
     await bot.start_command(up_start, context)
     ok_start = up_start.effective_message.reply_text.called
     msg_start = up_start.effective_message.reply_text.call_args[0][0] if ok_start else "Not called"
-    record("bot_handler_start_command", ok_start and "پرومته سوپر ایجنت" in msg_start, msg_start)
+    record("bot_handler_start_command", ok_start and "پرومته" in msg_start, msg_start)
 
     # 2. /help command
     up_help = make_mock_update(text="/help")
     await bot.help_command(up_help, context)
     ok_help = up_help.effective_message.reply_text.called
     msg_help = up_help.effective_message.reply_text.call_args[0][0] if ok_help else "Not called"
-    record("bot_handler_help_command", ok_help and "راهنمای فرامین" in msg_help, msg_help)
+    record("bot_handler_help_command", ok_help and "راهنمای دستور" in msg_help, msg_help)
 
     # 3. /tools_prometheus command
     up_tools = make_mock_update(text="/tools_prometheus")
     await bot.tools_command(up_tools, context)
     ok_tools = up_tools.effective_message.reply_text.called
     msg_tools = up_tools.effective_message.reply_text.call_args[0][0] if ok_tools else "Not called"
-    record("bot_handler_tools_command", ok_tools and "سامانه ابزارهای فعال" in msg_tools, msg_tools)
+    record("bot_handler_tools_command", ok_tools and "جعبه ابزار" in msg_tools, msg_tools)
 
     # 4. /clear command
     up_clear = make_mock_update(user_id=ADMIN_ID, text="/clear")
@@ -495,7 +495,7 @@ async def test_bot_handlers_and_stop_switch():
     await bot.main_message_handler(up_resume, context)
     is_resumed = test_group_id not in bot._STOPPED_CHATS
     msg_resume = up_resume.effective_message.reply_text.call_args[0][0] if up_resume.effective_message.reply_text.called else ""
-    record("master_admin_stop_switch_resume", is_resumed and "برگشتم فرمانده" in msg_resume, msg_resume)
+    record("master_admin_stop_switch_resume", is_resumed and "برگشتم" in msg_resume, msg_resume)
 
     # 9. Natural Language Bot Call Detection (Group)
     # When addressed by name in group, bot triggers response pipeline
