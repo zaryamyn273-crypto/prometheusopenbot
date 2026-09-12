@@ -5,7 +5,7 @@ import time
 import logging
 import asyncio
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple, List
 
 from telegram import (
     Update,
