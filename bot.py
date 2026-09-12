@@ -2517,7 +2517,7 @@ async def post_init_callback(application):
         while True:
             try:
                 client = ai_service.get_shared_client()
-                await client.get(f"{config.ROUTER_BASE_URL}/models", timeout=4.0)
+                await client.get(f"{config.ROUTER_BASE_URL}/models", headers=ai_service._router_headers(), timeout=4.0)
             except Exception:
                 pass
             await asyncio.sleep(120.0)
