@@ -1912,10 +1912,9 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             msg_text = message.text or message.caption or ""
 
             # If user sent a voice/audio note in the background, transcribe it so D1 gets the REAL text spoken!
-            # Skipped entirely when no ROUTER_API_KEY (offline Railway deploy) — no crash, just archive the voice tag.
+            # Uses high-precision multimodal STT engine with 25MB cap
             if (message.voice or message.audio) and not msg_text and (config.ROUTER_API_KEY or "").strip():
                 try:
-                    from src.core.http import get_http_client as _bg_stt
                     target_a = message.voice or message.audio
                     a_file = await context.bot.get_file(target_a.file_id)
                     a_buf = io.BytesIO()
@@ -1924,15 +1923,10 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     if raw_a_bytes and len(raw_a_bytes) <= 25 * 1024 * 1024:
                         mime_t = "audio/ogg" if message.voice else "audio/mpeg"
                         f_ext = "voice.ogg" if mime_t == "audio/ogg" else "audio.mp3"
-                        client = _bg_stt("api")
-                        headers = {"Authorization": f"Bearer {config.ROUTER_API_KEY}"}
-                        files = {"file": (f_ext, raw_a_bytes, mime_t)}
-                        data = {"model": "whisper-1"}
-                        r_bg = await client.post(f"{config.ROUTER_BASE_URL}/audio/transcriptions", headers=headers, data=data, files=files, timeout=30.0)
-                        if r_bg.status_code == 200:
-                            v_txt = r_bg.json().get("text", "").strip()
-                            if v_txt:
-                                msg_text = f"[پیام صوتی پیاده‌شده]: {v_txt}"
+                        from src.core.stt import transcribe_audio_bytes
+                        v_txt = await transcribe_audio_bytes(raw_a_bytes, mime_type=mime_t, filename=f_ext)
+                        if v_txt:
+                            msg_text = f"[پیام صوتی پیاده‌شده]: {v_txt}"
                 except Exception as e:
                     logger.debug(f"Background voice transcription error: {e}")
 
@@ -2054,7 +2048,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         # If stripping left some content, use it. If user ONLY sent the name (e.g. "پرومته"), keep it as a greeting call!
         user_text = stripped_text if stripped_text else user_text
 
-        if not user_text and not message.photo and not message.voice and not message.audio and not message.reply_to_message:
+        if not user_text and not message.photo and not message.document and not message.voice and not message.audio and not message.reply_to_message:
             return
 
     # Multimodal image byte holder
@@ -2082,23 +2076,20 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     mime_type = "audio/ogg" if (message.voice or (message.reply_to_message and message.reply_to_message.voice)) else "audio/mpeg"
                     file_ext = "voice.ogg" if mime_type == "audio/ogg" else "audio.mp3"
 
-                    from src.core.http import get_http_client as _stt_client
-                    headers = {"Authorization": f"Bearer {config.ROUTER_API_KEY}"}
-                    files = {"file": (file_ext, raw_audio_bytes, mime_type)}
-                    data = {"model": "whisper-1"}
-                    r = await _stt_client("api").post(f"{config.ROUTER_BASE_URL}/audio/transcriptions", headers=headers, data=data, files=files, timeout=60.0)
-                    if r.status_code == 200:
-                        transcribed_text = r.json().get("text", "").strip()
-                        if transcribed_text:
-                            if user_text:
-                                user_text = f"{user_text}\n\n[محتوای متن پیاده‌شده از ویس/صوت]: «{transcribed_text}»"
-                            else:
-                                user_text = f"[پیام صوتی پیاده‌شده]: «{transcribed_text}»"
+                    from src.core.stt import transcribe_audio_bytes
+                    transcribed_text = await transcribe_audio_bytes(
+                        raw_bytes=raw_audio_bytes,
+                        mime_type=mime_type,
+                        filename=file_ext,
+                        user_lang=ulang
+                    )
+                    if transcribed_text:
+                        if user_text:
+                            user_text = f"{user_text}\n\n[محتوای متن پیاده‌شده از ویس/صوت]: «{transcribed_text}»"
                         else:
-                            voice_failed = True
+                            user_text = f"[پیام صوتی پیاده‌شده]: «{transcribed_text}»"
                     else:
                         voice_failed = True
-                        logger.warning(f"Voice transcription HTTP {r.status_code}: {r.text[:200]}")
                 else:
                     voice_failed = True
             except Exception as e:
@@ -2132,24 +2123,21 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 await _rv_file.download_to_memory(_rv_buf)
                 _rv_bytes = _rv_buf.getvalue()
                 if _rv_bytes:
-                    from src.core.http import get_http_client as _rv_client
                     _rv_mime = "audio/ogg" if replied_msg.voice else "audio/mpeg"
                     _rv_ext = "voice.ogg" if replied_msg.voice else "audio.mp3"
-                    _rv_r = await _rv_client("api").post(
-                        f"{config.ROUTER_BASE_URL}/audio/transcriptions",
-                        headers={"Authorization": f"Bearer {config.ROUTER_API_KEY}"},
-                        data={"model": "whisper-1"},
-                        files={"file": (_rv_ext, _rv_bytes, _rv_mime)},
-                        timeout=60.0,
+                    from src.core.stt import transcribe_audio_bytes
+                    _replied_voice_txt = await transcribe_audio_bytes(
+                        raw_bytes=_rv_bytes,
+                        mime_type=_rv_mime,
+                        filename=_rv_ext,
+                        user_lang=ulang
                     )
-                    if _rv_r.status_code == 200:
-                        _replied_voice_txt = (_rv_r.json().get("text", "") or "").strip()
             except Exception as _e:
                 logger.debug(f"Quoted-voice transcription error: {_e}")
         if _replied_voice_txt and not replied_text:
             replied_text = f"[ویس پیاده‌شده]: {_replied_voice_txt}"
 
-        # If the replied message had a photo, extract it for vision analysis
+        # If the replied message had a photo or image document, extract it for vision analysis
         if replied_msg.photo:
             try:
                 r_photo = replied_msg.photo[-1]
@@ -2157,6 +2145,19 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 r_img_buf = io.BytesIO()
                 await r_photo_file.download_to_memory(r_img_buf)
                 image_bytes = r_img_buf.getvalue()
+            except Exception:
+                pass
+        elif replied_msg.document:
+            try:
+                _rd = replied_msg.document
+                _rmime = (_rd.mime_type or "").lower()
+                _rfname = (_rd.file_name or "").lower()
+                if _rmime.startswith("image/") or _rfname.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp")):
+                    if (_rd.file_size or 0) <= 20 * 1024 * 1024:
+                        r_doc_file = await context.bot.get_file(_rd.file_id)
+                        r_img_buf = io.BytesIO()
+                        await r_doc_file.download_to_memory(r_img_buf)
+                        image_bytes = r_img_buf.getvalue()
             except Exception:
                 pass
 
@@ -2193,7 +2194,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception:
             pass
 
-    # Multimodal Vision processing on current message
+    # Multimodal Vision processing on current message (supports photos and uncompressed image documents)
     if message.photo:
         try:
             photo = message.photo[-1]
@@ -2203,6 +2204,23 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             image_bytes = img_buffer.getvalue()
         except Exception as e:
             logger.warning(f"Error downloading photo: {e}")
+    elif message.document:
+        try:
+            _doc = message.document
+            _dmime = (_doc.mime_type or "").lower()
+            _dfname = (_doc.file_name or "").lower()
+            if _dmime.startswith("image/") or _dfname.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp")):
+                if (_doc.file_size or 0) <= 20 * 1024 * 1024:
+                    doc_file = await context.bot.get_file(_doc.file_id)
+                    img_buffer = io.BytesIO()
+                    await doc_file.download_to_memory(img_buffer)
+                    image_bytes = img_buffer.getvalue()
+        except Exception as e:
+            logger.warning(f"Error downloading image document: {e}")
+
+    # If an image is sent without caption/text, provide an intelligent default vision prompt
+    if image_bytes and not user_text.strip():
+        user_text = "[تصویر ارسال‌شده توسط کاربر بدون متن؛ لطفاً تصویر را با نهایت دقت بررسی کن، متن‌های درون آن، اشیاء، جزئیات، چهره‌ها یا نمودارها را مختصر، دقیق و با لحن حرفه‌ای و کمی طعنه‌دار تحلیل کن]"
 
     # Save user message to database history with full user details, group title and username mapping
     user_uname = user.username or ""

@@ -91,31 +91,20 @@ async def transcribe_audio_tool(audio_url_or_path: str) -> str:
         if not audio_bytes:
             return "فایل صوتی خالی است."
 
-        # Send to Whisper Transcription endpoint (fresh key each call; no
-        # forced "language" so Whisper auto-detects — the bot serves all languages).
         _rkey = (_config.ROUTER_API_KEY or "").strip()
         if not _rkey:
             return "❌ سرویس رونویسی بدون کلید AI در دسترس نیست."
-        headers = {"Authorization": f"Bearer {_rkey}"}
-        files = {"file": ("audio.mp3", io.BytesIO(audio_bytes), mime)}
-        data = {"model": "whisper-1"}
 
-        async with shared_client_ctx("web") as client:
-            r = await client.post(
-                f"{_config.ROUTER_BASE_URL.rstrip('/')}/audio/transcriptions",
-                headers=headers,
-                data=data,
-                files=files
-            )
-            if r.status_code == 200:
-                transcript = r.json().get("text", "").strip()
-                if transcript:
-                    return f"🎙 *متن پیاده‌سازی‌شده از صوت (Transcription)*:\n\n«{transcript}»"
-            if r.status_code in (401, 403):
-                return "❌ کلید AI نامعتبر است."
-            if r.status_code == 429:
-                return "❌ سقف درخواست رونویسی پر شده، کمی بعد تلاش کنید."
-            return "تبدیل صوت با مدل ویسپر در دسترس نیست یا فرمت صوتی پشتیبانی نمی‌شود."
+        from src.core.stt import transcribe_audio_bytes
+        transcript = await transcribe_audio_bytes(
+            raw_bytes=audio_bytes,
+            mime_type=mime,
+            filename=f"audio{os.path.splitext(clean_target)[1] or '.mp3'}"
+        )
+        if transcript:
+            return f"🎙 *متن پیاده‌سازی‌شده از صوت (Transcription)*:\n\n«{transcript}»"
+
+        return "تبدیل صوت با اختلال مواجه شد یا فایل فاقد گفتار واضح بود."
     except Exception:
         logger.exception("transcribe failed")
         return "خطا در پردازش صوت."

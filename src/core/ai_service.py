@@ -46,8 +46,9 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
     """
     Advanced High-Fidelity Multimodal Vision Preprocessor:
     - Auto-orients EXIF rotation so rotated phone photos don't confuse OCR/Vision.
-    - Preserves high-density detail (up to 1600px) with Lanczos anti-aliasing.
-    - Applies subtle contrast enhancement to ensure faint handwriting, Persian/Arabic fonts, code, and small text are razor-sharp.
+    - Preserves high-density detail (up to 2048px) with Lanczos anti-aliasing.
+    - Adaptive Auto-contrast and contrast stretching for dark shots, whiteboard shadows, and faint handwriting.
+    - Applies subtle sharpness enhancement to ensure small code fonts, Arabic/Persian diacritics, and symbols are razor-sharp.
     - Returns (base64_encoded_str, mime_type).
     """
     try:
@@ -71,20 +72,26 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
             elif img.mode != "RGB":
                 img = img.convert("RGB")
 
-            # 3. High-definition scaling (up to 1600px for ultra-fine OCR & detail)
-            max_dim = 1600
+            # 3. High-definition scaling (up to 2048px for ultra-fine OCR & detail)
+            max_dim = 2048
             if max(img.size) > max_dim:
                 img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
 
-            # 4. Adaptive sharpness & contrast enhancement for OCR readability
+            # 4. Adaptive contrast normalization to eliminate dark shadows & phone camera gradients
+            try:
+                img = ImageOps.autocontrast(img, cutoff=0.5)
+            except Exception:
+                pass
+
+            # 5. Adaptive sharpness & edge clarity enhancement for fine Persian fonts & OCR
             try:
                 enhancer = ImageEnhance.Sharpness(img)
-                img = enhancer.enhance(1.15)
+                img = enhancer.enhance(1.20)
             except Exception:
                 pass
 
             buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=90, optimize=True)
+            img.save(buffer, format="JPEG", quality=92, optimize=True)
             opt_bytes = buffer.getvalue()
             b64_str = base64.b64encode(opt_bytes).decode("utf-8")
             return b64_str, "image/jpeg"
@@ -516,11 +523,12 @@ async def generate_response(
     if image_bytes:
         b64_img, mime = optimize_image_for_vision(image_bytes)
         system_vision_prompt = (
-            "راهنمای پردازش تصویر و هوش بصری فوق‌پیشرفته:\n"
-            "- تصویر را با حداکثر دقت، جزئی‌نگری و استدلال تحلیلی پردازش کن.\n"
-            "- اگر تصویر شامل متن، نوشته فارسی یا انگلیسی، کد برنامه‌نویسی، فرمول ریاضی یا نمودار است، متن آن را با دقت ۱۰۰٪ بخوان و بازگو کن.\n"
-            "- اشیاء، چهره‌ها، محیط، رنگ‌ها، جزئیات پس‌زمینه و روابط بین عناصر را به دقت درک و بیان نما.\n"
-            "- پاسخ مستقیم، دقیق و هوشمندانه به سوال کاربر درباره این تصویر ارائه کن."
+            "راهنمای پردازش تصویر و هوش بصری فوق‌پیشرفته پرومته:\n"
+            "- تصویر ارسالی را با حداکثر دقت، قدرت تحلیل عمیق و هوش بصری چندحالته واکاوی کن.\n"
+            "- استخراج متن (OCR کامل): هرگونه نوشته، دست‌خط، فاکتور، سند، سربرگ یا تابلوی درون عکس (به ویژه متن‌های فارسی یا انگلیسی) را با دقت ۱۰۰٪ و بدون جا انداختن حتی یک واژه استخراج کن.\n"
+            "- تحلیل کد و دیباگ: اگر تصویر اسکرین‌شات ادیتور، کنسول یا خطای سیستم است، منشأ باگ را سریعاً تشخیص بده و کد تمیز و رفع‌شده را در بلوک کد تحویل بده.\n"
+            "- ریاضی، آمار و نمودار: معادلات، فرمول‌ها، جدول‌ها و محورهای نمودار را با دقت تحلیل کن و نتیجه نهایی را مشخص نما.\n"
+            "- هویت بصری و جزئیات محیط: چهره‌ها، اشیاء، سبک و مفهوم نهفته در عکس را با نگاهی تحلیل‌گر، دقیق، موجز و با همان لحن حرفه‌ای و کمی طعنه‌آمیز تشریح کن."
         )
         current_text = f"{user_prompt}\n\n[{system_vision_prompt}]" if user_prompt else system_vision_prompt
         current_content = [
@@ -622,6 +630,15 @@ async def generate_response(
         _live_base = (_cfg_turn.ROUTER_BASE_URL or "").rstrip("/")
     except Exception:
         _live_model, _live_base = ROUTER_MODEL, ROUTER_BASE_URL
+
+    # High-Performance Vision Routing:
+    # 1. Route image turns to 'Good' (Gemini 3.8 Flash) which has dedicated multimodal vision weights & 1.2s latency.
+    # 2. Prune heavy non-search tools for pure vision analysis to eliminate 3,000 tokens of schema overhead.
+    if image_bytes:
+        _live_model = "Good"
+        _wants_web_search = any(w in clean_p_low for w in ["سرچ", "بگرد", "جستجو", "پیدا کن", "لینک", "search", "google", "وب"])
+        if not _wants_web_search:
+            tools_schema = []
 
     for loop_idx in range(max_tool_loops):
         # Mid-loop escalation: if the model stalls without calling tools twice,
