@@ -39,6 +39,10 @@
   - Crisp, professional, concise, and technical tone with a touch of intelligent, dry wit and subtle sarcasm.
 * ⚡ **Real-Time RAM & Cloudflare D1 Sync for Bans & Directives:**
   - Instant synchronization between sub-microsecond in-memory hashed sets and Cloudflare D1 for banned users and admin directives (`manage_admin_memory`).
+* ⏰ **Distributed Cron Job & Task Scheduler Engine (`scheduler`):**
+  - Persistent scheduling of reminders, tasks, and automated financial broadcasts backed by Cloudflare D1 SQL storage (resilient against container restarts).
+  - Full natural language parser for English & Persian ("in 10m", "tomorrow at 18:30", "every day at 12:00", "every 2 hours") alongside standard 5-part cron syntax (`0 12 * * *`).
+  - Native Telegram commands `/remind`, `/schedules`, and `/cancel_schedule` alongside autonomous LLM agent tools.
 * 🔍 **Sub-Second Speculative Web Search (<1.2s):**
   - Concurrent speculative race across Tavily AI, Bing, Wikipedia, and DuckDuckGo Instant.
   - Automatic circuit breaker for Tavily rate-limits to eliminate 429 delays and timeouts.

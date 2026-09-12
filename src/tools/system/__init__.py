@@ -597,3 +597,105 @@ async def get_banned_users_list_tool(caller_id: int = 0, is_private_chat: bool =
         )
 
     return "\n".join(lines)
+
+
+# ==========================================
+# 4. Distributed Task Scheduler & Cron Tools
+# ==========================================
+
+@register_tool(
+    name="schedule_task_tool",
+    description="زمان‌بندی یادآوری، تسک یا گزارش‌های خودکار (کرون جاب) با پشتیبانی از زمان نسبی (۱۰ دقیقه دیگه، ۲ ساعت بعد)، ساعت دقیق (فردا ساعت ۱۲:۰۰، ساعت ۵ عصر) یا تکرارشونده (هر روز ساعت ۹، هر ۳ ساعت، الگوی کرون)",
+    category="system"
+)
+async def schedule_task_tool(
+    title: str,
+    when: str,
+    action_type: str = "reminder",
+    chat_id: int = 0,
+    caller_id: int = 0
+) -> str:
+    """
+    :param title: متن یادآوری یا عنوان تسک زمان‌بندی‌شده
+    :param when: عبارت زمانی (مانند '10m', '2 ساعت بعد', 'فردا ساعت 18:30', 'هر روز ساعت 12:00', '0 9 * * *')
+    :param action_type: نوع تسک ('reminder' برای پیام یادآوری، 'market_report' برای گزارش مالی خودکار)
+    """
+    from src.core import scheduler
+    if not title or not title.strip():
+        return "❌ عنوان یا متن یادآوری نمی‌تواند خالی باشد."
+    if not when or not when.strip():
+        return "❌ زمان اجرای تسک مشخص نشده است."
+
+    res = await scheduler.create_scheduled_job_async(
+        chat_id=chat_id,
+        user_id=caller_id,
+        title=title.strip(),
+        time_expression=when.strip(),
+        action_type=action_type.strip(),
+    )
+
+    if not res.get("success"):
+        return f"❌ {res.get('error', 'خطا در ثبت تسک زمان‌بندی‌شده.')}"
+
+    jid = res.get("job_id")
+    recur_txt = "🔁 *تکرارشونده*" if res.get("is_recurring") else "⏱ *یک‌باره*"
+    return (
+        f"✅ *تسک زمان‌بندی‌شده با موفقیت در دیتابیس ابدی D1 ثبت گردید*:\n\n"
+        f"• *شناسه تسک*: `#{jid}`\n"
+        f"• *عنوان*: {title.strip()}\n"
+        f"• *نوع تسک*: {recur_txt}\n"
+        f"• *زمانبندی*: {res.get('human_desc')}\n"
+        f"• *موعد اجرای بعدی*: `{res.get('next_run_formatted')}`\n\n"
+        f"💡 برای لغو در آینده: «تسک #{jid} رو لغو کن»"
+    )
+
+
+@register_tool(
+    name="list_scheduled_tasks_tool",
+    description="مشاهده فهرست تسک‌ها و یادآوری‌های زمان‌بندی‌شده فعال در چت یا برای کاربر",
+    category="system"
+)
+async def list_scheduled_tasks_tool(
+    chat_id: int = 0,
+    caller_id: int = 0
+) -> str:
+    from src.core import scheduler
+    from src.core.config import ADMIN_ID
+
+    is_adm = (caller_id == ADMIN_ID)
+    jobs = await scheduler.list_scheduled_jobs_async(chat_id=chat_id, user_id=caller_id, is_admin=is_adm)
+    if not jobs:
+        return "🗓 *در حال حاضر هیچ یادآوری یا تسک زمان‌بندی‌شده فعالی ثبت نشده است.*"
+
+    lines = [f"🗓 *لیست تسک‌های زمان‌بندی‌شده فعال ({len(jobs)} مورد)*:\n"]
+    for idx, j in enumerate(jobs):
+        jid = j.get("id")
+        title = j.get("title")
+        recur = "🔁 تکرارشونده" if j.get("is_recurring") else "⏱ یک‌باره"
+        next_run = j.get("next_run_jalali", "نامشخص")
+        lines.append(f"{idx+1}. شناسه: `#{jid}` | *{title}*\n   نوع: {recur} | اجرای بعدی: `{next_run}`")
+
+    return "\n".join(lines)
+
+
+@register_tool(
+    name="cancel_scheduled_task_tool",
+    description="لغو و حذف یک تسک یا یادآوری زمان‌بندی‌شده بر اساس شناسه عددی آن",
+    category="system"
+)
+async def cancel_scheduled_task_tool(
+    task_id: int,
+    caller_id: int = 0
+) -> str:
+    """
+    :param task_id: شناسه عددی تسک (مثلاً 5)
+    """
+    from src.core import scheduler
+    if not task_id:
+        return "❌ لطفاً شناسه عددی تسک را وارد کنید."
+
+    ok, msg = await scheduler.cancel_scheduled_job_async(job_id=task_id, caller_id=caller_id)
+    if ok:
+        return f"✅ {msg}"
+    return f"❌ {msg}"
+

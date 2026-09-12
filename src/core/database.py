@@ -627,6 +627,24 @@ def init_db():
         limit_n INTEGER NOT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS scheduled_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        user_name TEXT DEFAULT '',
+        username TEXT DEFAULT '',
+        title TEXT NOT NULL,
+        action_type TEXT DEFAULT 'reminder',
+        payload TEXT NOT NULL,
+        schedule_type TEXT DEFAULT 'once',
+        interval_seconds INTEGER DEFAULT 0,
+        cron_expr TEXT DEFAULT '',
+        next_run_ts REAL NOT NULL,
+        is_recurring INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_run_at TIMESTAMP
+    );
     CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_search ON messages(chat_id, content);
     CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(chat_id, user_id, id DESC);
@@ -643,6 +661,7 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_custom_data ON custom_data_store(key_name);
     CREATE INDEX IF NOT EXISTS idx_custom_data_cat ON custom_data_store(category, key_name);
     CREATE INDEX IF NOT EXISTS idx_banned_username ON banned_users(username);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_next ON scheduled_jobs(status, next_run_ts);
     """
     # D1 REST /query runs exactly ONE statement per call — a batched multi-statement
     # string fails (or silently runs only the first CREATE). Split, never batch.
@@ -658,7 +677,8 @@ def init_db():
             _have = {str(r.get("name", "")) for r in (_probe.get("results") or [])}
             _need_ddl = not {"messages", "admin_memories", "custom_data_store",
                              "banned_users", "muted_users", "user_mappings",
-                             "tracked_groups", "daily_usage", "quota_overrides", "messages_fts"}.issubset(_have)
+                             "tracked_groups", "daily_usage", "quota_overrides", "messages_fts",
+                             "scheduled_jobs"}.issubset(_have)
     except Exception:
         _need_ddl = True
     if _need_ddl:

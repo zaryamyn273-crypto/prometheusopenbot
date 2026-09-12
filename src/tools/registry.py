@@ -50,6 +50,7 @@ _CATEGORY_MODULES: Dict[str, List[str]] = {
     "time": ["src.tools.scientific"],
     "github": ["src.tools.github"],
     "admin": ["src.tools.system", "src.tools.admin.group_manager", "src.tools.database"],
+    "scheduler": ["src.tools.system"],
     "files": ["src.tools.files"],
     "database": ["src.tools.database"],
     "dev": ["src.tools.dev", "src.tools.system"],
@@ -269,6 +270,11 @@ CATEGORY_KEYWORDS = {
     ],
     "time": [
         "ساعت", "تاریخ", "تقویم", "امروز چندمه", "ساعت چنده", "time", "date"
+    ],
+    "scheduler": [
+        "یادآوری", "یادم بنداز", "زمانبندی", "زمان‌بندی", "کرون", "کرون‌جاب", "cron", "remind", "reminder", "schedule",
+        "تسک", "هر روز ساعت", "دقیقه دیگه", "ساعت بعد", "تسک زمان‌بندی‌شده", "لیست یادآوری", "لغو یادآوری",
+        "فردا ساعت", "پس فردا ساعت", "ساعت دیگه"
     ],
     "database": [
         "سوابق", "پیام های قبلی", "تاریخچه", "قبلا", "دیروز", "چت", "دیتابیس", "ذخیره در دیتابیس", "کانفیگ",

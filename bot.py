@@ -1139,6 +1139,85 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning(f"Failed to delete command message: {e}")
 
+async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Schedule a reminder or task: /remind <time> <message>"""
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not message or database.is_user_banned(user.id):
+        return
+
+    args = context.args or []
+    if len(args) < 2:
+        await reply_safely(
+            message,
+            "⏰ <b>فرمت دستور زمان‌بندی و یادآوری:</b>\n"
+            "<code>/remind &lt;زمان&gt; &lt;متن یادآوری&gt;</code>\n\n"
+            "<i>مثال‌ها:</i>\n"
+            "• <code>/remind 10m برم آب بخورم</code>\n"
+            "• <code>/remind 2h جلسه آنلاین</code>\n"
+            "• <code>/remind 14:00 چک کردن بازار</code>\n"
+            "• <code>/remind هر_روز_12 قیمت طلا رو بفرست</code>"
+        )
+        return
+
+    time_part = args[0].replace("_", " ")
+    title_part = " ".join(args[1:])
+    from src.core import scheduler
+    res = await scheduler.create_scheduled_job_async(
+        chat_id=chat.id,
+        user_id=user.id,
+        title=title_part,
+        time_expression=time_part,
+        user_name=user.first_name or "",
+        username=user.username or "",
+    )
+    if not res.get("success"):
+        await reply_safely(message, f"❌ {res.get('error', 'خطا در ثبت یادآوری.')}")
+        return
+
+    jid = res.get("job_id")
+    recur_txt = "🔁 <b>تکرارشونده</b>" if res.get("is_recurring") else "⏱ <b>یک‌باره</b>"
+    await reply_safely(
+        message,
+        f"✅ <b>یادآوری با موفقیت در سیستم زمان‌بندی پرومته ثبت شد:</b>\n\n"
+        f"• <b>شناسه تسک:</b> <code>#{jid}</code>\n"
+        f"• <b>متن:</b> {html.escape(title_part)}\n"
+        f"• <b>نوع:</b> {recur_txt}\n"
+        f"• <b>زمانبندی:</b> {html.escape(str(res.get('human_desc')))}\n"
+        f"• <b>موعد اجرا:</b> <code>{res.get('next_run_formatted')}</code>\n\n"
+        f"<i>💡 برای لغو:</i> <code>/cancel_schedule {jid}</code>"
+    )
+
+async def schedules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lists active schedules for current chat or user."""
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not message or database.is_user_banned(user.id):
+        return
+
+    from src.tools.system import list_scheduled_tasks_tool
+    res = await list_scheduled_tasks_tool(chat_id=chat.id, caller_id=user.id)
+    await reply_safely(message, res)
+
+async def cancel_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancels a schedule by ID: /cancel_schedule <id>"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or database.is_user_banned(user.id):
+        return
+
+    args = context.args or []
+    if not args or not args[0].lstrip("#").isdigit():
+        await reply_safely(message, "⚠️ فرمت دستور:\n<code>/cancel_schedule &lt;شناسه عددی تسک&gt;</code>\nمثال: <code>/cancel_schedule 3</code>")
+        return
+
+    task_id = int(args[0].lstrip("#"))
+    from src.tools.system import cancel_scheduled_task_tool
+    res = await cancel_scheduled_task_tool(task_id=task_id, caller_id=user.id)
+    await reply_safely(message, res)
+
 # ==========================================
 # 2. Group Membership Guardian (Auto-Leave)
 # ==========================================
@@ -2720,6 +2799,14 @@ async def post_init_callback(application):
     except Exception as e:
         logger.warning(f"Financial background sync disabled: {e}")
 
+    # Start Distributed Task Scheduler & Cron Loop
+    try:
+        from src.core import scheduler
+        scheduler.start_scheduler(application.bot)
+        logger.info("Prometheus Cron & Task Scheduler daemon launched successfully.")
+    except Exception as e:
+        logger.warning(f"Scheduler daemon launch skipped: {e}")
+
     # Self-use background daemon: periodic tool-health snapshot into smart cache
     async def self_health_daemon():
         await asyncio.sleep(30.0)
@@ -2910,6 +2997,13 @@ def build_application():
     app.add_handler(_pcmd("delete", delete_command))
     app.add_handler(_pcmd("del_prometheus", delete_command))
     app.add_handler(_pcmd("delete_prometheus", delete_command))
+    app.add_handler(_pcmd("remind", remind_command))
+    app.add_handler(_pcmd("schedule", remind_command))
+    app.add_handler(_pcmd("remind_prometheus", remind_command))
+    app.add_handler(_pcmd("schedules", schedules_command))
+    app.add_handler(_pcmd("schedules_prometheus", schedules_command))
+    app.add_handler(_pcmd("cancel_schedule", cancel_schedule_command))
+    app.add_handler(_pcmd("cancel_schedule_prometheus", cancel_schedule_command))
 
     # Callbacks, Chat Member Updates & Messages
     app.add_handler(ChatMemberHandler(track_chat_member_updates, ChatMemberHandler.MY_CHAT_MEMBER))
