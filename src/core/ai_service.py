@@ -408,7 +408,11 @@ async def generate_response(
     _ulang = _norm_lang(user_lang_code)
     _ulang_name = _lang_name(user_lang_code)
     if _ulang == "fa":
-        _lang_rule = "\n[زبان پاسخ]: کاربر فارسی‌زبان است؛ فارسیِ روان و صمیمی جواب بده."
+        _lang_rule = (
+            "\n[زبان پاسخ — اکیداً فارسی]: کاربر به زبان فارسی سخن می‌گوید. "
+            "پاسخ شما باید ۱۰۰٪ به زبان فارسیِ روان، طبیعی، امروزی و شیوا باشد. "
+            "مطلقاً و تحت هیچ شرایطی به زبان عربی پاسخ نده!"
+        )
     else:
         _lang_rule = (
             f"\n[REPLY LANGUAGE — STRICT]: The user speaks {_ulang_name} (Telegram code '{user_lang_code}'). "
@@ -430,41 +434,32 @@ async def generate_response(
         + f"\n\n[تاریخ امروز: {_today_j} (شمسی) — ساعت تهران: {_today_hm} — میلادی (ISO): {_today_iso}]"
         + "\n[دستور جستجوی زنده]: برای اخبار/حوادث روز/مقایسه نسخه‌ها از ابزار جستجوی زنده استفاده کن — اگر tavily_search در دسترس بود از آن، وگرنه از web_search رایگان. هرگز از داده‌های ذهنی بدون ابزار پاسخ نده.]"
         + "\n[قانون سهمیه]: سهمیه شخصی کاربر در ربات فقط با دستور /limit نمایش داده می‌شود — خودت هرگز عدد سهمیه شخصی اعلام نکن. سؤال درباره سهمیه موضوعات دیگر (بنزین، اینترنت و ...) سؤال عادی است: عادی جواب بده و اسمی از سهمیه کاربر در ربات نبر."
-        + "\n\nدستور قطعی لحن و تمرکز: لحن کاملاً حرفه‌ای، مسلط، فوق‌العاده خلاصه‌گو، تیز و مقتدر باشد با چاشنی طعنه و کنایه ظریف و هوشمندانه (Sarcastic & Witty). بدون سلام، بدون تعارفات اضافه، بدون مقدمه و حاشیه‌پردازی. فقط و فقط دقیقاً به همان سؤالی که مستقیماً در این پیام پرسیده شده پاسخ بده و با کمترین واژگان ممکن اصل فکت‌ها، ارقام و داده‌ها را با کلمات کلیدی بولد ارائه کن."
+        + "\n\n[دستور قطعی لحن، اسکوپ و تمرکز پاسخ]:"
+        + "\n۱. تمرکز مطلق بر سؤال مستقیم: فقط و فقط دقیقاً به سؤالی که مستقیماً در همین پیام از شما پرسیده شده پاسخ بده. به هیچ موضوع جانبی، حاشیه‌ای، فرعی، نصیحت یا پند و اندرز نپرداز مگر اینکه کاربر صراحتاً در پیام خود آن را درخواست کرده باشد (مانند «توضیح کامل بده»، «تحلیل کن»، «راهنمایی کن»)."
+        + "\n۲. لحن خلاصه‌گو و نیش‌دار: کاملاً حرفه‌ای، مسلط، فوق‌العاده فشرده و خلاصه‌گو با چاشنی طعنه و کنایه ظریف و هوشمندانه (Sarcastic & Witty). بدون سلام، بدون احوال‌پرسی کش‌دار، بدون مقدمه‌چینی. اصل فکت‌ها، ارقام و داده‌های خالص با کلمات کلیدی بولد (*متن*) ارائه شود."
     )
 
-    # Ultra-Fast High Efficiency Memory Policy: Complete 100% background autosaving to D1
-    # continues unhindered for every single message. But context is injected into LLM prompt
-    # ONLY when explicitly requested by user (e.g. referencing past messages, context continuation,
-    # or replying to previous messages). Otherwise, 0-history payload delivers lightning-fast sub-second turns.
+    # On-Demand Memory & History Architecture:
+    # RAM context and D1 permanent database history are queried ONLY when:
+    # 1. The user explicitly asks about past messages / history ("یادت هست", "پیام قبلی", "سوابق", "چی گفتم", "خلاصه گفتگو")
+    # 2. OR the user is replying to a message thread (has_reply_context) where conversation continuity is required.
+    # Independent turns stay 100% clean with 0 past history overhead, lightning-fast execution, and no context contamination.
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system_content}
     ]
 
-    memory_triggers = [
+    explicit_memory_triggers = [
         "یادت", "قبلا", "قبلاً", "پیام قبلی", "پیام های قبلی", "پیام‌های قبلی", "چی گفتم", "چی گفتی",
-        "ادامه", "خلاصه کن", "یادآوری", "تاریخچه", "سوابق", "گفتگوی قبل", "چت های قبلی",
-        "همون که", "دوباره بگو", "یادت رفت", "یادت نره", "کانتکست", "حافظه", "درباره چی حرف زدیم",
-        "remember", "history", "earlier", "previous", "continue", "recall", "what did i say"
+        "ادامه بده", "خلاصه کن چت", "خلاصه گفتگو", "یادآوری", "تاریخچه", "سوابق", "گفتگوی قبل", "چت های قبلی",
+        "همون که گفتی", "دوباره بگو", "یادت رفت", "یادت نره", "کانتکست", "حافظه", "درباره چی حرف زدیم",
+        "پیام بالایی", "همونی که بالاتر", "remember", "history", "earlier", "previous", "recall", "what did i say"
     ]
     prompt_lower = (user_prompt or "").lower()
-    # Smart memory tiers (temp RAM is 20k tokens per group; D1 is forever):
-    # Tier0 direct: no memory. Tier1 reply/followup: temp RAM up to 20k.
-    _followup_markers = [
-        "اون", "همون", "همین", "چطور", "چرا", "پس", "خب", "یعنی", "مگه",
-        "that", "this", "it ", "why", "but ", "so ", "then",
-    ]
-    _is_followup = (
-        has_reply_context
-        or sum(1 for _m in _followup_markers if _m in prompt_lower) >= 2
-        or (len((user_prompt or "").strip()) < 25 and any(_m in prompt_lower for _m in _followup_markers))
-    )
-    needs_memory = _is_followup or any(k in prompt_lower for k in memory_triggers)
-    _needs_deep_memory = any(k in prompt_lower for k in memory_triggers)
+    needs_memory = has_reply_context or any(k in prompt_lower for k in explicit_memory_triggers)
+    _needs_deep_memory = any(k in prompt_lower for k in explicit_memory_triggers)
 
-    # Tier2 deep recall: the user explicitly asked about OLD/past content
-    # beyond the 20k temp window. Pull a few ranked D1 hits so the model can
-    # answer from permanent storage instead of claiming it forgot.
+    # Deep recall: the user explicitly asked about OLD/past content
+    # Pull a few ranked D1 hits so the model can answer from permanent storage.
     if _needs_deep_memory and not has_reply_context:
         try:
             _d1_hits = await database.search_group_memory(

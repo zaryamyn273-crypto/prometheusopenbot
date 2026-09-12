@@ -117,13 +117,20 @@ def detect_lang(text: object) -> str:
         if re.search(r"[іїєґ]", low):
             return "uk"
         return "ru"
-    # Arabic script: Persian-specific letters (or fa keywords) decide.
+    # Arabic script:
     if re.search(r"[\u0600-\u06ff]", s):
+        # Persian-exclusive letters (Gaf, Che, Pe, Zhe) -> 100% Persian
         if re.search(r"[گچپژ]", s):
             return "fa"
-        if re.search(r"(پرومته|ربات|ممنون|مرسی|چطوری|خوبی|سلام|درود|چیست|کجاست|چرا|چطور|لطفا|باشه|فعلا)", low):
-            return "fa"
-        return "ar"
+        # Explicit Arabic markers (Teh Marbuta or distinct Arabic function words/greetings)
+        has_ar_words = bool(re.search(r"(\b(هل|ماذا|لماذا|كيف|کیف|حالک|حالك|هذا|هذه|التي|الذي|شكرا|شکرا|جزيلا|جزیلا|لك|لک|مرحبا|ليس|كانت|يكون|عليهم|اليوم|جدا|مع|عن|الى|إلى)\b|[ة])", low))
+        # Persian function words and common markers
+        has_fa_words = bool(re.search(r"\b(می|نمی|رو|که|به|از|با|در|برای|را|است|هست|بود|شد|کن|کرد|بکن|کنید|دارم|داری|دارد|خوب|این|اون|یک|چی|کی|من|تو|ما|شما|اونا|آره|نه|باشه|داداش|عزیز|رفیق|مرسی|ممنون|سلام|چطوری|خوبی|خسته|نباشی|بیا|برو|باش|فردا|دیروز|امروز|پرومته|ربات|چیست|کجاست|چرا|چطور|لطفا|فعلا|آیا|چند|هم|اگر|ولی|اما|چون|همین|همان|همه|داستان|کد|ساعت|بگو|بده|بنویس)\b", low))
+
+        if has_ar_words and not has_fa_words:
+            return "ar"
+        # Persian-first default: Prometheus is a Persian-primary bot; Arabic script defaults to Persian
+        return "fa"
     # Turkish-specific diacritics are decisive (ç is shared with French,
     # so it does NOT decide alone — fr/pt keywords handle those).
     if re.search(r"[ğışöü]", low):
