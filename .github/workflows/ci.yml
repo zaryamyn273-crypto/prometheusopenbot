@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  audit:
+    name: Compile, lint & offline tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyflakes
+
+      - name: Compile check (all files)
+        run: |
+          python -m py_compile bot.py src/core/*.py src/tools/*.py src/tools/*/*.py src/ui/*.py src/utils/*.py tests/*.py
+
+      - name: Lint (pyflakes, zero new warnings beyond known side-effect imports)
+        run: |
+          python -m pyflakes bot.py src/core/*.py src/tools/*.py src/tools/*/*.py src/ui/*.py src/utils/*.py
+
+      - name: Offline tests (no keys, no network)
+        env:
+          TELEGRAM_BOT_TOKEN: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+          ADMIN_ID: "123456789"
+          ROUTER_API_KEY: ""
+        run: |
+          python tests/test_i18n.py
+          python tests/test_e2b.py
+
+      - name: Registry integrity audit
+        env:
+          TELEGRAM_BOT_TOKEN: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+          ADMIN_ID: "123456789"
+          ROUTER_API_KEY: ""
+        run: |
+          python -c "import bot; from src.tools.registry import REGISTRY, get_all_tool_definitions; assert len(REGISTRY) >= 80, len(REGISTRY); assert len(get_all_tool_definitions()) >= 60; print('registry OK:', len(REGISTRY))"
+
+  docker:
+    name: Docker build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: prometheus-openbot:ci
