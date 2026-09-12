@@ -1581,16 +1581,26 @@ def parse_mute_duration_to_sec(text: str) -> int:
         return 0
 
 
-def format_mute_remaining(sec: float) -> str:
+def format_mute_remaining(sec: float, lang: str = "fa") -> str:
     try:
         _s = max(0, int(sec))
+        if (lang or "fa") == "fa":
+            if _s >= 86400:
+                return f"{_s // 86400} روز و {(_s % 86400) // 3600} ساعت"
+            if _s >= 3600:
+                return f"{_s // 3600} ساعت و {(_s % 3600) // 60} دقیقه"
+            if _s >= 60:
+                return f"{_s // 60} دقیقه"
+            return f"{_s} ثانیه"
+        def _pl(n: int, one: str, many: str) -> str:
+            return f"{n} {one if n == 1 else many}"
         if _s >= 86400:
-            return f"{_s // 86400} روز و {(_s % 86400) // 3600} ساعت"
+            return f"{_pl(_s // 86400, 'day', 'days')} {_pl((_s % 86400) // 3600, 'hour', 'hours')}"
         if _s >= 3600:
-            return f"{_s // 3600} ساعت و {(_s % 3600) // 60} دقیقه"
+            return f"{_pl(_s // 3600, 'hour', 'hours')} {_pl((_s % 3600) // 60, 'minute', 'minutes')}"
         if _s >= 60:
-            return f"{_s // 60} دقیقه"
-        return f"{_s} ثانیه"
+            return _pl(_s // 60, "minute", "minutes")
+        return _pl(_s, "second", "seconds")
     except Exception:
         return ""
 

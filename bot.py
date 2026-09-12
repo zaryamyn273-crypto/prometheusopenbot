@@ -504,10 +504,10 @@ async def _reply_audio_bytes(message, chat, context, *, title, performer, captio
 
 async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
+    ulang, _ = _ulang_of(update)
     chat = update.effective_chat
     query = " ".join(context.args).strip() if context.args else ""
     if not query:
-        ulang, _ = _ulang_of(update)
         await reply_safely(message, t(ulang, "music_usage"))
         return
 
@@ -581,9 +581,9 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e2:
                 logger.error(f"Fallback audio send in music_command failed: {e2}")
 
-        await reply_safely(message, res.get("caption") or res.get("message", "خطا در دریافت فایل موزیک."))
+        await reply_safely(message, await _maybe_translate(update, res.get("caption") or res.get("message") or t(ulang, "music_failed")))
     else:
-        await reply_safely(message, str(res))
+        await reply_safely(message, await _maybe_translate(update, str(res)))
 
 async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -642,7 +642,7 @@ async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from src.tools.admin import group_manager
     message = update.effective_message
     res = await group_manager.list_public_channels_tool()
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 
 async def bangroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1007,7 +1007,8 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     target_msg = message.reply_to_message
     if not target_msg:
-        await message.reply_text("⚠️ لطفاً این دستور را روی پیامی از ربات (یا هر پیامی) که می‌خواهید حذف شود ریپلای کنید.")
+        ulang_del, _ = _ulang_of(update)
+        await message.reply_text(t(ulang_del, "del_hint"))
         return
 
     # Delete replied message and command message
@@ -1182,10 +1183,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await reply_safely(query.message, await _maybe_translate(update, t_info))
     elif data in ["tool_net_ip_prompt", "tool_net_dns_prompt", "tool_net_ssl_prompt"]:
         await query.answer()
+        ulang_cb2, _ = _ulang_of(update)
         hints = {
-            "tool_net_ip_prompt": "\U0001F50D *استعلام IP:*\n`get_ip_info` — مثال: `1.1.1.1` یا `google.com` را ارسال کنید.",
-            "tool_net_dns_prompt": "\U0001F4CB *رکوردهای DNS:* نام دامنه را ارسال کنید (مثال: `google.com`).",
-            "tool_net_ssl_prompt": "\U0001F512 *بررسی SSL:* نام دامنه را ارسال کنید (مثال: `github.com`)."
+            "tool_net_ip_prompt": t(ulang_cb2, "net_ip_hint"),
+            "tool_net_dns_prompt": t(ulang_cb2, "net_dns_hint"),
+            "tool_net_ssl_prompt": t(ulang_cb2, "net_ssl_hint"),
         }
         await reply_safely(query.message, hints[data])
         return
@@ -1277,7 +1279,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         # 2. Direct Reply Ban ("بن", "مسدود", "ban", "بنش کن", "مسدودش کن")
         elif clean_cmd in ["بن", "بنش کن", "مسدود", "مسدودش کن", "ban", "/ban"] and target_user:
             if target_user.id == ADMIN_ID:
-                await message.reply_text("👑 فرمانده ارشد دارای مصونیت ابدی است.")
+                await message.reply_text(t(ulang, "immune"))
                 return
             target_uname = target_user.username or ""
             target_uid = target_user.id
@@ -1301,12 +1303,9 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     source_chat_title=src_chat_title
                 )
 
-            target_name = target_fname or f"کاربر {target_uid}"
-            uname_text = f" (<code>@{target_uname}</code>)" if target_uname else " (فاقد یوزرنیم)"
-            await message.reply_text(
-                f"🚫 <b>فرمان اجرا شد:</b>\nکاربر <b>{target_name}</b>{uname_text} با شناسه عددی <code>{target_uid}</code> با موفقیت در دیتابیس ابدی Cloudflare D1 مسدود گردید.",
-                parse_mode=ParseMode.HTML
-            )
+            target_name = target_fname or (f"@{target_uname}" if target_uname else "") or f"کاربر {target_uid}"
+            who = target_name if ulang == "fa" else (target_fname or (f"@{target_uname}" if target_uname else "") or f"user {target_uid}")
+            await reply_safely(message, t(ulang, "ban_done", name=who, uid=target_uid))
             return
 
         # 3. Direct Reply Unban ("آنبن", "آن بن", "انبن", "unban", "آزادش کن")
@@ -1316,12 +1315,10 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await database.unban_target_async(target_uid)
             if target_uname:
                 await database.unban_target_async(f"@{target_uname}")
-            target_name = target_user.first_name or f"کاربر {target_uid}"
-            uname_text = f" (<code>@{target_uname}</code>)" if target_uname else " (فاقد یوزرنیم)"
-            await message.reply_text(
-                f"✅ <b>فرمان اجرا شد:</b>\nکاربر <b>{target_name}</b>{uname_text} با شناسه عددی <code>{target_uid}</code> در دیتابیس Cloudflare D1 رفع مسدودیت گردید.",
-                parse_mode=ParseMode.HTML
-            )
+            target_name = target_user.first_name or (f"@{target_uname}" if target_uname else "") or f"user {target_uid}"
+            if ulang == "fa" and not target_user.first_name and not target_uname:
+                target_name = f"کاربر {target_uid}"
+            await reply_safely(message, t(ulang, "unban_done", name=target_name, uid=target_uid))
             return
 
         # 3b. Direct Reply Mute with duration (MUTE30 / MUTE2H / MUTE1D / MUTE + text)
@@ -1341,12 +1338,12 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 _dur = 1800
             if target_user.id == ADMIN_ID:
-                await message.reply_text("👑 فرمانده ارشد دارای مصونیت ابدی است.")
+                await message.reply_text(t(ulang, "immune"))
                 return
             await database.mute_target_async(target_user.id, _dur, "direct-reply-mute", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
             if target_user.username:
                 await database.mute_target_async("@" + target_user.username, _dur, "direct-reply-mute", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
-            await message.reply_text(f"🔇 <b>سکوت اعمال شد:</b> کاربر تا <b>{database.format_mute_remaining(_dur)}</b> پاسخی دریافت نمی‌کند.", parse_mode=ParseMode.HTML)
+            await reply_safely(message, t(ulang, "mute_done", dur=database.format_mute_remaining(_dur, ulang)))
             return
 
         # 3b2. Persian Reply Mute triggers with duration words
@@ -1355,12 +1352,12 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             if not _dur:
                 _dur = 1800
             if target_user.id == ADMIN_ID:
-                await message.reply_text("👑 فرمانده ارشد دارای مصونیت ابدی است.")
+                await message.reply_text(t(ulang, "immune"))
                 return
             await database.mute_target_async(target_user.id, _dur, "direct-reply-mute-fa", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
             if target_user.username:
                 await database.mute_target_async("@" + target_user.username, _dur, "direct-reply-mute-fa", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
-            await message.reply_text(f"🔇 <b>سکوت اعمال شد:</b> کاربر تا <b>{database.format_mute_remaining(_dur)}</b> پاسخی دریافت نمی‌کند.", parse_mode=ParseMode.HTML)
+            await reply_safely(message, t(ulang, "mute_done", dur=database.format_mute_remaining(_dur, ulang)))
             return
 
         # 3c. Direct Reply Unmute (EN + FA triggers)
@@ -1368,7 +1365,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await database.unmute_target_async(target_user.id)
             if target_user.username:
                 await database.unmute_target_async("@" + target_user.username)
-            await message.reply_text("🔊 <b>سکوت لغو شد:</b> ربات دوباره پاسخ می‌دهد.", parse_mode=ParseMode.HTML)
+            await reply_safely(message, t(ulang, "unmute_done"))
             return
 
         # 4. Direct Reply Remember ("یادت باشه", "به خاطر بسپار", "ثبت کن")
@@ -1950,7 +1947,8 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         _answered = False
     if not _answered:
         try:
-            await reply_safely(message, "⚠️ پاسخ‌گویی لحظه‌ای با اختلال روبه‌رو شد؛ لطفاً پیام خود را یک بار دیگر بفرستید.")
+            ulang_dl, _ = _ulang_of(update)
+            await reply_safely(message, t(ulang_dl, "delivery_failed"))
         except Exception:
             pass
     return
@@ -1958,6 +1956,22 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, chat_title):
     """Sends media/text for one AI turn. Returns True if user got an answer."""
     sent_media_msg_id = 0
+
+    # World-ready: media/document captions come from Persian tool outputs.
+    # Translate once up-front for non-Persian recipients (skip when already
+    # translated or caption-free). extra_action dicts are per-turn fresh.
+    try:
+        _code = ""
+        try:
+            _code = (getattr(getattr(message, "from_user", None), "language_code", "") or "")
+        except Exception:
+            pass
+        if normalize_lang(_code) != "fa" and isinstance(extra_action, dict):
+            _cap = extra_action.get("caption")
+            if isinstance(_cap, str) and _cap.strip() and re.search(r"[\u0600-\u06FF]", _cap):
+                extra_action["caption"] = await ai_service.translate_text(_cap, lang_name(_code))
+    except Exception:
+        pass
 
     # Instant Sub-Second Delivery via Telegram Cached file_id
     if isinstance(extra_action, dict) and extra_action.get("type") == "audio_file_id" and extra_action.get("file_id"):

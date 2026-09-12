@@ -69,12 +69,73 @@ def test_fast_path_triggers():
     print("  fast-path EN+FA triggers: OK")
 
 
+def test_bot_reply_lang_coverage():
+    """Static audit of bot.py: every user-facing Persian reply must either
+    (a) render via t()/_maybe_translate/translate_text, or
+    (b) live in an admin-gated function (contains an is_admin check).
+
+    Media metadata (reply_audio/reply_document titles) is excluded: captions
+    are translated upstream (music_command, _deliver_ai_turn pre-pass).
+    """
+    import ast
+    import re
+    FA = re.compile(r"[\u0600-\u06FF]")
+    SENDERS = {"reply_text", "reply_safely", "answer", "send_message",
+               "edit_message_text"}
+
+    with open(os.path.join(os.path.dirname(__file__), "..", "bot.py"),
+              encoding="utf-8") as f:
+        src = f.read()
+    tree = ast.parse(src)
+    funcs = [n for n in ast.walk(tree)
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+    def const_frags(node):
+        return [n.value for n in ast.walk(node)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+
+    def uses_i18n(node):
+        for n in ast.walk(node):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
+                    and n.func.id in ("t", "_maybe_translate", "translate_text"):
+                return True
+        return False
+
+    offenders = []
+    for fnode in funcs:
+        fsrc = ast.get_source_segment(src, fnode) or ""
+        gated = "is_admin" in fsrc
+        for n in ast.walk(fnode):
+            if not isinstance(n, ast.Call):
+                continue
+            fn = n.func
+            name = fn.attr if isinstance(fn, ast.Attribute) \
+                else (fn.id if isinstance(fn, ast.Name) else "")
+            if name not in SENDERS:
+                continue
+            args = n.args
+            if name == "reply_safely":
+                msgnode = args[1] if len(args) > 1 else None
+            else:
+                msgnode = args[0] if args else None
+            if msgnode is None:
+                continue
+            if not any(FA.search(f) for f in const_frags(msgnode)):
+                continue
+            if uses_i18n(msgnode) or gated:
+                continue
+            offenders.append(f"{fnode.name}:{n.lineno}")
+    assert not offenders, f"Persian-only user-facing replies: {offenders}"
+    print(f"  reply coverage: OK ({len(funcs)} funcs scanned, 0 offenders)")
+
+
 def main() -> int:
     print("== i18n test ==")
     test_dict_parity()
     test_normalize_and_names()
     test_translate_graceful()
     test_fast_path_triggers()
+    test_bot_reply_lang_coverage()
     print("== i18n test DONE ==")
     return 0
 
