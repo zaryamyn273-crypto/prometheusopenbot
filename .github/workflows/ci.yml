@@ -47,7 +47,7 @@ jobs:
           ADMIN_ID: "123456789"
           ROUTER_API_KEY: ""
         run: |
-          python -c "import bot; from src.tools.registry import REGISTRY, get_all_tool_definitions; assert len(REGISTRY) >= 80, len(REGISTRY); assert len(get_all_tool_definitions()) >= 60; print('registry OK:', len(REGISTRY))"
+          python -c "import bot; from src.tools.registry import ensure_all, REGISTRY, get_all_tool_definitions; ensure_all(); assert len(REGISTRY) >= 80, len(REGISTRY); assert len(get_all_tool_definitions()) >= 60; print('registry OK:', len(REGISTRY))"
 
   docker:
     name: Docker build check
