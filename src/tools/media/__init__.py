@@ -642,3 +642,43 @@ async def get_song_lyrics(song_title: str, format: str = "text") -> Any:
         pass
 
     return f"متن ترانه برای «{song_title}» یافت نشد."
+
+
+# =========================================================================
+# 5. High-Fidelity AI Image Generation Engine
+# =========================================================================
+
+@register_tool(
+    name="generate_ai_image",
+    description="تولید تصاویر فوق‌العاده باکیفیت و حرفه‌ای با هوش مصنوعی (DALL-E 3 / Flux / SDXL) بر اساس توضیحات کاربر",
+    category="media"
+)
+async def generate_ai_image(prompt: str, model: str = "", size: str = "1024x1024") -> Any:
+    """
+    :param prompt: توصیف دقیق صحنه، سوژه، استایل هنری، نورپردازی یا جزئیات مورد نظر برای ساخت تصویر
+    :param model: مدل دلخواه برای تولید تصویر (مانند 'dall-e-3', 'flux', یا خالی برای انتخاب خودکار)
+    :param size: ابعاد تصویر (مانند '1024x1024', '1792x1024', '1024x1792')
+    """
+    from src.core import ai_service
+    res = await ai_service.generate_image(prompt=prompt, model=model or None, size=size)
+    if not res.get("success"):
+        return f"❌ خطا در تولید تصویر: {res.get('error', 'عدم دریافت پاسخ از موتور هوش مصنوعی')}"
+
+    caption = (
+        f"🎨 *تصویر تولید شده با هوش مصنوعی*\n"
+        f"• *پرامپت*: _{res.get('prompt')}_\n"
+        f"• *موتور ساخت*: `{res.get('provider')}` (`{res.get('model')}`)"
+    )
+    if res.get("image_bytes"):
+        return {
+            "type": "photo_bytes",
+            "bytes": res["image_bytes"],
+            "caption": caption
+        }
+    elif res.get("url"):
+        return {
+            "type": "photo_url",
+            "url": res["url"],
+            "caption": caption
+        }
+    return f"تصویر تولید شد: {res.get('url')}"

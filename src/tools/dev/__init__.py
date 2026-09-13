@@ -69,6 +69,8 @@ async def reddit_search(query: str, subreddit: str = "", sort: str = "relevance"
                 soup = BeautifulSoup(r.text, "xml")
                 entries = soup.find_all("entry")
                 if entries:
+                    # Prioritize actual discussion posts (/comments/) over subreddits
+                    entries.sort(key=lambda e: (1 if e.find("link") and "/comments/" in str(e.find("link").get("href", "")) else 0), reverse=True)
                     lines.append(f"👽 *نتایج جستجوی زنده در ردیت (Reddit) برای «{clean_q}»:*\n")
                     count = 0
                     for entry in entries:

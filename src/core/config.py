@@ -27,6 +27,7 @@ ROUTER_BASE_URL = os.getenv("ROUTER_BASE_URL", "https://api.openai.com/v1").rstr
 ROUTER_INTERNAL_BASE_URL = os.getenv("ROUTER_INTERNAL_BASE_URL", "http://9router.railway.internal:20128/v1").rstrip("/")
 ROUTER_API_KEY = os.getenv("ROUTER_API_KEY", "")
 ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-4o-mini")
+ROUTER_IMAGE_MODEL = os.getenv("ROUTER_IMAGE_MODEL", "dall-e-3")
 
 # ==========================================
 # 3. Cloudflare Multi-Tier Storage (D1 & KV)

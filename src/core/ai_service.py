@@ -958,3 +958,108 @@ async def generate_response(
     if last_tool_outputs:
         return sanitize_output("\n\n".join(last_tool_outputs)), extra_action
     return sanitize_output("عملیات با موفقیت انجام شد."), extra_action
+
+
+async def generate_image(
+    prompt: str,
+    model: Optional[str] = None,
+    size: str = "1024x1024",
+    quality: str = "standard"
+) -> Dict[str, Any]:
+    """
+    Generates high-fidelity AI images via 9router / OpenAI-compatible router
+    with seamless fallback to ultra-fast Flux/Pollinations AI.
+    """
+    import base64
+    import urllib.parse
+    from src.core import config as _cfg
+
+    clean_prompt = (prompt or "").strip()
+    if not clean_prompt:
+        return {"success": False, "error": "متن توصیف تصویر مشخص نشده است."}
+
+    # If prompt contains Persian/Arabic, translate to English for superior generation fidelity
+    eng_prompt = clean_prompt
+    if re.search(r"[\u0600-\u06FF]", clean_prompt):
+        try:
+            trans = await translate_text(clean_prompt, "English")
+            if trans and len(trans) > 3 and "خطا" not in trans:
+                eng_prompt = trans
+        except Exception:
+            pass
+
+    try:
+        client = get_shared_client()
+    except Exception:
+        client = httpx.AsyncClient(timeout=30.0)
+    endpoints = _get_target_router_endpoints()
+    headers = _router_headers()
+
+    candidate_models = []
+    if model:
+        candidate_models.append(model)
+    if _cfg.ROUTER_IMAGE_MODEL and _cfg.ROUTER_IMAGE_MODEL not in candidate_models:
+        candidate_models.append(_cfg.ROUTER_IMAGE_MODEL)
+    for m in ["dall-e-3", "flux", "flux-schnell", "stable-diffusion-v3", "dall-e-2"]:
+        if m not in candidate_models:
+            candidate_models.append(m)
+
+    # 1. Try 9router / OpenAI-compatible endpoints
+    for endpoint in endpoints:
+        for m in candidate_models[:3]:
+            try:
+                gen_url = f"{endpoint}/images/generations"
+                payload = {
+                    "prompt": eng_prompt,
+                    "model": m,
+                    "size": size,
+                    "n": 1,
+                    "response_format": "b64_json"
+                }
+                resp = await client.post(gen_url, headers=headers, json=payload, timeout=30.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    item = (data.get("data") or [{}])[0]
+                    b64 = item.get("b64_json")
+                    img_url = item.get("url")
+                    raw_bytes = base64.b64decode(b64) if b64 else None
+                    if not raw_bytes and img_url:
+                        r_img = await client.get(img_url, timeout=15.0)
+                        if r_img.status_code == 200:
+                            raw_bytes = r_img.content
+
+                    if raw_bytes and len(raw_bytes) > 2000:
+                        return {
+                            "success": True,
+                            "image_bytes": raw_bytes,
+                            "url": img_url or "",
+                            "prompt": clean_prompt,
+                            "revised_prompt": item.get("revised_prompt", eng_prompt),
+                            "model": m,
+                            "provider": "9router / Direct AI Engine"
+                        }
+            except Exception as e:
+                logger.debug(f"Router image generation on {endpoint} with {m} failed: {e}")
+
+    # 2. Resilient Fallback: Pollinations AI (Flux HQ)
+    for attempt in range(2):
+        try:
+            enc_prompt = urllib.parse.quote(eng_prompt)
+            poll_url = f"https://image.pollinations.ai/prompt/{enc_prompt}?width=1024&height=1024&nologo=true"
+            async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as dl_client:
+                r_poll = await dl_client.get(poll_url, headers={"User-Agent": "PrometheusOpenBot/3.0"})
+                if r_poll.status_code == 200 and len(r_poll.content) > 2000:
+                    return {
+                        "success": True,
+                        "image_bytes": r_poll.content,
+                        "url": poll_url,
+                        "prompt": clean_prompt,
+                        "revised_prompt": eng_prompt,
+                        "model": "flux-schnell",
+                        "provider": "Flux Super-Resolution Engine"
+                    }
+        except Exception as poll_err:
+            logger.debug(f"Pollinations attempt {attempt+1} failed: {poll_err}")
+            await asyncio.sleep(0.5)
+
+    return {"success": False, "error": "تولید تصویر با هیچ‌یک از موتورهای پردازش تصویر امکان‌پذیر نشد."}

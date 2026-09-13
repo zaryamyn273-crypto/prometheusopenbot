@@ -227,9 +227,9 @@ async def ebay_search(query: str, condition: str = "all", max_results: int = 5) 
                     snippet_el = li.select_one(".compText") or li.select_one(".lh-16")
                     snippet = snippet_el.get_text(strip=True) if snippet_el else ""
 
-                    # Extract price if present in snippet
-                    price_m = re.search(r"(\$[\d\.,]+|\bEUR\s+[\d\.,]+|\bGBP\s+[\d\.,]+)", snippet + " " + title)
-                    price_str = price_m.group(1) if price_m else "استعلام در صفحه"
+                    # Extract price if present in snippet or title
+                    price_m = re.search(r"((?:US\s*|AU\s*|C\s*)?\$[\d\.,]+|[\£\€][\d\.,]+|\b(?:EUR|GBP|USD)\s*[\d\.,]+)", snippet + " " + title, re.IGNORECASE)
+                    price_str = price_m.group(1).strip() if price_m else "استعلام در صفحه"
 
                     items.append({
                         "title": title[:130],

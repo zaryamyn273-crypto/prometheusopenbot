@@ -613,6 +613,69 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         upload_active = False
         upload_task.cancel()
 
+async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generates high-fidelity AI images via /image <prompt> with live progress indicator."""
+    message = update.effective_message
+    ulang, _ = _ulang_of(update)
+    prompt = " ".join(context.args).strip() if context.args else ""
+    if not prompt:
+        await reply_safely(
+            message,
+            "🎨 <b>دستور تولید تصویر با هوش مصنوعی:</b>\n"
+            "<code>/image &lt;توصیف تصویر مورد نظر&gt;</code>\n\n"
+            "<i>مثال:</i>\n"
+            "<code>/image یک گربه فضانورد با کلاه شیشه‌ای روی سطح مریخ با کیفیت 4k سینمایی</code>"
+        )
+        return
+
+    # Keep-alive uploading photo indicator
+    upload_active = True
+    async def _keep_uploading():
+        while upload_active:
+            try:
+                await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_PHOTO)
+            except Exception:
+                pass
+            await asyncio.sleep(4.0)
+
+    upload_task = asyncio.create_task(_keep_uploading())
+
+    try:
+        from src.core import ai_service
+        res = await ai_service.generate_image(prompt=prompt)
+        if res.get("success"):
+            caption = (
+                f"🎨 <b>تصویر با موفقیت تولید شد:</b>\n"
+                f"• <b>پرامپت:</b> <i>{html.escape(str(res.get('prompt', prompt)))}</i>\n"
+                f"• <b>موتور ساخت:</b> <code>{html.escape(str(res.get('provider', 'AI Engine')))}</code>"
+            )
+            if res.get("image_bytes"):
+                await message.reply_photo(
+                    photo=io.BytesIO(res["image_bytes"]),
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    write_timeout=60.0
+                )
+                return
+            elif res.get("url"):
+                await message.reply_photo(
+                    photo=res["url"],
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    write_timeout=60.0
+                )
+                return
+
+        err_msg = res.get("error", "متأسفانه در تولید تصویر خطایی رخ داد.")
+        await reply_safely(message, f"❌ {err_msg}")
+    except Exception as e:
+        logger.error(f"Error in image_command: {e}")
+        await reply_safely(message, "❌ خطا در پردازش تصویر با هوش مصنوعی.")
+    finally:
+        upload_active = False
+        upload_task.cancel()
+
+
 async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     try:
@@ -1276,32 +1339,120 @@ async def mutelist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Direct command to deeply extract numeric User ID: /id <name|username> or replied to a message."""
+    """
+    Direct command to deeply extract numeric User/Chat ID:
+    - /id (without args): returns caller's ID and current chat ID
+    - /id on reply: returns replied user ID, forward source ID, chat ID
+    - /id <@username|link|number|name>: resolves numeric ID via Telegram API & database
+    """
     user = update.effective_user
     message = update.effective_message
-    if not user or not message or not is_admin(user.id):
+    chat = update.effective_chat
+    if not user or not message:
         return
 
-    target_user = message.reply_to_message.from_user if message.reply_to_message else None
-    if target_user:
-        uname = f"@{target_user.username}" if target_user.username else "ندارد"
-        fname = target_user.first_name or "کاربر"
-        uid = target_user.id
-        is_banned = database.is_user_banned(uid)
-        status_txt = "🚫 مسدود (Banned)" if is_banned else "🟢 فعال (Active)"
-        await reply_safely(
-            message,
-            f"🎯 <b>شناسه عددی پیام ریپلای‌شده:</b>\n• <b>شناسه عددی (ID):</b> <code>{uid}</code>\n• <b>نام:</b> <b>{html.escape(str(fname))}</b>\n• <b>یوزرنیم:</b> <code>{html.escape(str(uname))}</code>\n• <b>وضعیت:</b> {status_txt}\n\n<i>💡 برای بن کردن:</i> <code>/ban {uid}</code>"
-        )
+    admin_caller = is_admin(user.id)
+    replied = message.reply_to_message
+
+    # Case 1: Replied to a message or forward
+    if replied:
+        fo = getattr(replied, "forward_origin", None)
+        fwd_user = getattr(replied, "forward_from", None)
+        fwd_chat = getattr(replied, "forward_from_chat", None)
+
+        target_user = replied.from_user
+        lines = ["🎯 <b>شناسنامه و شناسه عددی (Numeric ID):</b>"]
+
+        # Sender of replied message
+        if target_user:
+            uname = f"@{target_user.username}" if target_user.username else "ندارد"
+            fname = target_user.first_name or "کاربر"
+            uid = target_user.id
+            is_banned = database.is_user_banned(uid)
+            status_txt = "🚫 مسدود (Banned)" if is_banned else "🟢 فعال (Active)"
+            lines.extend([
+                f"• <b>شناسه عددی کاربر (User ID):</b> <code>{uid}</code>",
+                f"• <b>نام:</b> <b>{html.escape(str(fname))}</b>",
+                f"• <b>یوزرنیم:</b> <code>{html.escape(str(uname))}</code>",
+                f"• <b>وضعیت:</b> {status_txt}"
+            ])
+
+        # Forwarded origin
+        if fwd_user and (not target_user or fwd_user.id != target_user.id):
+            f_uname = f"@{fwd_user.username}" if fwd_user.username else "ندارد"
+            lines.append(f"• <b>نویسنده اصلی پیام هدایت‌شده:</b> <b>{html.escape(str(fwd_user.first_name))}</b> (<code>{fwd_user.id}</code>) | یوزرنیم: <code>{f_uname}</code>")
+        elif fwd_chat:
+            c_title = fwd_chat.title or "کانال / سوپرگروه"
+            c_uname = f"@{fwd_chat.username}" if fwd_chat.username else "ندارد"
+            lines.append(f"• <b>کانال/گروه مبدا هدایت:</b> <b>{html.escape(str(c_title))}</b>\n• <b>شناسه عددی مبدا:</b> <code>{fwd_chat.id}</code> | <code>{c_uname}</code>")
+
+        if fo:
+            sender_name = getattr(fo, "sender_user_name", None)
+            if sender_name:
+                lines.append(f"• <b>نام فرستنده پنهان (Hidden User):</b> <code>{html.escape(str(sender_name))}</code>")
+
+        lines.append(f"\n• <b>شناسه عددی چت فعلی (Chat ID):</b> <code>{chat.id}</code>")
+        if admin_caller and target_user:
+            lines.append(f"\n<i>💡 اقدام سریع:</i> <code>/ban {target_user.id}</code> | <code>/mute {target_user.id} 30m</code>")
+
+        await reply_safely(message, "\n".join(lines))
         return
 
     query = " ".join(context.args).strip() if context.args else ""
+    # Case 2: No args provided -> Return caller's ID and current chat ID
     if not query:
-        await reply_safely(message, "⚠️ فرمت دستور:\n<code>/id &lt;نام فرد یا @username&gt;</code>\nیا روی پیام فرد ریپلای کنید.")
+        u_uname = f"@{user.username}" if user.username else "ندارد"
+        u_name = user.first_name or "کاربر"
+        c_title = chat.title if chat.title else ("چت خصوصی" if chat.type == ChatType.PRIVATE else "گروه")
+        await reply_safely(
+            message,
+            f"🎯 <b>اطلاعات هویتی و شناسه‌های عددی:</b>\n\n"
+            f"👤 <b>اطلاعات شما:</b>\n"
+            f"• <b>شناسه عددی شما (User ID):</b> <code>{user.id}</code>\n"
+            f"• <b>نام:</b> <b>{html.escape(str(u_name))}</b>\n"
+            f"• <b>یوزرنیم:</b> <code>{html.escape(str(u_uname))}</code>\n\n"
+            f"💬 <b>اطلاعات چت فعلی:</b>\n"
+            f"• <b>شناسه عددی چت (Chat ID):</b> <code>{chat.id}</code>\n"
+            f"• <b>عنوان چت:</b> <b>{html.escape(str(c_title))}</b>\n"
+            f"• <b>نوع چت:</b> <code>{chat.type}</code>\n\n"
+            f"<i>💡 برای استعلام شناسه فرد دیگر:</i> <code>/id @username</code> یا روی پیام وی ریپلای فرمایید."
+        )
         return
 
+    # Case 3: Query provided (username, t.me link, numeric ID, or name)
+    clean_target = query
+    tme_m = re.search(r'(?:https?://)?(?:www\.)?t\.me/([a-zA-Z0-9_]{3,32})', clean_target)
+    if tme_m:
+        clean_target = "@" + tme_m.group(1)
+
+    # 1. Try instant direct Telegram API resolution via get_chat
+    if clean_target.startswith("@") or clean_target.lstrip("-").isdigit():
+        try:
+            lookup_key = clean_target if clean_target.startswith("@") else int(clean_target)
+            target_chat = await context.bot.get_chat(lookup_key)
+            if target_chat:
+                t_title = target_chat.title or target_chat.first_name or "کاربر / چت"
+                t_uname = f"@{target_chat.username}" if target_chat.username else "ندارد"
+                t_bio = target_chat.bio or target_chat.description or ""
+                lines = [
+                    "🎯 <b>شناسه عددی و مشخصات از سرور تلگرام:</b>",
+                    f"• <b>شناسه عددی (Numeric ID):</b> <code>{target_chat.id}</code>",
+                    f"• <b>نام / عنوان:</b> <b>{html.escape(str(t_title))}</b>",
+                    f"• <b>یوزرنیم:</b> <code>{html.escape(str(t_uname))}</code>",
+                    f"• <b>نوع چت:</b> <code>{target_chat.type}</code>",
+                ]
+                if t_bio:
+                    lines.append(f"• <b>بیوگرافی / توضیحات:</b> <i>{html.escape(str(t_bio)[:150])}</i>")
+                if admin_caller:
+                    lines.append(f"\n<i>💡 اقدام سریع:</i> <code>/ban {target_chat.id}</code> | <code>/mute {target_chat.id} 30m</code>")
+                await reply_safely(message, "\n".join(lines))
+                return
+        except Exception:
+            pass
+
+    # 2. Try database resolution
     from src.tools import system
-    res = await system.extract_user_id_tool(target=query, caller_id=user.id)
+    res = await system.extract_user_id_tool(target=query, caller_id=user.id if admin_caller else config.ADMIN_ID)
     await reply_safely(message, res)
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2313,9 +2464,20 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
             target_uid = (fwd_user.id if fwd_user else None) or (fwd_chat.id if fwd_chat else None) or (target_user.id if target_user else None)
             if target_uid:
-                from src.tools.system import extract_user_id_tool
-                res_id = await extract_user_id_tool(target=str(target_uid), caller_id=user.id)
-                await reply_safely(message, res_id)
+                is_banned = database.is_user_banned(target_uid)
+                status_txt = "🚫 مسدود" if is_banned else "🟢 فعال"
+                t_name = target_user.first_name if target_user else "کاربر"
+                t_uname = f"@{target_user.username}" if (target_user and target_user.username) else "ندارد"
+                lines = [
+                    "🎯 <b>شناسه عددی کاربر:</b>",
+                    f"• <b>شناسه عددی (ID):</b> <code>{target_uid}</code>",
+                    f"• <b>نام:</b> <b>{html.escape(str(t_name))}</b>",
+                    f"• <b>یوزرنیم:</b> <code>{html.escape(str(t_uname))}</code>",
+                    f"• <b>وضعیت:</b> {status_txt}"
+                ]
+                if is_admin(user.id):
+                    lines.append(f"\n<i>💡 برای بن کردن:</i> <code>/ban {target_uid}</code>")
+                await reply_safely(message, "\n".join(lines))
                 return
 
         # 3d. Direct Reply Quota (admin sets/shows/adjusts/clears the replied user's daily limit)
@@ -3375,6 +3537,16 @@ def build_application():
     app.add_handler(_pcmd("clear_prometheus", clear_command))
     app.add_handler(_pcmd("music", music_command))
     app.add_handler(_pcmd("music_prometheus", music_command))
+    app.add_handler(_pcmd("image", image_command))
+    app.add_handler(_pcmd("image_prometheus", image_command))
+    app.add_handler(_pcmd("draw", image_command))
+    app.add_handler(_pcmd("draw_prometheus", image_command))
+    app.add_handler(_pcmd("paint", image_command))
+    app.add_handler(_pcmd("paint_prometheus", image_command))
+    app.add_handler(_pcmd("img", image_command))
+    app.add_handler(_pcmd("img_prometheus", image_command))
+    app.add_handler(_pcmd("pic", image_command))
+    app.add_handler(_pcmd("pic_prometheus", image_command))
     app.add_handler(_pcmd("crypto", crypto_command))
     app.add_handler(_pcmd("crypto_prometheus", crypto_command))
     app.add_handler(_pcmd("gold", gold_command))

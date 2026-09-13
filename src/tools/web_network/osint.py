@@ -1,11 +1,13 @@
 """
 Advanced OSINT (Open Source Intelligence) & Digital Footprint Reconnaissance Engine.
 Collects and correlates 100% public information across platforms, code repositories,
-social networks, cryptographic identities, and deep web footprints.
+social networks, cryptographic identities, DNS/whois, IP infrastructure, phone carriers,
+and deep web footprints.
 """
 
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import re
@@ -20,15 +22,19 @@ from src.tools.registry import register_tool
 logger = logging.getLogger(__name__)
 
 
+# =========================================================================
+# 1. Platform Probes (Asynchronous Zero-API Social & Identity Checks)
+# =========================================================================
+
 async def _check_github(username: str, client: Any) -> Optional[Dict[str, Any]]:
     try:
         url = f"https://api.github.com/users/{username}"
-        headers = {"User-Agent": "PrometheusOSINT/1.0"}
+        headers = {"User-Agent": "PrometheusOSINT/3.0"}
         from src.core import config as _cfg
         token = getattr(_cfg, "GITHUB_TOKEN", "")
         if token and len(token) > 10:
             headers["Authorization"] = f"Bearer {token}"
-        r = await client.get(url, headers=headers, timeout=6.0)
+        r = await client.get(url, headers=headers, timeout=5.0)
         if r.status_code == 200:
             d = r.json()
             return {
@@ -50,10 +56,31 @@ async def _check_github(username: str, client: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+async def _check_gitlab(username: str, client: Any) -> Optional[Dict[str, Any]]:
+    try:
+        url = f"https://gitlab.com/api/v4/users?username={username}"
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
+        if r.status_code == 200:
+            users = r.json()
+            if users and isinstance(users, list) and len(users) > 0:
+                u = users[0]
+                return {
+                    "platform": "GitLab",
+                    "exists": True,
+                    "url": u.get("web_url"),
+                    "name": u.get("name") or "",
+                    "bio": u.get("bio") or "",
+                    "location": u.get("location") or ""
+                }
+    except Exception:
+        pass
+    return None
+
+
 async def _check_keybase(username: str, client: Any) -> Optional[Dict[str, Any]]:
     try:
         url = f"https://keybase.io/_/api/1.0/user/lookup.json?usernames={username}"
-        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/1.0"}, timeout=6.0)
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
         if r.status_code == 200:
             d = r.json()
             them = (d.get("them") or [])
@@ -81,10 +108,50 @@ async def _check_keybase(username: str, client: Any) -> Optional[Dict[str, Any]]
     return None
 
 
+async def _check_dockerhub(username: str, client: Any) -> Optional[Dict[str, Any]]:
+    try:
+        url = f"https://hub.docker.com/v2/users/{username}/"
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("id") or d.get("username"):
+                return {
+                    "platform": "Docker Hub",
+                    "exists": True,
+                    "url": f"https://hub.docker.com/u/{username}",
+                    "full_name": d.get("full_name") or "",
+                    "location": d.get("location") or "",
+                    "company": d.get("company") or ""
+                }
+    except Exception:
+        pass
+    return None
+
+
+async def _check_devto(username: str, client: Any) -> Optional[Dict[str, Any]]:
+    try:
+        url = f"https://dev.to/api/users/by_username?url={username}"
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("name") or d.get("username"):
+                return {
+                    "platform": "DEV Community",
+                    "exists": True,
+                    "url": f"https://dev.to/{username}",
+                    "name": d.get("name") or "",
+                    "bio": d.get("summary") or "",
+                    "location": d.get("location") or ""
+                }
+    except Exception:
+        pass
+    return None
+
+
 async def _check_hackernews(username: str, client: Any) -> Optional[Dict[str, Any]]:
     try:
         url = f"https://hacker-news.firebaseio.com/v0/user/{username}.json"
-        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/1.0"}, timeout=5.0)
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
         if r.status_code == 200:
             d = r.json()
             if d and isinstance(d, dict) and d.get("id"):
@@ -150,7 +217,7 @@ async def _check_gravatar(email_or_username: str, client: Any) -> Optional[Dict[
         email_clean = email_or_username.lower().strip()
         h = hashlib.md5(email_clean.encode("utf-8")).hexdigest()
         url = f"https://en.gravatar.com/{h}.json"
-        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/1.0"}, timeout=5.0)
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
         if r.status_code == 200:
             entries = r.json().get("entry", [])
             if entries:
@@ -168,9 +235,275 @@ async def _check_gravatar(email_or_username: str, client: Any) -> Optional[Dict[
     return None
 
 
+# =========================================================================
+# 2. IP & Network Infrastructure OSINT
+# =========================================================================
+
+@register_tool(
+    name="osint_ip_intelligence",
+    description="استعلام فوق‌پیشرفته و هوشمند IP، موقعیت جغرافیایی دقیق، ارائه‌دهنده (ISP)، سازمان، شماره AS، تشخیص سرور/دیتاسنتر/پروکسی/VPN و رکوردهای معکوس",
+    category="network"
+)
+async def osint_ip_intelligence(ip: str) -> str:
+    """
+    :param ip: آدرس آی‌پی نسخه ۴ یا ۶ مورد نظر برای استعلام (مانند: '1.1.1.1', '185.143.232.1')
+    """
+    clean_ip = (ip or "").strip()
+    # Extract IP if surrounded by text or URL
+    ip_m = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", clean_ip)
+    if ip_m:
+        clean_ip = ip_m.group(0)
+
+    if not clean_ip:
+        return "❌ آدرس IP معتبری برای استعلام وارد نشده است."
+
+    cache_key = f"OSINT_IP_{clean_ip}"
+    cached = await database.kv_get_cache_async(cache_key)
+    if cached:
+        return cached
+
+    url = f"http://ip-api.com/json/{clean_ip}?fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,hosting,proxy,query"
+    try:
+        async with shared_client_ctx("web") as client:
+            r = await client.get(url, timeout=7.0)
+            if r.status_code == 200:
+                d = r.json()
+                if d.get("status") == "success":
+                    is_hosting = "بله (Datacenter / Cloud Server)" if d.get("hosting") else "خیر (Residential / Mobile)"
+                    is_proxy = "بله (Proxy / VPN detected)" if d.get("proxy") else "خیر (Direct)"
+
+                    # Reverse DNS PTR check
+                    reverse_host = "نامشخص"
+                    try:
+                        import socket
+                        reverse_host = socket.gethostbyaddr(clean_ip)[0]
+                    except Exception:
+                        pass
+
+                    res = (
+                        f"🌐 *شناسنامه امنیتی و اطلاعاتی آی‌پی (IP Intelligence)*\n"
+                        f"• *آدرس آی‌پی*: `{d.get('query', clean_ip)}`\n"
+                        f"• *کشور*: `{d.get('country', '—')}` (`{d.get('countryCode', '')}`)\n"
+                        f"• *استان / شهر*: `{d.get('regionName', '—')}` / `{d.get('city', '—')}`\n"
+                        f"• *منطقه زمانی*: `{d.get('timezone', '—')}` | مختصات: `{d.get('lat')}, {d.get('lon')}`\n"
+                        f"• *ارائه‌دهنده (ISP)*: `{d.get('isp', '—')}`\n"
+                        f"• *سازمان*: `{d.get('org', '—')}`\n"
+                        f"• *سیستم خودمختار (ASN)*: `{d.get('as', '—')}`\n"
+                        f"• *هاستینگ / سرور ابری*: `{is_hosting}`\n"
+                        f"• *پروکسی / فیلترشکن*: `{is_proxy}`\n"
+                        f"• *نام هاست معکوس (PTR)*: `{reverse_host}`"
+                    )
+                    await database.kv_set_cache_async(cache_key, res, expiration_ttl=3600)
+                    return res
+                else:
+                    return f"❌ استعلام IP با شکست مواجه شد: {d.get('message', 'آدرس نامعتبر')}"
+    except Exception as e:
+        logger.debug(f"IP intelligence error: {e}")
+
+    return f"❌ خطای شبکه در دریافت اطلاعات آی‌پی {clean_ip}."
+
+
+# =========================================================================
+# 3. Domain & DNS Intelligence
+# =========================================================================
+
+@register_tool(
+    name="osint_domain_dns",
+    description="استعلام عمیق دامنه و سرور: رکوردهای DNS (شامل A, AAAA, MX, TXT/SPF/DMARC, NS) و رجیسترار از طریق پروتکل امن DoH و RDAP",
+    category="network"
+)
+async def osint_domain_dns(domain: str) -> str:
+    """
+    :param domain: نام دامنه یا آدرس اینترنتی (مانند: 'telegram.org', 'google.com', 'digikala.com')
+    """
+    raw_d = (domain or "").strip()
+    clean_d = re.sub(r"^https?://", "", raw_d).split("/")[0].split(":")[0].strip()
+    if not clean_d or "." not in clean_d:
+        return "❌ لطفاً یک نام دامنه معتبر وارد فرمایید."
+
+    cache_key = f"OSINT_DNS_{clean_d.lower()}"
+    cached = await database.kv_get_cache_async(cache_key)
+    if cached:
+        return cached
+
+    records: Dict[str, List[str]] = {}
+    try:
+        async with shared_client_ctx("web") as client:
+            # Cloudflare DoH (DNS-over-HTTPS)
+            for rtype in ["A", "AAAA", "MX", "NS", "TXT"]:
+                try:
+                    doh_url = f"https://cloudflare-dns.com/dns-query?name={clean_d}&type={rtype}"
+                    r = await client.get(doh_url, headers={"accept": "application/dns-json"}, timeout=5.0)
+                    if r.status_code == 200:
+                        ans = r.json().get("Answer", [])
+                        records[rtype] = [a.get("data", "").strip() for a in ans if a.get("data")]
+                except Exception:
+                    pass
+
+            # RDAP lookup for registration info
+            registrar = "نامشخص"
+            events = {}
+            try:
+                r_rdap = await client.get(f"https://rdap.org/domain/{clean_d}", headers={"accept": "application/json"}, timeout=5.0)
+                if r_rdap.status_code == 200:
+                    rdap_data = r_rdap.json()
+                    for ent in rdap_data.get("entities", []):
+                        if "registrar" in ent.get("roles", []):
+                            vcard = ent.get("vcardArray", [])
+                            if len(vcard) > 1:
+                                for item in vcard[1]:
+                                    if item[0] == "fn":
+                                        registrar = item[3]
+                    for ev in rdap_data.get("events", []):
+                        action = ev.get("eventAction")
+                        date_val = (ev.get("eventDate") or "")[:10]
+                        if action and date_val:
+                            events[action] = date_val
+            except Exception:
+                pass
+
+        lines = [
+            f"🔎 *شناسنامه فنی و رکوردهای دامنه (Domain OSINT)*",
+            f"• *دامنه*: `{clean_d}`",
+            f"• *ثبت‌کننده (Registrar)*: `{registrar}`"
+        ]
+        if events.get("registration"):
+            lines.append(f"• *تاریخ ثبت اولیه*: `{events['registration']}`")
+        if events.get("expiration"):
+            lines.append(f"• *تاریخ انقضا*: `{events['expiration']}`")
+
+        lines.append("\n📡 *رکوردهای DNS فعال:*")
+        if records.get("A"):
+            lines.append(f"• *IPv4 (A)*: " + ", ".join(f"`{ip}`" for ip in records["A"][:4]))
+        if records.get("AAAA"):
+            lines.append(f"• *IPv6 (AAAA)*: " + ", ".join(f"`{ip}`" for ip in records["AAAA"][:2]))
+        if records.get("MX"):
+            lines.append(f"• *سرورهای ایمیل (MX)*: " + ", ".join(f"`{mx}`" for mx in records["MX"][:3]))
+        if records.get("NS"):
+            lines.append(f"• *نیم‌سرورها (NS)*: " + ", ".join(f"`{ns}`" for ns in records["NS"][:3]))
+        if records.get("TXT"):
+            # Filter SPF/DMARC/Verification records
+            sec_txt = [t for t in records["TXT"] if any(k in t.lower() for k in ["v=spf", "v=dmarc", "google-site", "verify"])]
+            chosen_txt = sec_txt if sec_txt else records["TXT"]
+            for t in chosen_txt[:3]:
+                clean_t = t.replace('"', '')[:80]
+                lines.append(f"• *رکورد امنیتی*: `{clean_t}`")
+
+        out = "\n".join(lines)
+        await database.kv_set_cache_async(cache_key, out, expiration_ttl=3600)
+        return out
+    except Exception as e:
+        logger.error(f"Domain DNS OSINT error: {e}")
+
+    return f"❌ خطای شبکه در استعلام دامنه {clean_d}."
+
+
+# =========================================================================
+# 4. Phone Number & Carrier Intelligence
+# =========================================================================
+
+@register_tool(
+    name="osint_phone_intelligence",
+    description="تحلیل و شناسایی شماره تلفن همراه و ثابت، تشخیص اپراتور (همراه اول، ایرانسل، رایتل، شاتل)، استان و فرمت استاندارد بین‌المللی E.164",
+    category="network"
+)
+async def osint_phone_intelligence(phone: str) -> str:
+    """
+    :param phone: شماره تلفن یا موبایل با پیش‌شماره یا بدون آن (مانند: '09121234567', '+989351234567', '+14155552671')
+    """
+    raw_p = (phone or "").strip()
+    digits = re.sub(r"[^\d+]", "", raw_p)
+    if not digits:
+        return "❌ شماره تلفن معتبری وارد نشده است."
+
+    # Standardize Iranian phone format
+    is_iranian = False
+    clean_ir = digits
+    if clean_ir.startswith("+98"):
+        clean_ir = "0" + clean_ir[3:]
+        is_iranian = True
+    elif clean_ir.startswith("0098"):
+        clean_ir = "0" + clean_ir[4:]
+        is_iranian = True
+    elif clean_ir.startswith("98"):
+        clean_ir = "0" + clean_ir[2:]
+        is_iranian = True
+    elif clean_ir.startswith("09") and len(clean_ir) == 11:
+        is_iranian = True
+
+    if is_iranian and len(clean_ir) == 11 and clean_ir.startswith("09"):
+        prefix = clean_ir[:4]
+        operator_info = {
+            # MCI (Hamrah-e Avval)
+            "0910": ("همراه اول (MCI)", "دائمی و اعتباری سراسری"),
+            "0911": ("همراه اول (MCI)", "استان‌های شمالی (مازندران، گلستان، گیلان)"),
+            "0912": ("همراه اول (MCI)", "تهران، البرز، قزوین، زنجان، سمنان، قم"),
+            "0913": ("همراه اول (MCI)", "اصفهان، یزد، چهارمحال و بختیاری، کرمان"),
+            "0914": ("همراه اول (MCI)", "آذربایجان شرقی، آذربایجان غربی، اردبیل"),
+            "0915": ("همراه اول (MCI)", "خراسان رضوی، خراسان شمالی، خراسان جنوبی، سیستان و بلوچستان"),
+            "0916": ("همراه اول (MCI)", "خوزستان، لرستان، فارس"),
+            "0917": ("همراه اول (MCI)", "فارس، کهگیلویه و بویراحمد، بوشهر، هرمزگان"),
+            "0918": ("همراه اول (MCI)", "همدان، کرمانشاه، کردستان، ایلام"),
+            "0919": ("همراه اول (MCI)", "تهران، البرز، قم، سمنان، قزوین (اعتباری)"),
+            "0990": ("همراه اول (MCI)", "اعتباری سراسری"),
+            "0991": ("همراه اول (MCI)", "اعتباری و دائمی سراسری"),
+            "0992": ("همراه اول (MCI)", "اعتباری سراسری"),
+            "0993": ("همراه اول (MCI)", "اعتباری سراسری"),
+            "0994": ("همراه اول (MCI)", "اعتباری سراسری"),
+            # Irancell
+            "0930": ("ایرانسل (MTN Irancell)", "اعتباری و دائمی سراسری"),
+            "0933": ("ایرانسل (MTN Irancell)", "اعتباری و دائمی سراسری"),
+            "0935": ("ایرانسل (MTN Irancell)", "اعتباری و دائمی سراسری"),
+            "0936": ("ایرانسل (MTN Irancell)", "اعتباری و دائمی سراسری"),
+            "0937": ("ایرانسل (MTN Irancell)", "اعتباری و دائمی سراسری"),
+            "0938": ("ایرانسل (MTN Irancell)", "اعتباری و دائمی سراسری"),
+            "0939": ("ایرانسل (MTN Irancell)", "اعتباری و دائمی سراسری"),
+            "0901": ("ایرانسل (MTN Irancell)", "سراسری"),
+            "0902": ("ایرانسل (MTN Irancell)", "سراسری"),
+            "0903": ("ایرانسل (MTN Irancell)", "سراسری"),
+            "0904": ("ایرانسل (MTN Irancell)", "سیم‌کارت کودک و نوجوان"),
+            "0905": ("ایرانسل (MTN Irancell)", "سراسری"),
+            # RighTel
+            "0920": ("رایتل (RighTel)", "دائمی سراسری"),
+            "0921": ("رایتل (RighTel)", "اعتباری و دائمی"),
+            "0922": ("رایتل (RighTel)", "اعتباری"),
+            "0923": ("رایتل (RighTel)", "اعتباری"),
+            # Shatel Mobile
+            "0998": ("شاتل موبایل (Shatel Mobile)", "اپراتور مجازی MVNO نسل ۴"),
+            # Taliya
+            "0932": ("تالیا (Taliya)", "اعتباری سراسری"),
+            # Samantel
+            "0999": ("سامانتل (Samantel)", "اپراتور مجازی MVNO"),
+        }
+        op_data = operator_info.get(prefix) or ("اپراتور ایرانی معتبر", "سراسری")
+        e164_fmt = "+98" + clean_ir[1:]
+
+        return (
+            f"📱 *تحلیل و اطلاعات شماره تلفن (Phone Intelligence)*\n"
+            f"• *شماره ورودی*: `{raw_p}`\n"
+            f"• *فرمت استاندارد بین‌المللی (E.164)*: `{e164_fmt}`\n"
+            f"• *کشور*: `ایران (Iran)` 🇮🇷\n"
+            f"• *اپراتور مخابراتی*: `{op_data[0]}`\n"
+            f"• *نوع خط و توزیع منطقه‌ای*: `{op_data[1]}`\n"
+            f"• *وضعیت اعتبار ساختاری*: `تأیید شده (Valid Structure)`"
+        )
+
+    # General International Analysis
+    return (
+        f"📱 *اطلاعات شماره بین‌المللی*\n"
+        f"• *شماره*: `{digits}`\n"
+        f"• *طول ارقام*: `{len(digits)} رقم`\n"
+        f"• *وضعیت ساختاری*: `شماره خط خارجی یا ثابت`"
+    )
+
+
+# =========================================================================
+# 5. Master Person & Social Dossier Engine
+# =========================================================================
+
 @register_tool(
     name="osint_person_dossier",
-    description="جستجوی عمیق و جمع‌آوری پرونده شناسایی هویت (OSINT) بر اساس نام، نام‌کاربری، ایمیل یا ردپای دیجیتال در شبکه‌های اجتماعی، گیت‌هاب، سرویس‌های رمزنگاری، ردیت و صفحات وب",
+    description="موتور جامع شناسایی هویت (OSINT): استعلام چندبعدی اشخاص، یوزرنیم، ایمیل، آی‌پی، دامنه و تلفن در کلیه پلتفرم‌های عمومی و فضای وب",
     category="network"
 )
 async def osint_person_dossier(
@@ -179,41 +512,52 @@ async def osint_person_dossier(
     context_hint: str = ""
 ) -> str:
     """
-    :param target: شناسه، نام کاربری (یوزرنیم)، نام و نام‌خانوادگی، ایمیل یا آیدی مورد نظر
-    :param target_type: نوع هدف ('username', 'name', 'email', 'auto')
-    :param context_hint: اطلاعات زمینه، شهر، تخصص یا شرکت برای تطبیق دقیق‌تر نتایج
+    :param target: شناسه، نام کاربری (یوزرنیم)، نام و نام‌خانوادگی، ایمیل، شماره تلفن یا آی‌پی
+    :param target_type: نوع هدف ('username', 'name', 'email', 'ip', 'domain', 'phone', 'auto')
+    :param context_hint: اطلاعات زمینه، تخصص، شرکت یا شهر برای جستجوی دقیق‌تر
     """
     raw_target = str(target or "").strip()
     if not raw_target:
-        return "❌ لطفاً نام، نام کاربری یا ایمیل هدف را وارد کنید."
+        return "❌ لطفاً نام، نام کاربری، ایمیل یا نشانی هدف را وارد کنید."
+
+    ttype = (target_type or "auto").lower()
+
+    # Smart Auto-Detection & Cross-Delegation
+    if ttype == "auto":
+        if re.search(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", raw_target):
+            return await osint_ip_intelligence(raw_target)
+        if re.search(r"^(?:\+?98|0)9\d{9}$", raw_target):
+            return await osint_phone_intelligence(raw_target)
+        if re.search(r"^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", raw_target) and "@" not in raw_target:
+            return await osint_domain_dns(raw_target)
+        if "@" in raw_target and "." in raw_target.split("@")[-1]:
+            ttype = "email"
+        elif " " in raw_target:
+            ttype = "name"
+        else:
+            ttype = "username"
 
     clean_uname = raw_target.lstrip("@").strip()
-    cache_key = f"OSINT_DOSSIER_{clean_uname.lower()}_{target_type}"
+    cache_key = f"OSINT_DOSSIER_V2_{clean_uname.lower()}_{ttype}"
     cached = await database.kv_get_cache_async(cache_key)
     if cached:
         return cached
 
-    ttype = (target_type or "auto").lower()
-    is_email = "@" in raw_target and "." in raw_target.split("@")[-1]
-    if is_email and ttype == "auto":
-        ttype = "email"
-    elif " " in raw_target and ttype == "auto":
-        ttype = "name"
-    elif ttype == "auto":
-        ttype = "username"
-
-    # Step 1: Parallel Social & Identity Probing (Fast Async Checks)
+    # Parallel Probing Across Developer, Social & Security Networks
     probe_results = []
     try:
         async with shared_client_ctx("api") as client:
             tasks = [
                 _check_github(clean_uname, client),
+                _check_gitlab(clean_uname, client),
                 _check_keybase(clean_uname, client),
+                _check_dockerhub(clean_uname, client),
+                _check_devto(clean_uname, client),
                 _check_telegram(clean_uname, client),
                 _check_reddit(clean_uname, client),
                 _check_hackernews(clean_uname, client),
             ]
-            if is_email:
+            if ttype == "email":
                 tasks.append(_check_gravatar(raw_target, client))
             else:
                 tasks.append(_check_gravatar(clean_uname, client))
@@ -225,7 +569,7 @@ async def osint_person_dossier(
     except Exception as e:
         logger.warning(f"OSINT probe error: {e}")
 
-    # Step 2: Deep Targeted Web Dorking via Tavily / Web Search
+    # Deep Web Footprint & Public Mentions
     web_findings = []
     try:
         from src.tools.web_network import tavily_search_raw, web_search
@@ -248,10 +592,10 @@ async def osint_person_dossier(
     except Exception as e:
         logger.debug(f"OSINT web dorking error: {e}")
 
-    # Step 3: Synthesis of Dossier Report
+    # Synthesis of Dossier Report
     sections = [
-        f"🕵️‍♂️ *پرونده شناسایی هویت عمومی (OSINT Dossier)*",
-        f"• *هدف*: `{raw_target}`",
+        f"🕵️‍♂️ *پرونده شناسایی هویت دیجیتال (Supercharged OSINT Dossier)*",
+        f"• *هدف مورد کاوش*: `{raw_target}`",
         f"• *دسته‌بندی تحلیل*: `{ttype.upper()}`" + (f" (زمینه: {context_hint})" if context_hint else "")
     ]
 
@@ -283,7 +627,7 @@ async def osint_person_dossier(
             details_str = " | ".join(extra_bits) if extra_bits else "حساب فعال عمومی"
             sections.append(f"• [{p_name}]({p_url}): {details_str}")
     else:
-        sections.append("\n⚠️ *حساب مستقیمی با این شناسه در پلتفرم‌های کلیدی یافت نشد.*")
+        sections.append("\n⚠️ *حساب مستقیمی با این شناسه در پلتفرم‌های اصلی برنامه‌نویسی و شبکه‌های عمومی یافت نشد.*")
 
     # Deep Web Footprint & Public Mentions
     if web_findings:

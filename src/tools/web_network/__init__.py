@@ -1120,6 +1120,19 @@ async def twitter_search(query: str, max_results: int = 6) -> str:
 # Auto-register Digikala, OSINT & E-Commerce Tools (re-exported below so linters stay green)
 from src.tools.web_network.digikala import digikala_search
 from src.tools.web_network.ecommerce import amazon_search, ebay_search
-from src.tools.web_network.osint import osint_person_dossier
+from src.tools.web_network.osint import (
+    osint_person_dossier,
+    osint_ip_intelligence,
+    osint_domain_dns,
+    osint_phone_intelligence,
+)
 
-__all__ = ["digikala_search", "amazon_search", "ebay_search", "osint_person_dossier"]
+__all__ = [
+    "digikala_search",
+    "amazon_search",
+    "ebay_search",
+    "osint_person_dossier",
+    "osint_ip_intelligence",
+    "osint_domain_dns",
+    "osint_phone_intelligence",
+]
