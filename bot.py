@@ -3341,6 +3341,51 @@ async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, ch
     except Exception:
         pass
 
+    # High-Fidelity Delivery for AI Generated Photos (Bytes / URL)
+    if isinstance(extra_action, dict) and extra_action.get("type") in ("photo_bytes", "photo") and extra_action.get("bytes"):
+        try:
+            photo_buf = io.BytesIO(extra_action["bytes"])
+            photo_buf.name = "generated_image.png"
+            caption_formatted = telegram_formatter.markdown_to_telegram_html(extra_action.get("caption", ""))
+            sent_photo = await message.reply_photo(
+                photo=photo_buf,
+                caption=caption_formatted,
+                parse_mode=ParseMode.HTML,
+                write_timeout=120.0,
+                read_timeout=60.0
+            )
+            sent_media_msg_id = sent_photo.message_id if sent_photo else 0
+            if sent_media_msg_id:
+                asyncio.create_task(database.save_message_async(
+                    chat.id, context.bot.id, "assistant",
+                    f"[تصویر هوش مصنوعی: {extra_action.get('caption', '')}]",
+                    user_name="Prometheus", chat_title=chat_title, message_id=sent_media_msg_id
+                ))
+            return True
+        except Exception as e:
+            logger.error(f"Error sending photo_bytes to Telegram: {e}")
+
+    if isinstance(extra_action, dict) and extra_action.get("type") == "photo_url" and extra_action.get("url"):
+        try:
+            caption_formatted = telegram_formatter.markdown_to_telegram_html(extra_action.get("caption", ""))
+            sent_photo = await message.reply_photo(
+                photo=extra_action["url"],
+                caption=caption_formatted,
+                parse_mode=ParseMode.HTML,
+                write_timeout=120.0,
+                read_timeout=60.0
+            )
+            sent_media_msg_id = sent_photo.message_id if sent_photo else 0
+            if sent_media_msg_id:
+                asyncio.create_task(database.save_message_async(
+                    chat.id, context.bot.id, "assistant",
+                    f"[تصویر هوش مصنوعی: {extra_action.get('caption', '')}]",
+                    user_name="Prometheus", chat_title=chat_title, message_id=sent_media_msg_id
+                ))
+            return True
+        except Exception as e:
+            logger.error(f"Error sending photo_url to Telegram: {e}")
+
     # Instant Sub-Second Delivery via Telegram Cached file_id
     if isinstance(extra_action, dict) and extra_action.get("type") == "audio_file_id" and extra_action.get("file_id"):
         try:

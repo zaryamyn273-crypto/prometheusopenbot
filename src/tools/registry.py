@@ -412,7 +412,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     # --- Implicit intent detectors (no exact keyword needed) ---
     _implicit = {
         "weather": ["بیرون", "بارون", "برف", "سرد", "گرم", "آفتاب", "چتر", "لباس بپوشم"],
-        "media": ["بذار", "پخش", "بفرست", "بده", "پلی", "play", "پخش کن"],
+        "media": ["بذار", "پخش", "بفرست", "بده", "پلی", "play", "پخش کن", "بکش", "طراحی", "draw", "paint"],
         "financial": ["بخرم", "بفروشم", "سرمایه", "سود", "گرون", "ارزون", "تحلیل بازار"],
         "search": ["جدیدترین", "آخرین", "تازه", "خبر", "اطلاعات", "درباره", "کیه", "چیه"],
         "files": ["بساز", "درست کن", "آماده کن", "اکسل", "جدول", "لیست", "گزارش"],
@@ -432,7 +432,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
                     relevant_categories.add(cat)
                     continue
                 anchor = {
-                    "media": ["آهنگ", "موزیک", "ترانه", "خواننده", "شعر", "صدا", "ویس", "صوت", "شاد", "غمگین", "پادکست", "مقاله", "تلگراف", "qr", "کیوآر", "بارکد", "hello", "song", "music", "audio", "mp3"],
+                    "media": ["آهنگ", "موزیک", "ترانه", "خواننده", "شعر", "صدا", "ویس", "صوت", "شاد", "غمگین", "پادکست", "مقاله", "تلگراف", "qr", "کیوآر", "بارکد", "hello", "song", "music", "audio", "mp3", "عکس", "تصویر", "تصویرسازی", "نقاشی", "طراحی", "image", "photo", "picture", "draw", "paint", "dall-e", "flux"],
                     "files": ["فایل", "اکسل", "ورد", "pdf", "پی دی اف", "پی‌دی‌اف", "csv", "json", "متن", "سند", "هزینه", "جدول"],
                     "admin": ["سرور", "سرورت", "سیستم", "ربات", "خودت"],
                     "time": ["ساعت", "تاریخ", "امروز", "فردا", "دیروز", "جلسه", "قرار"],
@@ -508,6 +508,18 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     wants_id_explicitly = any(ik in prompt_lower for ik in ["آیدی چنده", "شناسه چنده", "آیدی عددی", "آیدیش چنده", "استعلام آیدی", "getid", "آیدیش رو بده"])
     exclude_extract_id = is_ban_intent and not wants_id_explicitly
 
+    # Guaranteed inclusion and highest priority (#1 position) for AI image generation:
+    _img_intent_hints = (
+        "عکس", "تصویر", "تصویرسازی", "نقاشی", "طراحی", "بکش", "draw", "paint",
+        "image", "photo", "picture", "dall-e", "flux", "تولید عکس", "تولید تصویر",
+        "ساخت عکس", "ساخت تصویر", "text-to-image", "text to image"
+    )
+    if any(_ih in prompt_lower for _ih in _img_intent_hints):
+        ensure_module("src.tools.media")
+        if "generate_ai_image" in REGISTRY and "generate_ai_image" not in selected_names:
+            selected_schemas.append(REGISTRY["generate_ai_image"]["schema"])
+            selected_names.add("generate_ai_image")
+
     for name, t in REGISTRY.items():
         cat = t.get("category", "")
         if cat == "internal":
@@ -538,9 +550,9 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
                 selected_schemas.append(REGISTRY["extract_user_id_tool"]["schema"])
                 selected_names.add("extract_user_id_tool")
 
-    # Cap total tools passed to LLM to 16 to avoid prompt prefill latency
-    if len(selected_schemas) > 16:
-        selected_schemas = selected_schemas[:16]
+    # Cap total tools passed to LLM to 26 to avoid prompt prefill latency
+    if len(selected_schemas) > 26:
+        selected_schemas = selected_schemas[:26]
 
     _SMART_FILTER_CACHE[cache_key] = selected_schemas
     _SMART_FILTER_ORDER.append(cache_key)
