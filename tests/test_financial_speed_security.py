@@ -95,6 +95,19 @@ def test_vision_preprocessor():
     assert len(b64) > 100
 
 
+def test_prune_tool_result_content():
+    from src.core.ai_service import prune_tool_result_content
+    short_text = "Standard short output"
+    assert prune_tool_result_content(short_text) == short_text
+
+    long_text = "HEAD_" * 1000 + "MIDDLE_SPAM_" * 1000 + "TAIL_" * 300
+    pruned = prune_tool_result_content(long_text, threshold=4000, head_chars=2000, tail_chars=800)
+    assert len(pruned) < len(long_text)
+    assert "HEAD_" in pruned
+    assert "TAIL_" in pruned
+    assert "فشرده شد" in pruned
+
+
 if __name__ == "__main__":
     asyncio.run(test_financial_stale_while_revalidate())
     asyncio.run(test_dollar_and_gold_instant_response())
@@ -102,4 +115,5 @@ if __name__ == "__main__":
     test_path_traversal_jail()
     test_query_rewriter_intent_preservation()
     test_vision_preprocessor()
+    test_prune_tool_result_content()
     print("ALL FINANCIAL SPEED & SECURITY TESTS PASSED!")
