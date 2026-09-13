@@ -40,10 +40,18 @@ Removed for being uncalled/duplicated/theater: `darkweb_search`,
   `e2b_run_code`, `e2b_run_command`); DISABLED without `E2B_API_KEY`.
 - Telemetry (`admin_system_diagnostics`), D1-backed ban/mute/user tools,
   group governance (`list_joined_groups_tool`, `leave_group_by_admin_tool`…).
+- Bulk message deletion across Telegram, D1, and RAM (`purge_chat_messages_tool`).
+- Railway cloud infrastructure telemetry and instant redeployments (`railway_status_tool`,
+  `railway_redeploy_tool`, `railway_variables_tool`).
+- Damaged barcode algebraic solver with GS1 country verification (`reconstruct_damaged_barcode_tool`).
+- Deep OSINT multi-platform digital footprint dossiers (`osint_person_dossier`).
 
 ## 🐙 GitHub (`src/tools/github/`)
-- 12 tools: repo/issue/commit/release/code search, readmes, files, stats,
-  trending. `github_search_code` falls back to web results without a token.
+- 16 tools: repo/issue/commit/release/code search, readmes, files, stats,
+  trending, repo creation (`github_create_repository`), direct file commit
+  (`github_create_or_update_file`), Arch Linux packaging (`github_generate_pkgbuild`),
+  and modern CMake build configuration (`github_generate_cmake`). `github_search_code`
+  falls back to web results without a token.
 
 ## 🗄️ Memory (`src/tools/database/`)
 - D1 records (store/retrieve/search/list/delete), KV store/retrieve,
