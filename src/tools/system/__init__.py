@@ -373,6 +373,66 @@ async def extract_user_id_tool(
     return f"❌ متأسفانه هیچ کاربری با مشخصه «{raw_query}» در حافظه و پیام‌های دیتابیس یافت نشد."
 
 @register_tool(
+    name="mute_bot_self_tool",
+    description="سایلنت کردن خود ربات به دستور ادمین: ربات ساکت می‌شود و دیگر به هیچ پیامی جواب نمی‌دهد تا پایان مدت یا دستور بیدارباش. scope=chat فقط همین چت، scope=global همه‌جا. مدت فارسی/انگلیسی: نیم ساعت، ۳۰ دقیقه، 2 ساعت، 1 روز. (مختص ادمین)",
+    category="admin"
+)
+async def mute_bot_self_tool(
+    duration: Optional[str] = None,
+    duration_sec: int = 0,
+    scope: Optional[str] = None,
+    where: Optional[str] = None,
+    reason: str = "دستور مستقیم فرمانده برای سکوت ربات",
+    caller_id: int = 0,
+    chat_id: int = 0
+) -> str:
+    if caller_id != ADMIN_ID:
+        return "❌ فقط ادمین ارشد مجاز به سایلنت کردن ربات است."
+    raw_scope = str(scope or where or "chat").strip().lower()
+    clean_scope = "global" if raw_scope in ("global", "all", "both", "everywhere", "همه", "همه جا", "همه‌جا", "سراسری", "کل") else "chat"
+    try:
+        secs = int(duration_sec or 0)
+    except Exception:
+        secs = 0
+    if not secs:
+        secs = database.parse_mute_duration_to_sec(str(duration or ""))
+    if not secs:
+        secs = 3600
+    src_id = int(chat_id or 0)
+    applied = await database.mute_bot_self_async(src_id, secs, reason, muted_by=int(caller_id or 0), scope=clean_scope)
+    left_txt = database.format_mute_remaining(applied)
+    if clean_scope == "global":
+        return f"🔇 *ربات سایلنت شد (سراسری):* تا *{left_txt}* در هیچ چتی جواب نمی‌دهد (پیام‌ها همچنان آرشیو می‌شوند). بیدارباش با دستور ادمین: «بیدار شو» یا `/unsilence`."
+    return f"🔇 *ربات در این چت سایلنت شد:* تا *{left_txt}* هیچ پاسخی نمی‌دهد (پیام‌ها همچنان آرشیو می‌شوند). بیدارباش با دستور ادمین: «بیدار شو» یا `/unsilence`."
+
+
+@register_tool(
+    name="unmute_bot_self_tool",
+    description="بیدار کردن ربات از حالت سایلنت: ربات دوباره به پیام‌ها پاسخ می‌دهد. scope=chat فقط همین چت، scope=all همه‌جا. (مختص ادمین)",
+    category="admin"
+)
+async def unmute_bot_self_tool(
+    scope: Optional[str] = None,
+    where: Optional[str] = None,
+    caller_id: int = 0,
+    chat_id: int = 0
+) -> str:
+    if caller_id != ADMIN_ID:
+        return "❌ فقط ادمین ارشد مجاز به بیدار کردن ربات است."
+    raw_scope = str(scope or where or "chat").strip().lower()
+    if raw_scope in ("all", "both", "global", "everywhere", "همه", "همه جا", "همه‌جا", "سراسری", "کل"):
+        clean_scope = "all"
+    elif raw_scope in ("global",):
+        clean_scope = "global"
+    else:
+        clean_scope = "chat"
+    await database.unmute_bot_self_async(int(chat_id or 0), clean_scope)
+    if clean_scope == "chat":
+        return "🔊 *ربات در این چت بیدار شد:* از این لحظه دوباره به پیام‌ها پاسخ می‌دهد."
+    return "🔊 *ربات در همه‌جا بیدار شد:* از این لحظه دوباره به پیام‌ها پاسخ می‌دهد."
+
+
+@register_tool(
     name="mute_user_tool",
     description="سکوت موقت کاربر: ربات تا پایان مدت به پیام‌های او پاسخی نمی‌دهد (مثل ۳۰ دقیقه). مدت فارسی/انگلیسی: نیم ساعت، ۳۰ دقیقه، 2 ساعت، 1 روز. (مختص ادمین)",
     category="admin"

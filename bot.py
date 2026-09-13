@@ -1328,6 +1328,39 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_safely(message, res)
 
 
+async def silence_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/silence [duration] [همه|global]: silence the bot itself (admin only)."""
+    user = update.effective_user
+    message = update.effective_message
+    chat = update.effective_chat
+    if not user or not message or not is_admin(user.id):
+        return
+    args = list(context.args or [])
+    raw = " ".join(args).strip() if args else (message.text or "")
+    scope = "global" if any(w in (raw or "").lower() for w in ["همه", "همه جا", "همه‌جا", "سراسری", "کل", "global", "all", "everywhere"]) else "chat"
+    secs = database.parse_mute_duration_to_sec(raw) if raw else 0
+    if not secs:
+        secs = 3600
+    from src.tools import system
+    res = await system.mute_bot_self_tool(duration_sec=secs, scope=scope, caller_id=user.id, chat_id=chat.id if chat else 0)
+    await reply_safely(message, res)
+
+
+async def unsilence_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/unsilence [همه|all]: wake the bot from self-silence (admin only)."""
+    user = update.effective_user
+    message = update.effective_message
+    chat = update.effective_chat
+    if not user or not message or not is_admin(user.id):
+        return
+    args = list(context.args or [])
+    raw = " ".join(args).strip().lower() if args else ""
+    scope = "all" if any(w in raw for w in ["همه", "همه جا", "همه‌جا", "سراسری", "کل", "global", "all", "everywhere"]) else "chat"
+    from src.tools import system
+    res = await system.unmute_bot_self_tool(scope=scope, caller_id=user.id, chat_id=chat.id if chat else 0)
+    await reply_safely(message, res)
+
+
 async def mutelist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.effective_message
@@ -2211,6 +2244,30 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     _turn_t0 = time.perf_counter()
 
+    # BOT SELF-MUTE GATEKEEPER (choke point): when the admin silences the bot,
+    # EVERYTHING stays silent — commands (except wake-up), AI replies, media.
+    # Messages are still archived to D1 so memory stays intact.
+    try:
+        _self_left = database.is_bot_self_muted(chat.id if chat else 0) if chat else 0.0
+    except Exception:
+        _self_left = 0.0
+    if _self_left:
+        try:
+            _smt = message.text or message.caption or ""
+            if _smt:
+                _smu = user.username or ""
+                _smd = user.first_name or "کاربر"
+                _sct = chat.title if chat else "گروه"
+                await database.save_message_async(
+                    chat.id, user.id, "user",
+                    f"[ربات سایلنت] {_smt}",
+                    user_name=_smd, username=_smu, chat_title=_sct,
+                    message_id=message.message_id or 0,
+                )
+        except Exception:
+            pass
+        return
+
     # COMMAND OWNERSHIP: a slash-command owned by a CommandHandler must not be
     # re-executed by the AI agent. Double execution once made the bot leave
     # BOTH the requested target group AND the group where the command was sent.
@@ -2342,9 +2399,38 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     fa_from_uname = username_to_persian_name(user_uname) if (user_uname and ulang == "fa") else ""
     user_display = fa_from_uname or user.first_name or ("کاربر" if ulang == "fa" else "user")
 
-    # Check fast natural language administrative actions from Master Admin on reply (Delete / Ban / Unban)
+    # Check fast natural language administrative actions from Master Admin (self-silence works even WITHOUT reply)
     # NOTE: non-admin replies fall THROUGH to the normal group gate below —
     # an empty reply-to-bot then answers the quoted message (fixed last pass).
+    if is_admin(user.id) and user_text.strip():
+        _admin_low = user_text.strip().lower()
+
+        # 0a. Admin-ordered Bot Self-Silence (works with AND without reply to the bot)
+        _bot_silence_hits = [
+            "سایلنت", "سایلنت شو", "ساکت شو", "ساکت", "خفه شو", "خفه",
+            "دهنتو ببند", "دهن تو ببند", "حرف نزن", "سکوت کن", "بخواب",
+            "/silence", "silence", "shutup", "shut up", "quiet", "mute yourself",
+        ]
+        if any(_admin_low == _h or _admin_low.startswith(_h + " ") for _h in _bot_silence_hits):
+            _sss = "global" if any(_w in _admin_low for _w in ["همه", "همه جا", "همه‌جا", "سراسری", "کل", "global", "all", "everywhere"]) else "chat"
+            _sdur = database.parse_mute_duration_to_sec(user_text) or 3600
+            from src.tools import system as _sys_sil
+            _sres = await _sys_sil.mute_bot_self_tool(duration_sec=_sdur, scope=_sss, caller_id=user.id, chat_id=chat.id if chat else 0)
+            await reply_safely(message, _sres)
+            return
+
+        # 0b. Admin-ordered Bot Wake-Up from silence (highest priority, bypasses mute gate below)
+        _bot_wake_hits = [
+            "بیدار شو", "بیدارشو", "بیدار", "بلند شو", "بلندشو",
+            "/unsilence", "unsilence", "wake up", "wakeup", "speak",
+        ]
+        if any(_admin_low == _h or _admin_low.startswith(_h + " ") or _admin_low.startswith(_h) for _h in _bot_wake_hits):
+            _wss = "all" if any(_w in _admin_low for _w in ["همه", "همه جا", "همه‌جا", "سراسری", "کل", "global", "all", "everywhere"]) else "chat"
+            from src.tools import system as _sys_wake
+            _wres = await _sys_wake.unmute_bot_self_tool(scope=_wss, caller_id=user.id, chat_id=chat.id if chat else 0)
+            await reply_safely(message, _wres)
+            return
+
     if message.reply_to_message and is_admin(user.id) and user_text.strip():
         clean_cmd = user_text.strip().lower()
         target_user = message.reply_to_message.from_user
@@ -3357,6 +3443,12 @@ async def post_init_callback(application):
         logger.info(f"L1 cache warmed with {warmed} keys from Cloudflare KV.")
     except Exception as e:
         logger.warning(f"L1 warmup skipped: {e}")
+    try:
+        restored_silence = await database.restore_bot_self_mute_async()
+        if restored_silence:
+            logger.info(f"Restored {restored_silence} bot self-mute states from KV.")
+    except Exception as e:
+        logger.debug(f"Self-mute restore skipped: {e}")
 
     # Dynamic Credentials Warmup from Cloudflare KV (E2B and GitHub tokens)
     try:
@@ -3605,6 +3697,10 @@ def build_application():
     app.add_handler(_pcmd("mute", mute_command))
     app.add_handler(_pcmd("unmute", unmute_command))
     app.add_handler(_pcmd("mutelist", mutelist_command))
+    app.add_handler(_pcmd("silence", silence_command))
+    app.add_handler(_pcmd("silence_prometheus", silence_command))
+    app.add_handler(_pcmd("unsilence", unsilence_command))
+    app.add_handler(_pcmd("unsilence_prometheus", unsilence_command))
     app.add_handler(_pcmd("ban_prometheus", ban_command))
     app.add_handler(_pcmd("unban_prometheus", unban_command))
     app.add_handler(_pcmd("id", getid_command))

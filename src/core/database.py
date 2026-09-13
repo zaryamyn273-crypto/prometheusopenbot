@@ -43,6 +43,9 @@ _ACTIVE_GROUPS: Dict[int, Dict[str, Any]] = {}
 # Mirrored from D1 `tracked_groups.status == 'pending'` at startup.
 _PENDING_GROUPS: set = set()
 _USER_TIMEZONES: Dict[int, str] = {}
+# Bot Self-Mute State (Admin-directed quiet/silence mode per-chat or global)
+_BOT_SELF_MUTED_CHATS: Dict[int, float] = {}
+_BOT_SELF_MUTED_GLOBAL_UNTIL: float = 0.0
 
 # Asynchronous Write-Behind Batch Message Queue & Worker Guard
 _D1_WRITE_QUEUE: Optional[asyncio.Queue] = None
@@ -2486,6 +2489,138 @@ def is_user_muted(user_id: int, username: str = "") -> float:
                 return _left
             _MUTED_UNTIL.pop(_mapped, None)
     return 0.0
+
+
+# ============================================================================
+# Bot Self-Mute Engine (Admin-ordered silence mode, per-chat or global)
+# RAM-authoritative for sub-millisecond checks; mirrored to Cloudflare KV
+# (global key + per-chat keys + chat index) so states survive restarts.
+# ============================================================================
+
+def is_bot_self_muted(chat_id: int = 0) -> float:
+    """Remaining bot self-silence seconds for this chat (global mute applies everywhere). 0.0 = active."""
+    global _BOT_SELF_MUTED_GLOBAL_UNTIL
+    try:
+        _now = time.time()
+        _g = float(_BOT_SELF_MUTED_GLOBAL_UNTIL or 0.0)
+        if _g > _now:
+            return _g - _now
+        if _g:
+            _BOT_SELF_MUTED_GLOBAL_UNTIL = 0.0
+        try:
+            _cid = int(chat_id or 0)
+        except Exception:
+            _cid = 0
+        if _cid in _BOT_SELF_MUTED_CHATS:
+            _left = float(_BOT_SELF_MUTED_CHATS[_cid]) - _now
+            if _left > 0:
+                return _left
+            _BOT_SELF_MUTED_CHATS.pop(_cid, None)
+    except Exception:
+        pass
+    return 0.0
+
+
+async def _update_bot_self_mute_index_async(chat_id: int, add: bool) -> None:
+    try:
+        raw = await kv_get_cache_async("BOT_SELF_MUTE_INDEX") or ""
+        ids = {p.strip() for p in str(raw).split(",") if p.strip().lstrip("-").isdigit()}
+        key = str(int(chat_id))
+        if add:
+            ids.add(key)
+        else:
+            ids.discard(key)
+        await kv_set_cache_async("BOT_SELF_MUTE_INDEX", ",".join(sorted(ids)), expiration_ttl=604800, cloud_min_interval_sec=60)
+    except Exception:
+        pass
+
+
+async def mute_bot_self_async(chat_id: int = 0, duration_sec: int = 3600, reason: str = "", muted_by: int = 0, scope: str = "chat") -> float:
+    """Silence the bot itself. scope='chat' (this chat only) or 'global' (everywhere). Returns applied seconds."""
+    global _BOT_SELF_MUTED_GLOBAL_UNTIL
+    try:
+        _dur = max(60, int(duration_sec or 0))
+    except Exception:
+        _dur = 3600
+    _until = time.time() + _dur
+    clean_scope = (scope or "chat").strip().lower()
+    try:
+        if clean_scope == "global":
+            _BOT_SELF_MUTED_GLOBAL_UNTIL = _until
+            await kv_set_cache_async("BOT_SELF_MUTE_GLOBAL", str(_until), expiration_ttl=min(_dur + 300, 604800), cloud_min_interval_sec=30)
+        else:
+            _cid = int(chat_id or 0)
+            _BOT_SELF_MUTED_CHATS[_cid] = _until
+            await kv_set_cache_async(f"BOT_SELF_MUTE_CHAT_{_cid}", str(_until), expiration_ttl=min(_dur + 300, 604800), cloud_min_interval_sec=30)
+            await _update_bot_self_mute_index_async(_cid, True)
+    except Exception:
+        pass
+    return float(_dur)
+
+
+async def unmute_bot_self_async(chat_id: int = 0, scope: str = "chat") -> bool:
+    """Wake the bot. scope='chat' | 'global' | 'all'."""
+    global _BOT_SELF_MUTED_GLOBAL_UNTIL
+    try:
+        clean_scope = (scope or "chat").strip().lower()
+        if clean_scope in ("global", "all", "both", "everywhere"):
+            _BOT_SELF_MUTED_GLOBAL_UNTIL = 0.0
+            try:
+                await kv_set_cache_async("BOT_SELF_MUTE_GLOBAL", "0", expiration_ttl=60, cloud_min_interval_sec=10)
+            except Exception:
+                pass
+        if clean_scope in ("chat", "all", "both"):
+            try:
+                _cid = int(chat_id or 0)
+            except Exception:
+                _cid = 0
+            _BOT_SELF_MUTED_CHATS.pop(_cid, None)
+            try:
+                await kv_set_cache_async(f"BOT_SELF_MUTE_CHAT_{_cid}", "0", expiration_ttl=60, cloud_min_interval_sec=10)
+            except Exception:
+                pass
+            await _update_bot_self_mute_index_async(_cid, False)
+    except Exception:
+        pass
+    return True
+
+
+async def restore_bot_self_mute_async() -> int:
+    """Reload persisted self-mute states from KV after restart. Returns restored count."""
+    global _BOT_SELF_MUTED_GLOBAL_UNTIL
+    restored = 0
+    try:
+        g = await kv_get_cache_async("BOT_SELF_MUTE_GLOBAL")
+        if g:
+            try:
+                _gv = float(str(g).strip())
+            except Exception:
+                _gv = 0.0
+            if _gv > time.time():
+                _BOT_SELF_MUTED_GLOBAL_UNTIL = _gv
+                restored += 1
+    except Exception:
+        pass
+    try:
+        raw = await kv_get_cache_async("BOT_SELF_MUTE_INDEX") or ""
+        for part in str(raw).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                cid = int(part)
+            except Exception:
+                continue
+            try:
+                v = await kv_get_cache_async(f"BOT_SELF_MUTE_CHAT_{cid}")
+                if v and float(str(v).strip()) > time.time():
+                    _BOT_SELF_MUTED_CHATS[cid] = float(str(v).strip())
+                    restored += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return restored
 
 
 async def get_muted_users_detailed_async():
