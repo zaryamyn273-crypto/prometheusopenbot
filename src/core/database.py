@@ -1391,6 +1391,84 @@ async def save_message_async(
         except RuntimeError:
             pass
 
+
+async def get_recent_message_ids_for_purge_async(
+    chat_id: int,
+    count: int = 10,
+    only_bot: bool = True
+) -> List[int]:
+    """
+    Returns message_ids in reverse chronological order (newest first).
+    If only_bot is True, returns only assistant messages.
+    Checks RAM first, then D1 database if needed.
+    """
+    clean_chat_id = int(chat_id) if isinstance(chat_id, (int, str)) and str(chat_id).lstrip("-").isdigit() else 0
+    if not clean_chat_id:
+        return []
+
+    target_count = max(1, min(100, int(count)))
+    collected: List[int] = []
+    seen = set()
+
+    # 1. Inspect in-memory RAM buffer
+    if clean_chat_id in _CHAT_HISTORIES and _CHAT_HISTORIES[clean_chat_id]:
+        for m in reversed(_CHAT_HISTORIES[clean_chat_id]):
+            mid = int(m.get("message_id") or 0)
+            role = str(m.get("role") or "").lower()
+            if mid > 0 and mid not in seen:
+                if not only_bot or role == "assistant":
+                    collected.append(mid)
+                    seen.add(mid)
+                    if len(collected) >= target_count:
+                        return collected
+
+    # 2. Query D1 database if RAM did not have enough
+    if len(collected) < target_count:
+        needed = target_count - len(collected)
+        try:
+            cond = "AND role = 'assistant'" if only_bot else ""
+            sql = f"SELECT message_id FROM messages WHERE chat_id = ? {cond} AND message_id > 0 ORDER BY id DESC LIMIT ?"
+            d1_rows = await execute_d1_query(sql, [clean_chat_id, needed + 10])
+            for r in d1_rows:
+                mid = int(r.get("message_id") or 0)
+                if mid > 0 and mid not in seen:
+                    collected.append(mid)
+                    seen.add(mid)
+                    if len(collected) >= target_count:
+                        break
+        except Exception as e:
+            logger.debug(f"D1 message ids query error: {e}")
+
+    return collected
+
+
+async def purge_messages_from_db_and_ram_async(chat_id: int, message_ids: List[int]) -> int:
+    """Removes given message IDs from both in-memory buffer and D1 persistent storage."""
+    clean_chat_id = int(chat_id) if isinstance(chat_id, (int, str)) and str(chat_id).lstrip("-").isdigit() else 0
+    if not clean_chat_id or not message_ids:
+        return 0
+
+    id_set = set(int(mid) for mid in message_ids if int(mid) > 0)
+    if not id_set:
+        return 0
+
+    # 1. Clean from in-memory RAM
+    if clean_chat_id in _CHAT_HISTORIES and _CHAT_HISTORIES[clean_chat_id]:
+        _CHAT_HISTORIES[clean_chat_id] = [
+            m for m in _CHAT_HISTORIES[clean_chat_id]
+            if int(m.get("message_id") or 0) not in id_set
+        ]
+
+    # 2. Clean from D1 database
+    try:
+        placeholders = ",".join("?" for _ in id_set)
+        sql = f"DELETE FROM messages WHERE chat_id = ? AND message_id IN ({placeholders})"
+        await execute_d1_query(sql, [clean_chat_id, *list(id_set)])
+    except Exception as e:
+        logger.debug(f"D1 purge deletion error: {e}")
+
+    return len(id_set)
+
 async def get_chat_context_async(chat_id: int, max_tokens: int = 20000) -> List[Dict[str, Any]]:
     clean_chat_id = int(chat_id) if isinstance(chat_id, (int, str)) and str(chat_id).lstrip("-").isdigit() else 0
     if not clean_chat_id:

@@ -732,3 +732,64 @@ async def cancel_scheduled_task_tool(
         return f"✅ {msg}"
     return f"❌ {msg}"
 
+
+# ==========================================
+# 6. Bulk Message Deletion & Cleanup
+# ==========================================
+
+@register_tool(
+    name="purge_chat_messages_tool",
+    description="حذف دسته‌جمعی و پاک‌سازی پیام‌های اخیر ربات در گروه یا چت جاری بر اساس تعداد درخواستی ادمین (مثال: حذف ۱۰ پیام آخر)",
+    category="admin"
+)
+async def purge_chat_messages_tool(
+    count: int = 10,
+    only_bot: bool = True,
+    chat_id: int = 0,
+    caller_id: int = 0
+) -> str:
+    """
+    :param count: تعداد پیام‌هایی که باید حذف شوند (۱ تا ۱۰۰، پیش‌فرض ۱۰)
+    :param only_bot: فقط پیام‌های خود ربات حذف شوند (True) یا پیام‌های کلی (False)
+    :param chat_id: شناسه عددی چت
+    """
+    from src.core.config import ADMIN_ID
+    if caller_id and int(caller_id) != int(ADMIN_ID):
+        return "⛔ حذف دسته‌جمعی پیام‌ها منحصراً در انحصار فرمانده ارشد یا مدیر گروه است."
+
+    target_count = max(1, min(100, int(count or 10)))
+    clean_cid = int(chat_id or 0)
+    if not clean_cid:
+        return "❌ شناسه چت نامعتبر است."
+
+    mids = await database.get_recent_message_ids_for_purge_async(clean_cid, count=target_count, only_bot=only_bot)
+    if not mids:
+        return "ℹ️ پیامی از ربات در این چت برای حذف یافت نشد."
+
+    from src.tools.admin import group_manager
+    bot_inst = group_manager.get_bot_instance()
+    if not bot_inst:
+        return "❌ کلاینت تلگرام در دسترس نیست."
+
+    deleted_count = 0
+    try:
+        await bot_inst.delete_messages(chat_id=clean_cid, message_ids=mids)
+        deleted_count = len(mids)
+    except Exception:
+        for mid in mids:
+            try:
+                await bot_inst.delete_message(chat_id=clean_cid, message_id=mid)
+                deleted_count += 1
+            except Exception:
+                pass
+
+    if deleted_count > 0:
+        await database.purge_messages_from_db_and_ram_async(clean_cid, mids)
+        filter_label = "از پیام‌های ارسالی من" if only_bot else "از پیام‌های اخیر"
+        return f"🗑️ *عملیات حذف دسته‌جمعی انجام شد:*\nتعداد *{deleted_count}* پیام {filter_label} با موفقیت از چت و حافظه سیستم پاک‌سازی گردید."
+    return "❌ خطا در حذف پیام‌ها از تلگرام (عدم دسترسی کافی یا انقضای زمان پیام)."
+
+
+# Auto-register Railway Cloud Control tools
+from src.tools.system import railway_control  # noqa: F401
+

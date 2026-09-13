@@ -38,6 +38,12 @@
 - **Cuota diaria justa:** cada usuario recibe `DAILY_USER_LIMIT` (40 por defecto) respuestas completas de IA al día en todos los chats; reinicio automático cada 24 h (00:00 UTC), sin cron; admin ilimitado y puede ajustar la cuota de cada uno (`/setquota`, `/resetquota`). `/limit` muestra el saldo.
 - **El admin no necesita slash:** las órdenes en lenguaje natural se ejecutan directamente («leave group X», lista de grupos, «set quota for X to 100»...) — sin adivinar, con verificación en vivo.
 - **Seguridad de grupos:** entrar requiere aprobación del admin (botones en privado), lista en vivo desde Telegram, historial conservado al salir, y salidas siempre puntuales y verificadas.
+- **Eliminación masiva de mensajes (`/purge`, `/del`):** borrado sincronizado de mensajes del bot por comandos o lenguaje natural («elimina tus últimos 10 mensajes») en Telegram, Cloudflare D1 y RAM.
+- **Gestión Cloud de Railway (`/railway`):** monitorización de estado de contenedores, inspección de variables y redespliegues inmediatos sin claves en el repositorio.
+- **OSINT profundo (`osint_person_dossier`):** recopilación paralela de huellas digitales en GitHub, Keybase, Telegram, Reddit, HackerNews y web.
+- **Automatización de GitHub y empaquetado:** creación de repositorios, commits automáticos, generación de `PKGBUILD` (Arch Linux / AUR) y `CMakeLists.txt` (C++20).
+- **Reconstrucción matemática de códigos de barras:** resolución de dígitos dañados (`??`) con Modulo-10/11 y tabla oficial de prefijos de países GS1.
+- **Planificador de tareas y cron internacional:** tareas programadas persistentes en Cloudflare D1 con detección automática de zona horaria por idioma y ciudad.
 
 ---
 

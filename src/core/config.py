@@ -90,6 +90,27 @@ def set_github_token(token: str) -> None:
     GITHUB_TOKEN = clean_t
     os.environ["GITHUB_TOKEN"] = clean_t
 
+
+# --- Railway Cloud Management (OPTIONAL — مدیریت مستقیم زیرساخت و ریپوی ریلوی) ---
+RAILWAY_TOKEN = (os.getenv("RAILWAY_TOKEN", "") or os.getenv("RAILWAY_API_TOKEN", "")).strip()
+
+
+def get_railway_token() -> str:
+    global RAILWAY_TOKEN
+    return (RAILWAY_TOKEN or os.getenv("RAILWAY_TOKEN", "") or os.getenv("RAILWAY_API_TOKEN", "")).strip()
+
+
+def set_railway_token(token: str) -> None:
+    global RAILWAY_TOKEN
+    clean_t = (token or "").strip()
+    RAILWAY_TOKEN = clean_t
+    os.environ["RAILWAY_TOKEN"] = clean_t
+    os.environ["RAILWAY_API_TOKEN"] = clean_t
+
+
+def has_railway() -> bool:
+    return bool(get_railway_token())
+
 # --- YouTube cookies (OPTIONAL — دور زدن بات‌چک یوتیوب در IPهای دیتاسنتر) ---
 # اگه yt-dlp با خطای "Sign in to confirm you're not a bot" مواجه شد، یه فایل
 # کوکی Netscape (خروجی افزونه Get cookies.txt) رو mount کن و مسیرش رو اینجا بده.
@@ -192,6 +213,8 @@ SYSTEM_PROMPT = """شما «پرومته سوپر ایجنت» (Prometheus Super
    - تولید فایل ساخت پروژه سی و سی‌پلاس‌پلاس ➔ `github_generate_cmake`
    - ردیابی هویت عمومی، استخراج پرونده دیجیتال و شناسایی ردپای افراد (OSINT) ➔ `osint_person_dossier`
    - بازسازی و ترمیم بارکدهای مخدوش و آسیب‌دیده یا استعلام کشور سازنده GS1 ➔ `reconstruct_damaged_barcode_tool`
+   - حذف دسته‌جمعی پیام‌های ارسالی ربات در چت یا گروه به دستور ادمین (مانند «۱۰ تا پیام آخرت رو پاک کن») ➔ `purge_chat_messages_tool`
+   - نظارت، استعلام وضعیت و ری‌دیپلوی کانتینرهای پروژه در ریلوی ➔ `railway_status_tool` و `railway_redeploy_tool`
 
 2. تعامل کامل و پیوسته با حافظه ابری Cloudflare (D1 SQL & KV):
    - هر زمان که کاربر صراحتاً درباره سوابق گذشته، پیام‌های قبلی گروه، یا محتوای ویس‌های دیروز/سابق سوال کرد ➔ از ابزار `search_conversation_history` برای واکشی اطلاعات از D1 استفاده کن.

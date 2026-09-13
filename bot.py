@@ -820,6 +820,9 @@ async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = await system.execute_python_code(code_text, caller_id=caller_id, is_private_chat=is_pv)
     await reply_safely(message, res)
 
+_ADMIN_SHELL_CWD: Dict[int, str] = {}
+
+
 async def sh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Direct Terminal Shell Command (Bash/Linux) - Exclusively for Master Admin."""
     user = update.effective_user
@@ -835,48 +838,120 @@ async def sh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not cmd_text and message.reply_to_message:
         cmd_text = message.reply_to_message.text or ""
 
+    if not cmd_text:
+        ulang, _ = _ulang_of(update)
+        await reply_safely(message, t(ulang, "sh_usage"))
+        return
+
     # Red line 3: destructive shell stays blocked even for the Master Admin.
     from src.tools import system
     if system.is_destructive_shell_command(cmd_text.strip()):
         await reply_safely(message, "⛔ این دستور شل مخرب/حساس است و هرگز اجرا نمی‌شود (حتی به دستور ادمین).")
         return
 
-    if not cmd_text:
-        ulang, _ = _ulang_of(update)
-        await reply_safely(message, t(ulang, "sh_usage"))
-        return
+    # Persistent working directory tracking
+    cwd = _ADMIN_SHELL_CWD.get(chat.id, os.getcwd())
+    trimmed_cmd = cmd_text.strip()
+    if trimmed_cmd == "cd" or trimmed_cmd.startswith("cd "):
+        target_dir = trimmed_cmd[3:].strip() or os.path.expanduser("~")
+        new_cwd = os.path.abspath(os.path.join(cwd, target_dir))
+        if os.path.isdir(new_cwd):
+            _ADMIN_SHELL_CWD[chat.id] = new_cwd
+            await message.reply_text(f"📁 <b>مسیر جاری تغییر یافت:</b> <code>{html.escape(new_cwd)}</code>", parse_mode=ParseMode.HTML)
+            return
+        else:
+            await message.reply_text(f"❌ دایرکتوری یافت نشد: <code>{html.escape(new_cwd)}</code>", parse_mode=ParseMode.HTML)
+            return
+
+    # Inject authenticated credentials into shell environment
+    env = dict(os.environ)
+    from src.core import config as _cfg
+    rw_token = _cfg.get_railway_token()
+    if rw_token:
+        env["RAILWAY_TOKEN"] = rw_token
+        env["RAILWAY_API_TOKEN"] = rw_token
+    gh_token = _cfg.get_github_token()
+    if gh_token:
+        env["GITHUB_TOKEN"] = gh_token
 
     import asyncio.subprocess as _asp
+    import io
+    t_start = time.perf_counter()
     try:
         proc = await asyncio.create_subprocess_shell(
             cmd_text,
             stdout=_asp.PIPE,
-            stderr=_asp.PIPE
+            stderr=_asp.PIPE,
+            cwd=cwd,
+            env=env
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=12.0)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=35.0)
+            elapsed_ms = int((time.perf_counter() - t_start) * 1000)
+            exit_code = proc.returncode
             out = stdout.decode("utf-8", errors="replace").strip()
             err = stderr.decode("utf-8", errors="replace").strip()
             result_str = out if out else (err if err else "(دستور بدون خروجی متنی با موفقیت پایان یافت)")
-            
+
             # Mask sensitive tokens/passwords if executed inside a group
             masked_str, redacted = system.mask_sensitive_shell_output(result_str, is_private_chat=is_pv)
+
+            status_badge = f"کد خروج: {exit_code} | زمان: {elapsed_ms}ms"
+
             if len(masked_str) > 3500:
-                masked_str = masked_str[:3500] + "\n... [خروجی به دلیل محدودیت تلگرام خلاصه شد]"
-            
-            group_notice = "\n\n🔒 <i>[برای اطلاعات کامل به پیوی مراجعه بکنید.]</i>" if (not is_pv and not redacted) else ""
-            await message.reply_text(
-                f"💻 <b>فرمان لینوکس اجرا شد:</b> <code>{html.escape(cmd_text[:300])}</code>\n\n<pre><code>{html.escape(masked_str)}</code></pre>{group_notice}",
-                parse_mode=ParseMode.HTML
-            )
+                truncated_preview = masked_str[:2500] + "\n\n... [خروجی کامل به صورت فایل لاگ ضمیمه شد]"
+                group_notice = "\n\n🔒 <i>[برای اطلاعات کامل به پیوی مراجعه بکنید.]</i>" if (not is_pv and not redacted) else ""
+                await message.reply_text(
+                    f"💻 <b>فرمان اجرا شد ({status_badge}):</b>\n<code>{html.escape(cmd_text[:300])}</code>\n\n<pre><code>{html.escape(truncated_preview)}</code></pre>{group_notice}",
+                    parse_mode=ParseMode.HTML
+                )
+                doc_file = io.BytesIO(result_str.encode("utf-8"))
+                doc_file.name = "shell_output.log"
+                await chat.send_document(
+                    document=doc_file,
+                    caption=f"📄 خروجی کامل دستور: {cmd_text[:60]} ({status_badge})"
+                )
+            else:
+                group_notice = "\n\n🔒 <i>[برای اطلاعات کامل به پیوی مراجعه بکنید.]</i>" if (not is_pv and not redacted) else ""
+                await message.reply_text(
+                    f"💻 <b>فرمان اجرا شد ({status_badge}):</b>\n<code>{html.escape(cmd_text[:300])}</code>\n\n<pre><code>{html.escape(masked_str)}</code></pre>{group_notice}",
+                    parse_mode=ParseMode.HTML
+                )
         except asyncio.TimeoutError:
             try:
                 proc.kill()
             except Exception:
                 pass
-            await message.reply_text("⏱ زمان اجرای دستور شل به پایان رسید (Timeout 12s).")
+            await message.reply_text("⏱ زمان اجرای دستور شل به پایان رسید (Timeout 35s).")
     except Exception as e:
         await message.reply_text(f"❌ خطای اجرای شل:\n<code>{html.escape(str(e)[:300])}</code>", parse_mode=ParseMode.HTML)
+
+
+async def railway_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Railway cloud management: /railway status | /railway redeploy [service] | /railway vars"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not is_admin(user.id):
+        return
+    args = context.args or []
+    subcmd = args[0].lower() if args else "status"
+    from src.tools.system import railway_control as _rw
+    if subcmd in ("status", "info"):
+        res = await _rw.railway_status_tool(caller_id=user.id)
+    elif subcmd in ("redeploy", "restart"):
+        svc = args[1] if len(args) > 1 else "prometheusopenbot"
+        res = await _rw.railway_redeploy_tool(service_name=svc, caller_id=user.id)
+    elif subcmd in ("vars", "variables", "env"):
+        svc = args[1] if len(args) > 1 else "prometheusopenbot"
+        res = await _rw.railway_variables_tool(service_name=svc, caller_id=user.id)
+    else:
+        res = (
+            "🚂 <b>دستورات کنترل ریلوی (Railway Manager):</b>\n\n"
+            "• <code>/railway status</code> — استعلام زنده وضعیت سرویس‌ها و دیپلوی‌ها\n"
+            "• <code>/railway redeploy [service]</code> — ری‌دیپلوی و ری‌استارت فوری سرویس\n"
+            "• <code>/railway vars [service]</code> — مشاهده متغیرهای محیطی با امنیت کامل"
+        )
+    await reply_safely(message, res)
 
 
 async def e2b_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1144,8 +1219,10 @@ async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Deletes the replied-to target message (especially the bot's own message or any target message)
-    when commanded by the Admin or Group Administrator.
+    Deletes the replied-to target message, or bulk deletes recent messages when given a count:
+    Usage:
+      - Reply to a message with /del to delete that specific message.
+      - /del <count> or /purge <count> or /clean <count> to bulk delete recent bot messages.
     """
     message = update.effective_message
     user = update.effective_user
@@ -1154,7 +1231,6 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user or database.is_user_banned(user.id):
         return
 
-    # Check permissions: Admin or Group Administrator
     is_authorized = is_admin(user.id)
     if not is_authorized and chat.type != ChatType.PRIVATE:
         try:
@@ -1167,10 +1243,56 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized:
         return
 
+    args = context.args or []
+    count_arg = None
+    if args:
+        raw_num = re.sub(r"[۰-۹]", lambda m: str(ord(m.group(0)) - ord('۰')), str(args[0]).strip())
+        if raw_num.isdigit():
+            count_arg = int(raw_num)
+
     target_msg = message.reply_to_message
+
+    # Case 1: Bulk deletion requested via /del <count> or /purge <count>
+    if count_arg is not None and count_arg > 0:
+        target_count = min(100, max(1, count_arg))
+        mids = await database.get_recent_message_ids_for_purge_async(chat.id, count=target_count, only_bot=True)
+        if not mids:
+            await reply_safely(message, "ℹ️ پیامی از ربات در این چت برای حذف یافت نشد.")
+            return
+
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        deleted_count = 0
+        try:
+            await context.bot.delete_messages(chat_id=chat.id, message_ids=mids)
+            deleted_count = len(mids)
+        except Exception:
+            for mid in mids:
+                try:
+                    await context.bot.delete_message(chat_id=chat.id, message_id=mid)
+                    deleted_count += 1
+                except Exception:
+                    pass
+
+        if deleted_count > 0:
+            await database.purge_messages_from_db_and_ram_async(chat.id, mids)
+            conf = await chat.send_message(f"🗑️ <b>{deleted_count} پیام از پیام‌های ارسالی من با موفقیت حذف شد.</b>", parse_mode=ParseMode.HTML)
+            async def _del_conf():
+                await asyncio.sleep(4.0)
+                try:
+                    await conf.delete()
+                except Exception:
+                    pass
+            asyncio.create_task(_del_conf())
+        return
+
+    # Case 2: Replied target message deletion
     if not target_msg:
         ulang_del, _ = _ulang_of(update)
-        await message.reply_text(t(ulang_del, "del_hint"))
+        await message.reply_text(t(ulang_del, "del_hint") + "\n\n💡 برای حذف دسته‌جمعی پیام‌ها: <code>/purge &lt;تعداد&gt;</code> یا <code>/del &lt;تعداد&gt;</code>", parse_mode=ParseMode.HTML)
         return
 
     # Delete replied message and command message
@@ -3135,6 +3257,12 @@ def build_application():
     app.add_handler(_pcmd("delete", delete_command))
     app.add_handler(_pcmd("del_prometheus", delete_command))
     app.add_handler(_pcmd("delete_prometheus", delete_command))
+    app.add_handler(_pcmd("purge", delete_command))
+    app.add_handler(_pcmd("purge_prometheus", delete_command))
+    app.add_handler(_pcmd("clean", delete_command))
+    app.add_handler(_pcmd("clean_prometheus", delete_command))
+    app.add_handler(_pcmd("railway", railway_command))
+    app.add_handler(_pcmd("railway_prometheus", railway_command))
     app.add_handler(_pcmd("remind", remind_command))
     app.add_handler(_pcmd("schedule", remind_command))
     app.add_handler(_pcmd("remind_prometheus", remind_command))

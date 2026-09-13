@@ -818,7 +818,8 @@ async def generate_response(
                 "e2b_run_code", "e2b_run_command", "e2b_status", "execute_python_code",
                 "schedule_task_tool", "set_user_timezone_tool", "list_scheduled_tasks_tool", "cancel_scheduled_task_tool",
                 "github_create_repository", "github_create_or_update_file", "github_generate_pkgbuild", "github_generate_cmake",
-                "osint_person_dossier"
+                "osint_person_dossier", "purge_chat_messages_tool",
+                "railway_status_tool", "railway_redeploy_tool", "railway_variables_tool"
             }
             called_names = [tc.get("function", {}).get("name") for tc in tool_calls]
             all_self_contained = all(fn in direct_tools for fn in called_names if fn)
