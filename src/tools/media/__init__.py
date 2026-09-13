@@ -76,35 +76,44 @@ def _title_match_score(query_tokens: List[str], title: str) -> float:
 
 _MAX_MP3_BYTES = 25 * 1024 * 1024  # Telegram Bot API audio limit
 
+# High-Reliability Persian & International Music Portals (Fast Direct CDNs with zero-geoblock)
 MUSIC_PORTALS = [
-    ("https://rozmusic.com/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
-    ("https://muzicir.com/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
-    ("https://iraanmusic.ir/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
     ("https://music-fa.com/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
     ("https://upmusics.com/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
-    ("https://golsarmusic.ir/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
     ("https://tabamusic.com/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
+    ("https://behmelody.in/?s={q}", r'<a\s+title=[\"\']([^\"\']+)[\"\']\s+href=[\"\'](https?://behmelody\.in/[^\"\']+)[\"\']'),
+    ("https://golsarmusic.ir/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
+    ("https://muzicir.com/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
     ("https://nex1music.ir/?s={q}", r'<div class=[\"\']ps_title[\"\']>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</div>'),
+    ("https://rozmusic.com/?s={q}", r'<h2[^>]*>.*?<a\s+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>.*?</h2>'),
 ]
 
-async def _crawl_single_portal(client: httpx.AsyncClient, url_pattern: str, regex_pattern: str, clean_q: str, query_tokens: List[str]) -> Optional[Dict[str, Any]]:
+async def _crawl_single_portal(client: httpx.AsyncClient, url_pattern: str, regex_pattern: str, clean_q: str, query_tokens: List[str]) -> List[Dict[str, Any]]:
     enc = urllib.parse.quote(clean_q)
-    best: Optional[Dict[str, Any]] = None
-    best_score = 0.0
+    portal_candidates: List[Dict[str, Any]] = []
     try:
-        r = await client.get(url_pattern.format(q=enc), timeout=4.5, follow_redirects=True)
+        r = await client.get(url_pattern.format(q=enc), timeout=3.5, follow_redirects=True)
         if r.status_code == 200:
             matches = re.findall(regex_pattern, r.text, re.DOTALL | re.IGNORECASE)
-            for href, raw_t in matches[:5]:
+            for m in matches[:4]:
+                if len(m) == 2:
+                    href, raw_t = (m[0], m[1]) if m[0].startswith("http") else (m[1], m[0])
+                else:
+                    continue
+
+                clean_title = BeautifulSoup(raw_t, "html.parser").get_text().strip()
+                clean_title = re.sub(r'دانلود آهنگ|دانلود اهنگ|ریمیکس|موزیک|mp3', '', clean_title, flags=re.I).strip(" -—")
+
+                score = _title_match_score(query_tokens, clean_title)
+                if score < 0.35:
+                    continue
+
                 try:
-                    p_res = await client.get(href, timeout=4.5, follow_redirects=True)
+                    p_res = await client.get(href, timeout=3.0, follow_redirects=True)
                 except Exception:
                     continue
                 if p_res.status_code == 200:
-                    # Search for direct MP3 links
                     mp3s = re.findall(r'href=[\"\'](https?://[^\"\']+\.mp3)[\"\']', p_res.text, re.IGNORECASE)
-
-                    # Filter out previews, voice adverts, teaser samples, and short demos
                     valid_mp3s = []
                     for m in mp3s:
                         m_low = m.lower()
@@ -117,19 +126,10 @@ async def _crawl_single_portal(client: httpx.AsyncClient, url_pattern: str, rege
                         valid_mp3s.append(m)
 
                     if valid_mp3s:
-                        # Prioritize 320 kbps (highest quality studio full track), then 128 kbps full tracks
-                        mp3_320 = [m for m in valid_mp3s if "320" in m]
+                        mp3_320 = [m for m in valid_mp3s if "320" in m or "(2)" in m]
                         mp3_128 = [m for m in valid_mp3s if "128" in m]
                         chosen = mp3_320[0] if mp3_320 else (mp3_128[0] if mp3_128 else valid_mp3s[0])
 
-                        clean_title = BeautifulSoup(raw_t, "html.parser").get_text().strip()
-                        clean_title = re.sub(r'دانلود آهنگ|دانلود اهنگ|ریمیکس|موزیک|mp3', '', clean_title, flags=re.I).strip(" -—")
-
-                        score = _title_match_score(query_tokens, clean_title)
-                        if score <= best_score:
-                            continue
-
-                        # Extract performer (singer) from page: og tags, byline, or title split
                         performer = ""
                         try:
                             soup_p = BeautifulSoup(p_res.text, "html.parser")
@@ -145,97 +145,104 @@ async def _crawl_single_portal(client: httpx.AsyncClient, url_pattern: str, rege
                         if not performer and ("–" in clean_title or "-" in clean_title):
                             performer = re.split(r"[–-]", clean_title)[0].strip()[:60]
 
-                        # Extract cover image if present
                         img_match = re.search(r'<img[^>]+src=[\"\'](https?://[^\"\']+\.(?:jpg|jpeg|png))[\"\']', p_res.text, re.IGNORECASE)
                         cover_url = img_match.group(1) if img_match else ""
 
-                        best_score = score
-                        best = {
+                        portal_candidates.append({
                             "title": clean_title or clean_q.title(),
                             "performer": performer or "هنرمند",
                             "url": chosen,
                             "cover": cover_url,
-                            "quality": "320kbps Original Full Track" if ("320" in chosen) else "128kbps HQ",
+                            "quality": "320kbps Original Full Track" if ("320" in chosen or "(2)" in chosen) else "128kbps HQ",
                             "match_score": round(score, 2),
-                        }
+                        })
     except Exception:
         pass
-    return best
+    return portal_candidates
 
-async def _search_persian_music_parallel(clean_q: str) -> Optional[Dict[str, Any]]:
+async def _search_persian_music_parallel(clean_q: str) -> List[Dict[str, Any]]:
     client = get_async_client()
     query_tokens = _tokenize_fa(clean_q)
     tasks = [_crawl_single_portal(client, pat, reg, clean_q, query_tokens) for pat, reg in MUSIC_PORTALS]
 
-    # Collect ALL portal results, return the best title match (not the fastest)
-    best: Optional[Dict[str, Any]] = None
-    best_score = 0.0
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    all_candidates: List[Dict[str, Any]] = []
     for res in results:
-        if isinstance(res, dict) and res.get("url") and res.get("match_score", 0) > best_score:
-            best, best_score = res, res["match_score"]
-    # Accept weak matches only when nothing better exists
-    if best is None:
-        for res in results:
-            if isinstance(res, dict) and res.get("url"):
-                return res
-    return best
+        if isinstance(res, list):
+            all_candidates.extend(res)
+        elif isinstance(res, dict) and res.get("url"):
+            all_candidates.append(res)
+    
+    # Sort candidates: high match_score first, 320kbps preferred
+    all_candidates.sort(key=lambda x: (x.get("match_score", 0), 1 if "320" in x.get("quality", "") else 0), reverse=True)
+    return all_candidates
 
-async def _fetch_portal_track(client: httpx.AsyncClient, page_url: str, query_tokens: List[str], fallback_title: str) -> Optional[Dict[str, Any]]:
-    """Extracts best MP3 from an already-discovered portal page URL."""
+async def _stream_candidate_mp3(url: str, max_bytes: int = _MAX_MP3_BYTES) -> Optional[bytes]:
+    """Streams MP3 bytes with speed guard (max 10s or fallback to direct Telegram URL streaming)."""
+    if not url or not url.startswith("http"):
+        return None
     try:
-        p_res = await client.get(page_url, timeout=4.5, follow_redirects=True)
-    except Exception:
-        return None
-    if p_res.status_code != 200:
-        return None
-    mp3s = re.findall(r'href=[\"\'](https?://[^\"\']+\.mp3)[\"\']', p_res.text, re.IGNORECASE)
-    valid = [m for m in mp3s if not any(b in m.lower() for b in ['voice', 'advert', 'ads', 'intro', 'teaser', 'demo', '64.mp3', 'sample', 'preview'])]
-    if not valid:
-        return None
-    mp3_320 = [m for m in valid if "320" in m]
-    mp3_128 = [m for m in valid if "128" in m]
-    chosen = mp3_320[0] if mp3_320 else (mp3_128[0] if mp3_128 else valid[0])
-    title_m = re.search(r'<h1[^>]*>(.*?)</h1>', p_res.text, re.DOTALL | re.IGNORECASE)
-    title = BeautifulSoup(title_m.group(1), "html.parser").get_text().strip() if title_m else fallback_title
-    title = re.sub(r'دانلود آهنگ|دانلود اهنگ|ریمیکس|موزیک|mp3', '', title, flags=re.I).strip(" -—")
-    performer = ""
-    try:
-        soup_p = BeautifulSoup(p_res.text, "html.parser")
-        og = soup_p.find("meta", attrs={"property": "og:audio:artist"})
-        if og and og.get("content"):
-            performer = og["content"].strip()
-    except Exception:
-        pass
-    if not performer and ("–" in title or "-" in title):
-        performer = re.split(r"[–-]", title)[0].strip()[:60]
-    img_m = re.search(r'<img[^>]+src=[\"\'](https?://[^\"\']+\.(?:jpg|jpeg|png))[\"\']', p_res.text, re.IGNORECASE)
-    return {
-        "title": title or fallback_title,
-        "performer": performer or "هنرمند",
-        "url": chosen,
-        "cover": img_m.group(1) if img_m else "",
-        "quality": "320kbps Original Full Track" if ("320" in chosen) else "128kbps HQ",
-        "match_score": round(_title_match_score(query_tokens, title), 2),
-    }
+        async with shared_client_ctx("stream") as dl_client:
+            cdn_buf = io.BytesIO()
+            to = httpx.Timeout(12.0, connect=2.8)
+            t_start = time.perf_counter()
+            async with dl_client.stream("GET", url, timeout=to) as r_cdn:
+                if r_cdn.status_code == 200:
+                    async for chunk in r_cdn.aiter_bytes(chunk_size=65536):
+                        cdn_buf.write(chunk)
+                        # Speed check: if CDN is throttled (<200KB/s after 4.5s), abort and fallback to URL
+                        if time.perf_counter() - t_start > 4.5 and cdn_buf.tell() < 800_000:
+                            logger.debug(f"CDN {url[:50]} throttled, falling back to direct URL mode")
+                            return None
+                        if cdn_buf.tell() > max_bytes:
+                            break
+                    raw = cdn_buf.getvalue()
+                    if 1_200_000 <= len(raw) <= max_bytes:
+                        return raw
+    except Exception as e:
+        logger.debug(f"Direct stream download of candidate failed: {e}")
+    return None
 
-_PORTAL_DOMAINS = ["rozmusic.com", "muzicir.com", "iraanmusic.ir", "music-fa.com", "upmusics.com", "golsarmusic.ir", "tabamusic.com", "nex1music.ir"]
-
-async def _search_portal_via_google(clean_q: str) -> Optional[Dict[str, Any]]:
-    """Finds the correct portal song page via Google site: search."""
-    client = get_async_client()
-    query_tokens = _tokenize_fa(clean_q)
+async def _search_global_mp3_via_web(clean_q: str, query_tokens: List[str]) -> Optional[Dict[str, Any]]:
+    """Universal MP3 link discovery via web search (covers international, English & rare songs)."""
     try:
         from src.tools import web_network as _web
-        searched = await _web.web_search(f"{' '.join(query_tokens)} site:{_PORTAL_DOMAINS[1]} OR site:{_PORTAL_DOMAINS[0]} دانلود آهنگ", max_results=5)
-        urls = re.findall(r'🔗\s*(https?://[^\s\)]+)', searched)
-        for u in urls:
-            if any(d in u for d in _PORTAL_DOMAINS):
-                track = await _fetch_portal_track(client, u, query_tokens, clean_q)
-                if track and track.get("match_score", 0) >= 0.4:
-                    return track
-    except Exception:
-        pass
+        search_query = f"دانلود آهنگ {clean_q} 320 mp3"
+        searched = await _web.web_search(search_query, max_results=6)
+        page_urls = re.findall(r'https?://[^\s\)\"\']+', searched)
+        if not page_urls:
+            return None
+
+        client = get_async_client()
+        for u in page_urls[:5]:
+            try:
+                r = await client.get(u, timeout=3.5, follow_redirects=True)
+                if r.status_code == 200:
+                    mp3s = re.findall(r'href=[\"\'](https?://[^\"\']+\.mp3)[\"\']', r.text, re.I)
+                    valid = [m for m in mp3s if not any(b in m.lower() for b in ['voice', 'advert', 'ads', 'intro', 'teaser', 'demo', '64.mp3'])]
+                    if valid:
+                        mp3_320 = [m for m in valid if "320" in m]
+                        chosen = mp3_320[0] if mp3_320 else valid[0]
+                        # Quick head check to verify reachability
+                        try:
+                            to = httpx.Timeout(3.5, connect=2.0)
+                            rh = await client.head(chosen, timeout=to)
+                            if rh.status_code in (200, 301, 302):
+                                clen = int(rh.headers.get("content-length") or 0)
+                                if clen >= 1_500_000:
+                                    return {
+                                        "title": clean_q.title(),
+                                        "performer": "Prometheus Music",
+                                        "url": chosen,
+                                        "quality": "320kbps HQ" if "320" in chosen else "128kbps",
+                                        "match_score": 0.85,
+                                    }
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug(f"Global web MP3 discovery error: {e}")
     return None
 
 async def _search_deezer_global_audio(clean_q: str) -> Optional[Dict[str, Any]]:
@@ -346,21 +353,13 @@ async def download_music_track(query: str) -> Any:
     portals_task = asyncio.create_task(_search_persian_music_parallel(clean_q))
     sp_meta_task = asyncio.create_task(_yt.spotify_track_metadata(clean_q))
 
-    meta, res, sp_meta = await asyncio.gather(deezer_task, portals_task, sp_meta_task, return_exceptions=True)
+    meta, candidates, sp_meta = await asyncio.gather(deezer_task, portals_task, sp_meta_task, return_exceptions=True)
     if isinstance(meta, Exception):
         meta = None
-    if isinstance(res, Exception):
-        res = None
+    if isinstance(candidates, Exception) or not isinstance(candidates, list):
+        candidates = []
     if isinstance(sp_meta, Exception):
         sp_meta = None
-
-    # Cover-song guard: requested singer missing from result -> mark as cover
-    if res and isinstance(res, dict):
-        singer_toks = [t for t in t_tokens]
-        got_label = f"{res.get('performer', '')} {res.get('title', '')}".lower()
-        if len(singer_toks) >= 2 and singer_toks[0] not in got_label and res.get("match_score", 0) < 0.8:
-            res["is_cover"] = True
-            res["requested_singer"] = singer_toks[0]
 
     portal_query = clean_q
     if meta and meta.get("performer") not in (None, "", "هنرمند") and meta.get("title"):
@@ -368,50 +367,63 @@ async def download_music_track(query: str) -> Any:
     elif sp_meta and sp_meta.get("artist") and sp_meta.get("title"):
         portal_query = f"{sp_meta['artist']} {sp_meta['title']}"
 
-    # Strategy: Resilient Multi-Tier Audio Engine
-    # 1. If portal provided high quality match (>= 0.6), STREAM MP3 bytes from CDN
-    # (chunked: no 45s full-body timeout, no whole-file RAM spike before threshold).
-    if res and isinstance(res, dict) and res.get("url") and res.get("match_score", 0) >= 0.6:
-        try:
-            async with shared_client_ctx("stream") as dl_client:
-                cdn_buf = io.BytesIO()
-                async with dl_client.stream("GET", res["url"], timeout=60.0) as r_cdn:
-                    if r_cdn.status_code == 200:
-                        async for chunk in r_cdn.aiter_bytes(chunk_size=65536):
-                            cdn_buf.write(chunk)
-                            if cdn_buf.tell() > _MAX_MP3_BYTES:
-                                break
-                cdn_bytes = cdn_buf.getvalue()
-                # Ensure full track: reject teasers/demos (< 3.2MB)
-                if 3_200_000 <= len(cdn_bytes) <= _MAX_MP3_BYTES:
-                    return {
-                        "type": "audio_bytes",
-                        "bytes": cdn_bytes,
-                        "title": res.get("title", clean_q),
-                        "performer": res.get("performer", "هنرمند"),
-                        "thumb": res.get("cover", "") or (sp_meta.get("cover", "") if sp_meta else ""),
-                        "duration": 0,
-                        "caption": (
-                            f"🎵 *قطعه صوتی*: *{res.get('title', clean_q)}*\n"
-                            f"🎤 *خواننده*: *{res.get('performer', 'هنرمند')}*\n"
-                            f"• *کیفیت*: `{res.get('quality', '320kbps HQ')}`\n"
-                            f"• *منبع*: `Original Persian Portal (Direct 320)`"
-                        )
-                    }
-        except Exception as e:
-            logger.debug(f"Direct portal CDN download failed: {e}")
+    # Strategy: Resilient Multi-Tier High-Speed Audio Engine
+    # 1. Try streaming best portal candidates in order of match score
+    for cand in candidates:
+        if cand.get("match_score", 0) < 0.35:
+            continue
+        cdn_bytes = await _stream_candidate_mp3(cand["url"])
+        if cdn_bytes:
+            thumb_url = cand.get("cover") or (sp_meta.get("cover") if sp_meta else "") or (meta.get("cover") if meta else "")
+            return {
+                "type": "audio_bytes",
+                "bytes": cdn_bytes,
+                "title": cand.get("title", clean_q),
+                "performer": cand.get("performer", "هنرمند"),
+                "thumb": thumb_url,
+                "duration": 0,
+                "caption": (
+                    f"🎵 *قطعه صوتی*: *{cand.get('title', clean_q)}*\n"
+                    f"🎤 *خواننده*: *{cand.get('performer', 'هنرمند')}*\n"
+                    f"• *کیفیت*: `{cand.get('quality', '320kbps Original Full Track')}`\n"
+                    f"• *منبع*: `High-Speed Direct Studio CDN`"
+                )
+            }
 
-    # 2. Studio Quality YouTube 320kbps Extraction (Fallback or primary for non-portal tracks)
+    # 2. Universal Global Web MP3 Discovery (Covers International, English, Pop & Indie tracks)
+    web_cand = await _search_global_mp3_via_web(clean_q, t_tokens)
+    if web_cand and web_cand.get("url"):
+        web_bytes = await _stream_candidate_mp3(web_cand["url"])
+        if web_bytes:
+            final_title = (sp_meta.get("title") if sp_meta else (meta.get("title") if meta else clean_q.title()))
+            final_artist = (sp_meta.get("artist") if sp_meta else (meta.get("performer") if meta else "Prometheus Music"))
+            thumb_url = (sp_meta.get("cover") if sp_meta else "") or (meta.get("cover") if meta else "")
+            return {
+                "type": "audio_bytes",
+                "bytes": web_bytes,
+                "title": final_title,
+                "performer": final_artist,
+                "thumb": thumb_url,
+                "duration": 0,
+                "caption": (
+                    f"🎵 *قطعه صوتی*: *{final_title}*\n"
+                    f"🎤 *خواننده*: *{final_artist}*\n"
+                    f"• *کیفیت*: `{web_cand.get('quality', '320kbps HQ')}`\n"
+                    f"• *منبع*: `Direct Global Music CDN`"
+                )
+            }
+
+    # 3. Studio Quality YouTube 320kbps Extraction (Fallback or primary for rare tracks)
     try:
         yt_tokens = _tokenize_fa(portal_query)
         yt_res = await _yt.youtube_download_full_track(portal_query, yt_tokens, sp_meta)
         if yt_res and yt_res.get("audio_bytes"):
-            yt_payload = {
+            return {
                 "type": "audio_bytes",
                 "bytes": yt_res["audio_bytes"],
                 "title": yt_res["title"],
                 "performer": yt_res["performer"],
-                "thumb": yt_res.get("cover", "") or (res.get("cover", "") if res else ""),
+                "thumb": yt_res.get("cover", "") or (meta.get("cover", "") if meta else ""),
                 "duration": yt_res.get("duration_sec", 0),
                 "caption": (
                     f"🎵 *قطعه صوتی*: *{yt_res['title']}*\n"
@@ -420,55 +432,26 @@ async def download_music_track(query: str) -> Any:
                     f"• *کاور*: `Spotify/Apple Music` | *منبع صوت*: `HQ Studio Audio`"
                 ),
             }
-            # Cache the YouTube video ID (tiny JSON) so repeat requests skip
-            # search AND download entirely — re-download streams from the
-            # cached source ID instead of re-running yt-dlp.
-            try:
-                import json as _json
-                _src = str(yt_res.get("source", ""))
-                _vid = _src.split("youtube:", 1)[1] if "youtube:" in _src else ""
-                if _vid:
-                    _meta = {
-                        "type": "yt_id",
-                        "video_id": _vid,
-                        "title": yt_res["title"],
-                        "performer": yt_res["performer"],
-                        "cover": yt_res.get("cover", ""),
-                        "duration_sec": yt_res.get("duration_sec", 0),
-                        "quality": yt_res.get("quality", "Studio Quality 320kbps MP3"),
-                    }
-                    await database.kv_set_cache_async(cache_key, _json.dumps(_meta, ensure_ascii=False), expiration_ttl=86400)
-            except Exception:
-                pass
-            return yt_payload
     except Exception as e:
-        logger.error(f"YouTube strategy failed: {e}")
+        logger.debug(f"YouTube strategy failed: {e}")
 
-    if res and res.get("url"):
-        cover_note = ""
-        if res.get("is_cover"):
-            cover_note = f"\n⚠️ *نسخه اصلی پیدا نشد — این بازخوانی (کاور) است* (خواننده درخواستی: *{res.get('requested_singer', '')}*)\n"
+    # 4. Direct URL fallback if we have any valid candidate URL
+    fallback_cand = candidates[0] if candidates else web_cand
+    if fallback_cand and fallback_cand.get("url"):
         caption = (
-            f"🎵 *قطعه صوتی*: *{res.get('title', clean_q)}*\n"
-            + cover_note +
-            f"🎤 *خواننده*: *{res.get('performer', 'هنرمند')}*\n"
-            f"• *کیفیت*: `{res.get('quality', '320kbps HQ')}`\n\n"
-            f"🔗 [دریافت مستقیم فایل صوتی MP3]({res['url']})"
+            f"🎵 *قطعه صوتی*: *{fallback_cand.get('title', clean_q)}*\n"
+            f"🎤 *خواننده*: *{fallback_cand.get('performer', 'هنرمند')}*\n"
+            f"• *کیفیت*: `{fallback_cand.get('quality', '320kbps HQ')}`\n\n"
+            f"🔗 [دریافت مستقیم فایل صوتی MP3]({fallback_cand['url']})"
         )
-        payload = {
+        return {
             "type": "audio",
-            "url": res["url"],
-            "title": res.get("title", clean_q),
-            "performer": res.get("performer", "هنرمند"),
-            "thumb": res.get("cover", ""),
+            "url": fallback_cand["url"],
+            "title": fallback_cand.get("title", clean_q),
+            "performer": fallback_cand.get("performer", "هنرمند"),
+            "thumb": fallback_cand.get("cover", ""),
             "caption": caption
         }
-        import json
-        try:
-            asyncio.create_task(database.kv_set_cache_async(cache_key, json.dumps(payload, ensure_ascii=False), expiration_ttl=7200))
-        except RuntimeError:
-            await database.kv_set_cache_async(cache_key, json.dumps(payload, ensure_ascii=False), expiration_ttl=7200)
-        return payload
 
     return f"نسخه صوتی کامل برای «{query}» در پایگاه‌های موسیقی یافت نشد."
 

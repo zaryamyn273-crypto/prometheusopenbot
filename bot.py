@@ -523,80 +523,95 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_safely(message, t(ulang, "music_usage"))
         return
 
-    await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_VOICE)
-    from src.tools import media
-    res = await media.download_music_track(query)
-    if isinstance(res, dict) and res.get("caption"):
-        # Same track, user's language on the caption (audio itself is universal).
-        res["caption"] = await _maybe_translate(update, res["caption"])
-    if isinstance(res, dict):
-        # 1. Native MP3 bytes upload
-        if res.get("type") == "audio_bytes" and res.get("bytes"):
+    # Keep-alive uploading action loop so Telegram shows continuous progress
+    upload_active = True
+    async def _keep_uploading():
+        while upload_active:
             try:
-                sent = await _reply_audio_bytes(
-                    message, chat, context,
-                    title=res.get("title", query),
-                    performer=res.get("performer", "Prometheus Audio"),
-                    caption=res.get("caption", ""),
-                    audio_bytes=res["bytes"],
-                    duration=res.get("duration", 0),
-                    thumb_url=res.get("thumb", ""),
-                    thumb_min_bytes=3000,
-                    archive_label="موزیک ارسالی",
-                )
-                if sent:
-                    return
-            except Exception as e:
-                logger.error(f"Error uploading native MP3 in music_command: {e}")
+                await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+            except Exception:
+                pass
+            await asyncio.sleep(4.0)
 
-        # 2. Resilient streaming or direct URL upload (shared pool, size-capped)
-        if res.get("url"):
-            try:
-                from src.core.http import get_http_client as _dl_client_f
-                audio_url = res["url"]
-                audio_buf = io.BytesIO()
-                dl_client = _dl_client_f("stream")
-                async with dl_client.stream("GET", audio_url) as r_stream:
-                    if r_stream.status_code == 200:
-                        _total = 0
-                        async for chunk in r_stream.aiter_bytes(65536):
-                            _total += len(chunk)
-                            if _total > 25 * 1024 * 1024:
-                                break
-                            audio_buf.write(chunk)
-                raw_bytes = audio_buf.getvalue()
-                if len(raw_bytes) >= 1500000:
+    upload_task = asyncio.create_task(_keep_uploading())
+
+    try:
+        from src.tools import media
+        res = await media.download_music_track(query)
+        if isinstance(res, dict) and res.get("caption"):
+            res["caption"] = await _maybe_translate(update, res["caption"])
+        if isinstance(res, dict):
+            # 1. Native MP3 bytes upload
+            if res.get("type") == "audio_bytes" and res.get("bytes"):
+                try:
                     sent = await _reply_audio_bytes(
                         message, chat, context,
                         title=res.get("title", query),
                         performer=res.get("performer", "Prometheus Audio"),
                         caption=res.get("caption", ""),
-                        audio_bytes=raw_bytes,
+                        audio_bytes=res["bytes"],
+                        duration=res.get("duration", 0),
+                        thumb_url=res.get("thumb", ""),
+                        thumb_min_bytes=3000,
                         archive_label="موزیک ارسالی",
                     )
                     if sent:
                         return
-            except Exception as e:
-                logger.debug(f"Direct stream download in music_command failed: {e}")
+                except Exception as e:
+                    logger.error(f"Error uploading native MP3 in music_command: {e}")
 
-            # Direct Telegram stream URL fallback
-            try:
-                await message.reply_audio(
-                    audio=res["url"],
-                    title=res.get("title", query),
-                    performer=res.get("performer", "Prometheus Audio"),
-                    caption=telegram_formatter.markdown_to_telegram_html(res.get("caption", "")),
-                    parse_mode=ParseMode.HTML,
-                    write_timeout=180.0,
-                    read_timeout=60.0
-                )
-                return
-            except Exception as e2:
-                logger.error(f"Fallback audio send in music_command failed: {e2}")
+            # 2. Resilient streaming or direct URL upload (Telegram CDN-level fetch)
+            if res.get("url"):
+                # Direct Telegram stream URL delivery (fastest & lowest memory overhead)
+                try:
+                    await message.reply_audio(
+                        audio=res["url"],
+                        title=res.get("title", query),
+                        performer=res.get("performer", "Prometheus Audio"),
+                        caption=telegram_formatter.markdown_to_telegram_html(res.get("caption", "")),
+                        parse_mode=ParseMode.HTML,
+                        write_timeout=180.0,
+                        read_timeout=60.0
+                    )
+                    return
+                except Exception as e2:
+                    logger.debug(f"Direct URL send in music_command failed, trying stream: {e2}")
 
-        await reply_safely(message, await _maybe_translate(update, res.get("caption") or res.get("message") or t(ulang, "music_failed")))
-    else:
-        await reply_safely(message, await _maybe_translate(update, str(res)))
+                # Stream buffer fallback
+                try:
+                    from src.core.http import get_http_client as _dl_client_f
+                    audio_url = res["url"]
+                    audio_buf = io.BytesIO()
+                    dl_client = _dl_client_f("stream")
+                    async with dl_client.stream("GET", audio_url, timeout=15.0) as r_stream:
+                        if r_stream.status_code == 200:
+                            _total = 0
+                            async for chunk in r_stream.aiter_bytes(65536):
+                                _total += len(chunk)
+                                if _total > 25 * 1024 * 1024:
+                                    break
+                                audio_buf.write(chunk)
+                    raw_bytes = audio_buf.getvalue()
+                    if len(raw_bytes) >= 1200000:
+                        sent = await _reply_audio_bytes(
+                            message, chat, context,
+                            title=res.get("title", query),
+                            performer=res.get("performer", "Prometheus Audio"),
+                            caption=res.get("caption", ""),
+                            audio_bytes=raw_bytes,
+                            archive_label="موزیک ارسالی",
+                        )
+                        if sent:
+                            return
+                except Exception as e:
+                    logger.debug(f"Stream fallback in music_command failed: {e}")
+
+            await reply_safely(message, await _maybe_translate(update, res.get("caption") or res.get("message") or t(ulang, "music_failed")))
+        else:
+            await reply_safely(message, await _maybe_translate(update, str(res)))
+    finally:
+        upload_active = False
+        upload_task.cancel()
 
 async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
