@@ -235,8 +235,66 @@ async def global_application_error_handler(update: object, context: ContextTypes
     logger.error(f"Global Application Handler caught exception: {err}", exc_info=err)
 
 # ==========================================
-# 1. Telegram Standard Commands
+# 1. Telegram Standard Commands & Gatekeepers
 # ==========================================
+
+_PV_LOCK_NOTIFIED: Dict[int, float] = {}
+
+async def private_chat_admin_only_gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    PV LOCK GATEKEEPER:
+    Closes the bot's private chat (PV / direct messages) for everyone except the Master Admin.
+    Any non-admin interacting in PV (commands, text, voice, media, inline buttons) is blocked immediately
+    with a polite notification and ApplicationHandlerStop terminates the handler chain.
+    """
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+
+    # Only inspect private chats (chat.type == PRIVATE or chat.id > 0)
+    try:
+        _ctype = getattr(chat, "type", "")
+        _ctype_s = str(_ctype).lower()
+    except Exception:
+        _ctype_s = ""
+    is_pv = (_ctype_s in ("private", "chatprivate") or _ctype == ChatType.PRIVATE or chat.id > 0)
+    if not is_pv:
+        return
+
+    # Master Admin is fully authorized to use PV
+    if is_admin(user.id):
+        return
+
+    # Non-admin in PV: Block access immediately
+    # 1. Handle Callback Queries (inline button clicks in PV)
+    if update.callback_query:
+        try:
+            await update.callback_query.answer("🔒 پیوی ربات اختصاصی ادمین ارشد است. لطفاً در گروه‌ها از ربات استفاده کنید.", show_alert=True)
+        except Exception:
+            pass
+        raise ApplicationHandlerStop()
+
+    # 2. Handle Messages (text, commands, audio, voice, photo, etc.)
+    message = update.effective_message
+    if message:
+        now = time.time()
+        last_sent = _PV_LOCK_NOTIFIED.get(user.id, 0.0)
+        # Send notification at most once every 5 seconds per user to prevent flood
+        if now - last_sent >= 5.0:
+            _PV_LOCK_NOTIFIED[user.id] = now
+            if len(_PV_LOCK_NOTIFIED) > 2000:
+                for k in list(_PV_LOCK_NOTIFIED.keys())[:500]:
+                    _PV_LOCK_NOTIFIED.pop(k, None)
+            ulang, _ = _ulang_of(update)
+            lock_msg = t(ulang, "pv_locked")
+            try:
+                await reply_safely(message, lock_msg)
+            except Exception as e:
+                logger.debug(f"Failed to send pv_locked to user {user.id}: {e}")
+
+    # Terminate further handling for this update across the application
+    raise ApplicationHandlerStop()
 
 
 async def group_command_gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3712,6 +3770,10 @@ def build_application():
     # Priority 0: Global Banned User Gatekeeper (Zero-tolerance radio silence)
     # Any update from a banned ID or username is intercepted and terminated before any command runs.
     app.add_handler(TypeHandler(Update, global_banned_user_gatekeeper), group=-1)
+
+    # Priority 0: Private Chat Admin-Only Gatekeeper (PV is 100% exclusive to Master Admin)
+    # Non-admin users in PV are blocked immediately and redirected to groups.
+    app.add_handler(TypeHandler(Update, private_chat_admin_only_gatekeeper), group=-1)
 
     # Priority 0: Group Slash-Command Gatekeeper
     # Intercepts foreign commands (e.g. /clean, /settings, /clean@otherbot) in groups,
