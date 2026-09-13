@@ -475,23 +475,16 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         "hi", "hello", "hey", "thanks", "thank you"
     ]
     is_pure_chat = any(w in prompt_lower for w in pure_conversational) and len(prompt_lower) < 60
+    if is_pure_chat:
+        _SMART_FILTER_CACHE[cache_key] = []
+        return []
 
     # If no specific category matched:
     if not relevant_categories:
-        if is_pure_chat:
-            _SMART_FILTER_CACHE[cache_key] = []
-            return []  # No tools needed for pure greetings/chat: instant response!
         # For generic questions, provide only web_search & clock without clutter
-        ensure_categories({"search"})  # web_search/tavily live here
+        ensure_categories({"search"})
         core_names.update({"tavily_search", "web_search", "get_current_datetime_info"})
         out = [t["schema"] for name, t in REGISTRY.items() if name in core_names]
-        _SMART_FILTER_CACHE[cache_key] = out
-        return out
-
-    if _complex:
-        # Complex prompt: give the model the whole cabinet, it decides.
-        ensure_all()
-        out = [t["schema"] for t in REGISTRY.values() if t.get("category") != "internal" and (is_admin or t.get("category") != "admin")]
         _SMART_FILTER_CACHE[cache_key] = out
         return out
 
@@ -541,6 +534,10 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
             if "extract_user_id_tool" in REGISTRY and "extract_user_id_tool" not in selected_names:
                 selected_schemas.append(REGISTRY["extract_user_id_tool"]["schema"])
                 selected_names.add("extract_user_id_tool")
+
+    # Cap total tools passed to LLM to 16 to avoid prompt prefill latency
+    if len(selected_schemas) > 16:
+        selected_schemas = selected_schemas[:16]
 
     _SMART_FILTER_CACHE[cache_key] = selected_schemas
     _SMART_FILTER_ORDER.append(cache_key)

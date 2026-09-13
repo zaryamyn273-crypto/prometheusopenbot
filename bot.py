@@ -600,6 +600,10 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
+    try:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    except Exception:
+        pass
     sym = " ".join(context.args).strip() if context.args else "BTC"
     from src.tools import financial
     res = await financial.get_price(sym)
@@ -607,12 +611,20 @@ async def crypto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def gold_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
+    try:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    except Exception:
+        pass
     from src.tools import financial
     res = await financial.get_gold_and_coin_price()
     await reply_safely(message, await _maybe_translate(update, res))
 
 async def weather_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
+    try:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    except Exception:
+        pass
     city = " ".join(context.args).strip() if context.args else "Tehran"
     from src.tools import web_network
     res = await web_network.get_weather(city)
@@ -625,6 +637,10 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ulang, _ = _ulang_of(update)
         await reply_safely(message, t(ulang, "search_usage"))
         return
+    try:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    except Exception:
+        pass
     from src.tools import web_network
     res = await web_network.web_search(q)
     res = await _maybe_translate(update, f"🔍 *نتایج جستجوی وب برای «{q}»:*\n\n{res}")
@@ -647,6 +663,10 @@ async def digikala_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not q:
         await reply_safely(message, "🛍 لطفاً نام محصول مورد نظر برای استعلام در دیجی‌کالا را وارد کنید.\nمثال: `/digikala گوشی سامسونگ s24`")
         return
+    try:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    except Exception:
+        pass
     from src.tools.web_network import digikala_search
     res = await digikala_search(q)
     await reply_safely(message, res)
@@ -657,6 +677,10 @@ async def amazon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not q:
         await reply_safely(message, "📦 لطفاً نام کالا برای استعلام دلاری در آمازون را وارد کنید.\nمثال: `/amazon macbook air m3`")
         return
+    try:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    except Exception:
+        pass
     from src.tools.web_network.ecommerce import amazon_search
     res = await amazon_search(q)
     await reply_safely(message, res)
@@ -667,6 +691,10 @@ async def ebay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not q:
         await reply_safely(message, "🛒 لطفاً نام کالا برای استعلام در eBay را وارد کنید.\nمثال: `/ebay thinkpad x1 carbon`")
         return
+    try:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    except Exception:
+        pass
     from src.tools.web_network.ecommerce import ebay_search
     res = await ebay_search(q)
     await reply_safely(message, res)
@@ -677,6 +705,10 @@ async def reddit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not q:
         await reply_safely(message, "👽 لطفاً عبارت مورد نظر برای کاوش در ردیت را وارد کنید.\nمثال: `/reddit python asyncio`")
         return
+    try:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    except Exception:
+        pass
     from src.tools.dev import reddit_search
     res = await reddit_search(q)
     await reply_safely(message, res)
@@ -1789,10 +1821,20 @@ def _match_financial_fast_intent(text: str) -> Optional[Tuple[str, Tuple[Any, ..
     price_markers = ["قیمت", "نرخ", "چنده", "چند شد", "چند است", "چقدر شد", "چقدره", "ارزش", "تابلو", "price", "rate"]
     has_price_marker = any(pm in t for pm in price_markers)
 
-    # 1. Gold & Coins
-    gold_keywords = ["طلا", "سکه", "طلای ۱۸", "طلای 18", "گرم طلا", "آبشده", "مثقال", "انس", "امامی", "بهار آزادی", "نیم سکه", "ربع سکه", "سکه گرمی"]
+    # 1. Commodities & Precious Metals (Silver, Oil, Brent, WTI) - Priority before general ounce
+    commodity_keywords = [
+        "نقره", "انس نقره", "قیمت نقره", "نقره ۹۹۹", "نقره 999", "نقره ۹۲۵", "نقره 925",
+        "نفت", "قیمت نفت", "نفت برنت", "برنت", "نفت خام", "نفت wti", "نفت آمریکا", "اوپک",
+        "silver", "crude oil", "brent oil", "wti"
+    ]
+    if any(k in t for k in commodity_keywords):
+        if has_price_marker or len(t.split()) <= 4:
+            return ("get_commodities_price", ())
+
+    # 1b. Gold & Coins & Bubble
+    gold_keywords = ["طلا", "سکه", "طلای ۱۸", "طلای 18", "گرم طلا", "آبشده", "مثقال", "انس", "امامی", "بهار آزادی", "نیم سکه", "ربع سکه", "سکه گرمی", "حباب", "حباب سکه", "ارزش ذاتی"]
     if any(k in t for k in gold_keywords):
-        if has_price_marker or len(t.split()) <= 5:
+        if has_price_marker or len(t.split()) <= 5 or "حباب" in t:
             return ("get_gold_and_coin_price", ())
 
     # 2. Dollar specifically
@@ -1942,6 +1984,46 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
                             return math_out, None
                     except Exception:
                         pass
+    except Exception:
+        pass
+
+    # Tier 1d: Instant E-Commerce & Reddit Fast-Paths (<500ms execution with zero LLM overhead)
+    try:
+        # Digikala
+        for dk_pfx in ["دیجیکالا", "دیجی کالا", "digikala"]:
+            if _norm.startswith(dk_pfx):
+                dq = _norm[len(dk_pfx):].strip(" :؟?،,.-")
+                if len(dq) >= 2:
+                    from src.tools.web_network import digikala_search
+                    d_out = await digikala_search(query=dq)
+                    return d_out, None
+
+        # Amazon
+        for amz_pfx in ["آمازون", "amazon"]:
+            if _norm.startswith(amz_pfx):
+                aq = _norm[len(amz_pfx):].strip(" :؟?،,.-")
+                if len(aq) >= 2:
+                    from src.tools.web_network.ecommerce import amazon_search
+                    a_out = await amazon_search(query=aq)
+                    return a_out, None
+
+        # eBay
+        for eb_pfx in ["ای بی", "ای‌بی", "ebay"]:
+            if _norm.startswith(eb_pfx):
+                eq = _norm[len(eb_pfx):].strip(" :؟?،,.-")
+                if len(eq) >= 2:
+                    from src.tools.web_network.ecommerce import ebay_search
+                    e_out = await ebay_search(query=eq)
+                    return e_out, None
+
+        # Reddit
+        for rd_pfx in ["ردیت", "reddit"]:
+            if _norm.startswith(rd_pfx):
+                rq = _norm[len(rd_pfx):].strip(" :؟?،,.-")
+                if len(rq) >= 2:
+                    from src.tools.dev import reddit_search
+                    r_out = await reddit_search(query=rq)
+                    return r_out, None
     except Exception:
         pass
 
@@ -2829,28 +2911,20 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 pass
             return
 
-    # Background self-use prefetch: rewrite + intent-tag + tool-hint while the
-    # typing indicator runs, so the AI turn starts with hot context and the
-    # model sees a concrete tool suggestion for the exact normalized query.
+    # Fast synchronous local CPU prefetch (sub-millisecond execution, 0ms latency)
     _prefetch_hints = {"intent_block": "", "tool_hint": "", "rewritten": ""}
-
-    async def _self_prefetch():
-        try:
-            from src.tools import internal as _internal
-            rewritten = _internal.bot_query_rewriter(user_text)
-            _prefetch_hints["rewritten"] = rewritten
-            if rewritten.startswith("__PINGPONG__"):
-                _prefetch_hints["intent_block"] = "__PINGPONG__"
-                return "__PINGPONG__"
+    try:
+        from src.tools import internal as _internal
+        rewritten = _internal.bot_query_rewriter(user_text)
+        _prefetch_hints["rewritten"] = rewritten
+        if not rewritten.startswith("__PINGPONG__"):
             _prefetch_hints["intent_block"] = _internal.bot_intent_splitter(rewritten)
             try:
                 _prefetch_hints["tool_hint"] = _internal.bot_tool_picker(rewritten)
             except Exception:
                 pass
-            return _prefetch_hints["intent_block"]
-        except Exception:
-            return ""
-    prefetch_task = asyncio.create_task(_self_prefetch())
+    except Exception:
+        pass
 
     # High-Speed Keep-Alive Typing Action (1.5s interval for instant feedback)
     typing_active = True
@@ -2866,14 +2940,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     _INFLIGHT_TURNS[int(chat.id)] = asyncio.current_task()
 
     try:
-        # Collect prefetch (ultra-fast sub-millisecond local CPU operations, 0.2s cap)
-        try:
-            await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=0.2)
-        except Exception:
-            pass
         # Run AI Super Agent (numeric-ID admin check + Persian addressing hint + on-demand memory)
-        # NOTE: Tier 0/1 (clock, chatter, market boards) already returned above —
-        # this Tier-2 block is full-power only: prefetch hints + multi-round AI.
         has_reply = bool(message.reply_to_message)
         _tool_hint_suffix = ""
         _hint = (_prefetch_hints.get("tool_hint") or "").strip()
@@ -2899,8 +2966,6 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 _INFLIGHT_TURNS.pop(int(chat.id), None)
         except Exception:
             pass
-        if not prefetch_task.done():
-            prefetch_task.cancel()
 
     # Persist assistant turn first (never lose it), then deliver media/text and
     # backfill the real Telegram message_id once the reply is actually sent.
@@ -3198,7 +3263,13 @@ async def post_init_callback(application):
         while True:
             try:
                 client = ai_service.get_shared_client()
-                await client.get(f"{config.ROUTER_BASE_URL}/models", headers=ai_service._router_headers(), timeout=4.0)
+                # Proactively probe internal VPC; if failed, mark cooled down so user turns never experience latency
+                if config.ROUTER_INTERNAL_BASE_URL:
+                    try:
+                        await client.get(f"{config.ROUTER_INTERNAL_BASE_URL}/models", headers=ai_service._router_headers(), timeout=1.0)
+                    except Exception:
+                        ai_service._FAILED_INTERNAL_UNTIL = time.time() + 1800.0
+                await client.get(f"{config.ROUTER_BASE_URL}/models", headers=ai_service._router_headers(), timeout=3.5)
             except Exception:
                 pass
             await asyncio.sleep(120.0)

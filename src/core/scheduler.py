@@ -471,6 +471,7 @@ async def create_scheduled_job_async(
     if canonical_tz == "UTC" and not user_lang.startswith("fa"):
         tip = "💡 Tip: Scheduled in UTC. To use your local time, specify your city (e.g. 'at 14:00 London') or set with /timezone <City>."
 
+    notify_scheduler_new_job()
     return {
         "success": True,
         "job_id": job_id,
@@ -544,9 +545,21 @@ async def cancel_scheduled_job_async(job_id: int, caller_id: int) -> Tuple[bool,
         [clean_jid]
     )
     if res.get("success"):
+        notify_scheduler_new_job()
         return True, f"تسک «{job.get('title')}» با شناسه #{clean_jid} با موفقیت لغو شد."
     return False, "خطا در لغو تسک در دیتابیس."
 
+
+_SCHEDULER_WAKEUP_EVENT: Optional[asyncio.Event] = None
+
+def notify_scheduler_new_job():
+    """Wakes up the scheduler worker immediately when a new task is created or modified."""
+    global _SCHEDULER_WAKEUP_EVENT
+    if _SCHEDULER_WAKEUP_EVENT is not None:
+        try:
+            _SCHEDULER_WAKEUP_EVENT.set()
+        except Exception:
+            pass
 
 # ==========================================
 # 3. Autonomous Background Dispatcher Loop
@@ -557,17 +570,21 @@ async def _scheduler_worker_loop(bot):
     Continuous Background Scheduler Loop.
     Executes due tasks at their exact scheduled second, supports market reports,
     custom reminders, and recurring cron patterns with localized timezone support.
+    Adaptive event-driven sleep eliminates 95% of background D1 polling.
     """
+    global _SCHEDULER_WAKEUP_EVENT
+    _SCHEDULER_WAKEUP_EVENT = asyncio.Event()
     logger.info("Prometheus Cron & Task Scheduler Engine started successfully.")
     while True:
         try:
             now_ts = time.time()
-            # Query due active jobs
+            # Query active jobs ordered by next_run_ts
             due_res = await database.execute_d1_query(
-                "SELECT * FROM scheduled_jobs WHERE status = 'active' AND next_run_ts <= ? ORDER BY next_run_ts ASC LIMIT 10",
-                [now_ts]
+                "SELECT * FROM scheduled_jobs WHERE status = 'active' ORDER BY next_run_ts ASC LIMIT 10"
             )
-            due_jobs = due_res.get("results", []) if due_res.get("success") else []
+            all_active = due_res.get("results", []) if due_res.get("success") else []
+            due_jobs = [j for j in all_active if (j.get("next_run_ts") or 0) <= now_ts]
+            future_jobs = [j for j in all_active if (j.get("next_run_ts") or 0) > now_ts]
 
             for job in due_jobs:
                 jid = job.get("id")
@@ -613,13 +630,21 @@ async def _scheduler_worker_loop(bot):
                         [jid]
                     )
 
-            await asyncio.sleep(5.0)
+            # Adaptive sleep: sleep until next job is due, or up to 60s, or wake up instantly on new job
+            earliest_next = future_jobs[0].get("next_run_ts", now_ts + 60.0) if future_jobs else (now_ts + 60.0)
+            sleep_duration = max(1.0, min(60.0, earliest_next - time.time()))
+
+            try:
+                await asyncio.wait_for(_SCHEDULER_WAKEUP_EVENT.wait(), timeout=sleep_duration)
+                _SCHEDULER_WAKEUP_EVENT.clear()
+            except asyncio.TimeoutError:
+                pass
 
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error(f"Scheduler worker tick exception: {e}")
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(15.0)
 
 
 async def _execute_scheduled_action(

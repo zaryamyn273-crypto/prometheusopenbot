@@ -1107,11 +1107,11 @@ async def bump_daily_usage_async(user_id: int) -> tuple:
     _DAILY_RAM[(uid, day)] = used
     limit = get_user_limit(uid)
     try:
-        await execute_d1_query(
+        asyncio.create_task(execute_d1_query(
             "INSERT INTO daily_usage (user_id, day, used, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT(user_id, day) DO UPDATE SET used = excluded.used, updated_at = CURRENT_TIMESTAMP",
             [uid, day, used],
-        )
+        ))
     except Exception:
         pass
     return used <= limit, used, limit

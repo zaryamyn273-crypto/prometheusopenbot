@@ -740,12 +740,14 @@ async def generate_response(
                 except Exception:
                     pass
             active_schemas = _defs
+        # On first loop when tools are active, cap max_tokens to 400 so model generates tool calls rapidly without rambling
+        _tok_cap = 400 if (active_schemas and loop_idx == 0) else 800
         payload: Dict[str, Any] = {
             "model": _live_model,
             "stream": False,
             "messages": messages,
             "temperature": 0.2,
-            "max_tokens": 800
+            "max_tokens": _tok_cap
         }
         if active_schemas:
             payload["tools"] = active_schemas
@@ -762,7 +764,11 @@ async def generate_response(
         for attempt in range(max_retries):
             for endpoint in endpoints_to_try:
                 try:
-                    to = 16.0 if "railway.internal" in endpoint else 35.0
+                    # Granular timeouts: internal VPC must connect in <= 0.8s, public in <= 3.5s
+                    if "railway.internal" in endpoint:
+                        to = httpx.Timeout(connect=0.8, read=25.0, write=5.0, pool=2.0)
+                    else:
+                        to = httpx.Timeout(connect=3.5, read=35.0, write=10.0, pool=3.0)
                     resp = await client.post(
                         f"{endpoint}/chat/completions",
                         headers=headers,
@@ -775,7 +781,7 @@ async def generate_response(
                 except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError, httpx.TimeoutException) as e:
                     logger.debug(f"Router endpoint {endpoint} connection issue: {e}")
                     if "railway.internal" in endpoint:
-                        _FAILED_INTERNAL_UNTIL = time.time() + 300.0
+                        _FAILED_INTERNAL_UNTIL = time.time() + 1800.0
                     continue
                 except Exception as e:
                     logger.debug(f"Router endpoint {endpoint} error: {e}")
