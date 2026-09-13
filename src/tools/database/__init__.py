@@ -274,3 +274,36 @@ async def cloudflare_d1_list_records(category: Optional[str] = None, limit: int 
         val_prev = str(r.get("data_value", ""))[:80].replace("\n", " ")
         lines.append(f"• `{r.get('key_name')}` [{cat}]: {val_prev}...")
     return "\n".join(lines)
+
+
+@register_tool(
+    name="summarize_group_history_tool",
+    description="دریافت و استخراج متن ۵۰ یا ۱۰۰ پیام اخیر گروه از حافظه موقت RAM و دیتابیس D1 جهت خلاصه‌سازی و تحلیل موضوعات گفتگو. count می‌تواند 50 یا 100 باشد.",
+    category="database"
+)
+async def summarize_group_history_tool(
+    count: int = 50,
+    chat_id: int = 0,
+    topic: Optional[str] = None
+) -> str:
+    """
+    :param count: تعداد پیام‌های اخیر گروه جهت خلاصه (۵۰ یا ۱۰۰)
+    :param chat_id: شناسه گروه تلگرام
+    :param topic: مبحث خاص یا کلیدواژه جهت تمرکز خلاصه (اختیاری)
+    """
+    clean_chat_id = int(chat_id or 0)
+    if not clean_chat_id:
+        return "❌ شناسه گروه برای استخراج تاریخچه مشخص نشده است."
+
+    c = 100 if int(count or 50) >= 75 else 50
+    msgs = await database.get_recent_messages_for_summary_async(clean_chat_id, count=c)
+    if not msgs:
+        return "⚠️ هیچ پیامی در حافظه این گروه ذخیره نشده است (ربات تنها پیام‌های بعد از ورود خود را ثبت می‌کند)."
+
+    transcript = database.format_messages_for_summary(msgs)
+    topic_hint = f" با تمرکز بر مبحث «{topic}»" if topic else ""
+    return (
+        f"📋 *متن {len(msgs)} پیام اخیر گروه{topic_hint}:*\n\n"
+        f"{transcript}\n\n"
+        "💡 *دستور*: بر مبنای پیام‌های فوق، خلاصه جامع و ساختاریافته از موضوعات، گفتگوها، چالش‌ها، تصمیمات و نکات کلیدی را به زبان فارسی ارائه بده."
+    )

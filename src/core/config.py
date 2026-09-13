@@ -149,7 +149,7 @@ def has_e2b() -> bool:
 # Short-term rolling memory budget per chat/group (token estimate ~= chars/3).
 # Temp (RAM) memory per group is capped at 20k tokens by user order.
 MAX_SHORT_TERM_TOKENS = 20000
-MAX_RAM_TURNS_PER_CHAT = 30  # Up to 30 last messages per group in isolated RAM buffer
+MAX_RAM_TURNS_PER_CHAT = 120  # Up to 120 last messages per group in isolated RAM buffer (supports 50 & 100 message summaries)
 RATE_LIMIT_USER_WINDOW_SEC = 60
 RATE_LIMIT_USER_MAX_REQUESTS = 40
 RATE_LIMIT_ADMIN_MAX_REQUESTS = 600

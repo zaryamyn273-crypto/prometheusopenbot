@@ -1523,6 +1523,80 @@ def clear_chat_context(chat_id: int):
     except RuntimeError:
         pass
 
+
+async def get_recent_messages_for_summary_async(chat_id: int, count: int = 50) -> List[Dict[str, Any]]:
+    """
+    Fetches up to `count` (typically 50 or 100) recent messages from RAM and Cloudflare D1
+    specifically for group chat summarization. Returns clean, chronological list.
+    """
+    clean_chat_id = int(chat_id) if isinstance(chat_id, (int, str)) and str(chat_id).lstrip("-").isdigit() else 0
+    if not clean_chat_id:
+        return []
+
+    target_count = max(5, min(120, int(count or 50)))
+
+    # 1. Inspect RAM buffer first
+    ram_msgs = list(_CHAT_HISTORIES.get(clean_chat_id, []))
+    if len(ram_msgs) >= target_count:
+        return ram_msgs[-target_count:]
+
+    # 2. If RAM has fewer than target_count, fetch from Cloudflare D1
+    try:
+        res = await execute_d1_query(
+            f"SELECT {_MESSAGE_COLS} FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            [clean_chat_id, target_count]
+        )
+        if res.get("success") and res.get("results"):
+            d1_msgs = list(reversed(res["results"]))
+            # Combine D1 messages and any newer RAM messages
+            seen_mids = {int(m.get("message_id") or 0) for m in d1_msgs if int(m.get("message_id") or 0) > 0}
+            combined = list(d1_msgs)
+            for rm in ram_msgs:
+                rmid = int(rm.get("message_id") or 0)
+                if rmid > 0 and rmid in seen_mids:
+                    continue
+                combined.append(rm)
+
+            # Update RAM with the combined set up to 120
+            _CHAT_HISTORIES[clean_chat_id] = combined[-120:]
+            return combined[-target_count:]
+    except Exception as e:
+        logger.warning(f"Error fetching messages from D1 for summary: {e}")
+
+    return ram_msgs[-target_count:] if ram_msgs else []
+
+
+def format_messages_for_summary(messages: List[Dict[str, Any]]) -> str:
+    """
+    Transforms raw message records into a structured, easily consumable text transcript
+    for AI summarization.
+    """
+    if not messages:
+        return ""
+    lines = []
+    for idx, m in enumerate(messages, 1):
+        role = m.get("role", "user")
+        sender = m.get("user_name") or m.get("username") or ("ربات" if role == "assistant" else "کاربر")
+        time_tag = ""
+        if m.get("msg_time"):
+            time_tag = f"[{m.get('msg_time')}] "
+        elif m.get("created_at"):
+            time_tag = f"[{str(m.get('created_at'))[11:16]}] "
+
+        kind_tag = ""
+        mkind = str(m.get("msg_kind") or "text").lower()
+        if mkind not in ("text", "command"):
+            kind_tag = f"[{mkind}] "
+
+        content = str(m.get("content") or "").strip()
+        if not content and m.get("has_media"):
+            content = f"[{mkind}]"
+        # Sanitize newlines inside a single message to keep transcript compact
+        content_clean = content.replace("\n", " ")[:300]
+        if content_clean:
+            lines.append(f"{idx}. {time_tag}{sender}: {kind_tag}{content_clean}")
+    return "\n".join(lines)
+
 # --- Multi-Strategy Deep Semantic Search in Cloudflare D1 ---
 
 _SEARCH_MEMO: Dict[str, Any] = {"cache": {}, "order": []}

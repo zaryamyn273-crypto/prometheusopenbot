@@ -708,6 +708,67 @@ async def weather_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = await web_network.get_weather(city)
     await reply_safely(message, await _maybe_translate(update, res))
 
+
+async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Summarizes the last 50 or 100 messages of the group: /summary [50|100] (defaults to 50)."""
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not message or not chat or not user:
+        return
+
+    if database.is_bot_self_muted(chat.id):
+        return
+
+    if chat.type == ChatType.PRIVATE:
+        await reply_safely(
+            message,
+            "📋 <b>دستور خلاصه‌سازی تاریخچه گروه:</b>\n"
+            "این دستور برای استخراج و خلاصه‌سازی مباحث مطرح‌شده در گروه‌ها طراحی شده است.\n\n"
+            "<i>فرمت استفاده در گروه:</i>\n"
+            "• <code>/summary 50</code> (خلاصه ۵۰ پیام اخیر)\n"
+            "• <code>/summary 100</code> (خلاصه ۱۰۰ پیام اخیر)\n"
+            "• یا به صورت طبیعی در گروه بفرمایید: <i>«۵۰ پیام آخر رو خلاصه کن»</i>"
+        )
+        return
+
+    args = list(context.args or [])
+    raw_args = " ".join(args).strip().lower() if args else ""
+    target_count = 100 if any(k in raw_args for k in ["100", "۱۰۰", "صد"]) else 50
+
+    typing_active = True
+    async def _keep_typing():
+        while typing_active:
+            try:
+                await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
+            except Exception:
+                pass
+            await asyncio.sleep(2.0)
+
+    typing_task = asyncio.create_task(_keep_typing())
+    try:
+        from src.core import ai_service
+        prompt = f"لطفاً {target_count} پیام اخیر گروه را به شکل جامع، جذاب و دسته‌بندی‌شده خلاصه کن."
+        ai_response, _ = await ai_service.generate_response(
+            chat_id=chat.id,
+            user_prompt=prompt,
+            caller_user_id=user.id,
+            caller_name=user.first_name or "کاربر",
+            caller_username=user.username or "",
+            is_private_chat=False,
+            has_reply_context=False,
+            user_lang_code="fa"
+        )
+        if not ai_response or not ai_response.strip():
+            ai_response = "⚠️ خلاصه‌ای برای پیام‌های اخیر یافت نشد."
+        await reply_safely(message, ai_response)
+    except Exception as e:
+        logger.error(f"Error in summary_command: {e}")
+        await reply_safely(message, "❌ خطا در خلاصه‌سازی پیام‌های گروه.")
+    finally:
+        typing_active = False
+        typing_task.cancel()
+
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     q = " ".join(context.args).strip() if context.args else ""
@@ -3645,6 +3706,10 @@ def build_application():
     app.add_handler(_pcmd("gold_prometheus", gold_command))
     app.add_handler(_pcmd("weather", weather_command))
     app.add_handler(_pcmd("weather_prometheus", weather_command))
+    app.add_handler(_pcmd("summary", summary_command))
+    app.add_handler(_pcmd("summary_prometheus", summary_command))
+    app.add_handler(_pcmd("summarize", summary_command))
+    app.add_handler(_pcmd("summarize_prometheus", summary_command))
     app.add_handler(_pcmd("search", search_command))
     app.add_handler(_pcmd("search_prometheus", search_command))
     app.add_handler(_pcmd("calc", calc_command))

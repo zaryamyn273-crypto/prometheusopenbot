@@ -505,25 +505,78 @@ async def generate_response(
     # On-Demand Memory & History Architecture:
     # RAM context and D1 permanent database history are queried ONLY when:
     # 1. The user explicitly asks about past messages / history ("یادت هست", "پیام قبلی", "سوابق", "چی گفتم", "خلاصه گفتگو")
-    # 2. OR the user is replying to a message thread (has_reply_context) where conversation continuity is required.
+    # 2. OR the user asks for a summary of recent group messages (50 or 100 messages)
+    # 3. OR the user is replying to a message thread (has_reply_context) where conversation continuity is required.
     # Independent turns stay 100% clean with 0 past history overhead, lightning-fast execution, and no context contamination.
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system_content}
     ]
 
+    # Detect Group History Summary Intent (50 or 100 messages)
+    prompt_lower = (user_prompt or "").lower()
+    summary_triggers = [
+        "خلاصه", "خلاصه‌سازی", "خلاصه سازی", "جمع‌بندی", "جمع بندی",
+        "خلاصه چت", "خلاصه گروه", "خلاصه گفتگو", "پیام های اخیر", "پیام‌های اخیر",
+        "پیام های قبلی", "پیام‌های قبلی", "summary", "summarize", "توی گروه چی گذشت",
+        "تو گروه چی گذشت", "در گروه چی گفتن", "چخبر بوده", "چه خبر بوده", "بحث سر چی بود"
+    ]
+    is_summary_request = any(st in prompt_lower for st in summary_triggers)
+
     explicit_memory_triggers = [
         "یادت", "قبلا", "قبلاً", "پیام قبلی", "پیام های قبلی", "پیام‌های قبلی", "چی گفتم", "چی گفتی",
-        "ادامه بده", "خلاصه کن چت", "خلاصه گفتگو", "یادآوری", "تاریخچه", "سوابق", "گفتگوی قبل", "چت های قبلی",
+        "ادامه بده", "یادآوری", "تاریخچه", "سوابق", "گفتگوی قبل", "چت های قبلی",
         "همون که گفتی", "دوباره بگو", "یادت رفت", "یادت نره", "کانتکست", "حافظه", "درباره چی حرف زدیم",
         "پیام بالایی", "همونی که بالاتر", "remember", "history", "earlier", "previous", "recall", "what did i say"
     ]
-    prompt_lower = (user_prompt or "").lower()
-    needs_memory = has_reply_context or any(k in prompt_lower for k in explicit_memory_triggers)
-    _needs_deep_memory = any(k in prompt_lower for k in explicit_memory_triggers)
+    needs_memory = has_reply_context or is_summary_request or any(k in prompt_lower for k in explicit_memory_triggers)
+    _needs_deep_memory = not is_summary_request and any(k in prompt_lower for k in explicit_memory_triggers)
+
+    # 1. High-Performance Group Summarization Pipeline (50 or 100 messages)
+    if is_summary_request and chat_id:
+        sum_count = 50
+        if any(k in prompt_lower for k in ["100", "۱۰۰", "صد", "یکصد", "یک صد"]):
+            sum_count = 100
+        elif any(k in prompt_lower for k in ["50", "۵۰", "پنجاه"]):
+            sum_count = 50
+        else:
+            num_match = re.search(r"(\d+)\s*(?:تا\s*)?پیام", prompt_lower)
+            if num_match:
+                try:
+                    sum_count = max(10, min(100, int(num_match.group(1))))
+                except Exception:
+                    sum_count = 50
+
+        recent_summary_msgs = await database.get_recent_messages_for_summary_async(chat_id, count=sum_count)
+        if recent_summary_msgs:
+            transcript = database.format_messages_for_summary(recent_summary_msgs)
+            messages.append({
+                "role": "system",
+                "content": (
+                    f"[دسترسی کامل به تاریخچه {len(recent_summary_msgs)} پیام اخیر این گروه از دیتابیس و حافظه رم]:\n"
+                    f"{transcript}\n\n"
+                    f"[دستور صریح تحلیل و خلاصه‌سازی]:\n"
+                    f"متن {len(recent_summary_msgs)} پیام اخیر این گروه به صورت زنده و دقیق در بالا در اختیار شماست. "
+                    "هرگز و تحت هیچ شرایطی نگو «به تاریخچه پیام‌های قبلی گروه دسترسی ندارم»؛ زیرا تمام پیام‌ها در بالا قرار داده شده است. "
+                    "لطفاً بر اساس پیام‌های فوق:\n"
+                    "۱. عناوین و موضوعات اصلی بحث‌های گروه را مشخص کن.\n"
+                    "۲. سوالات، چالش‌ها، تصمیم‌گیری‌ها یا لینک‌ها و موارد مهم را تفکیک کن.\n"
+                    "۳. خلاصه‌ای سلیس، مسلط و ساختاریافته همراه با بولت‌پوینت‌های خوانا به زبان فارسی ارائه بده."
+                )
+            })
+        else:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "اطلاعیه سیستمی: تا این لحظه پیامی در حافظه این گروه ذخیره نشده است "
+                    "(ربات تنها پیام‌های ارسالی پس از ورود خود به گروه را ثبت می‌کند). "
+                    "به کاربر محترمانه توضیح بده که پیام‌های پیش از حضور ربات در گروه در دسترس نیستند، "
+                    "اما از این پس تمام پیام‌ها در حافظه ثبت شده و خلاصه ۵۰ یا ۱۰۰ پیام در هر زمان قابل دریافت است."
+                )
+            })
 
     # Deep recall: the user explicitly asked about OLD/past content
     # Pull a few ranked D1 hits so the model can answer from permanent storage.
-    if _needs_deep_memory and not has_reply_context:
+    elif _needs_deep_memory and not has_reply_context:
         try:
             _d1_hits = await database.search_group_memory(
                 chat_id, user_prompt, limit=5,
@@ -542,7 +595,7 @@ async def generate_response(
         except Exception:
             pass
 
-    if needs_memory:
+    if needs_memory and not is_summary_request:
         # Reply threads need BOTH sides: last 30 turns hold the fused quote,
         # capped by the 20k temp budget. Follow-ups get 12 turns for speed.
         _window = 30 if has_reply_context else 12
@@ -552,7 +605,7 @@ async def generate_response(
             content = str(msg.get("content", ""))[:2500]
             if role in ("user", "assistant", "tool", "system") and content.strip():
                 messages.append({"role": role, "content": content})
-    else:
+    elif not needs_memory:
         # Direct Q&A scoping: the current question is asked WITHOUT history,
         # so the model must answer ONLY it — never older group questions.
         # This guard is skipped for tool-driven turns (search needs no history
