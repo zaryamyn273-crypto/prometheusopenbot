@@ -115,6 +115,9 @@ def mask_sensitive_shell_output(output: str, is_private_chat: bool) -> tuple[str
         os.getenv("SPOTIFY_CLIENT_ID", ""),
         os.getenv("SPOTIFY_CLIENT_SECRET", ""),
         os.getenv("E2B_API_KEY", ""),
+        os.getenv("RAILWAY_TOKEN", ""),
+        os.getenv("RAILWAY_API_TOKEN", ""),
+        os.getenv("API_KEY_SECRET", ""),
     ]
     for s in known_secrets:
         if s and len(s) >= 8 and s in masked:

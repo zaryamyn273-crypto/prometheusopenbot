@@ -285,7 +285,7 @@ async def railway_variables_tool(service_name: str = "prometheusopenbot", caller
         vars_dict = data.get("variables") or {}
 
         lines = [f"⚙️ *متغیرهای محیطی سرویس `{target_name}` در ریلوی:*\n"]
-        sensitive_keys = ("token", "key", "secret", "password", "auth", "credential", "d1_id")
+        sensitive_keys = ("token", "key", "secret", "password", "auth", "credential", "d1_id", "kv_id", "jwt", "salt", "pass")
         for k, v in sorted(vars_dict.items()):
             if any(s in k.lower() for s in sensitive_keys):
                 masked = v[:4] + "••••••••" + v[-3:] if len(str(v)) > 10 else "••••••••"

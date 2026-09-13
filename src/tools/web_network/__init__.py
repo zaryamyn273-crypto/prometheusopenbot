@@ -864,6 +864,8 @@ async def get_ip_info(target: str) -> str:
     :param target: آدرس IP یا نام دامنه
     """
     clean_t = clean_target_host(target)
+    if clean_t.lower() in ("localhost", "127.0.0.1", "::1", "169.254.169.254") or clean_t.endswith(".internal"):
+        return "⛔ استعلام آدرس‌های شبکه داخلی یا متادیتا مجاز نیست."
     client = get_async_client()
     try:
         r = await client.get(f"http://ip-api.com/json/{clean_t}?fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,query", timeout=4.0)

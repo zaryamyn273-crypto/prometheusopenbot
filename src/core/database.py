@@ -1294,8 +1294,15 @@ async def save_message_async(
             "updated_at": created_at_iso
         }
         if clean_chat_id not in _CHAT_DISPLAY_NAMES:
+            if len(_CHAT_DISPLAY_NAMES) > 300:
+                for k in list(_CHAT_DISPLAY_NAMES.keys())[:50]:
+                    _CHAT_DISPLAY_NAMES.pop(k, None)
             _CHAT_DISPLAY_NAMES[clean_chat_id] = {}
         _CHAT_DISPLAY_NAMES[clean_chat_id][norm_key] = user_identity_obj
+
+        if len(_DISPLAY_NAME_TO_ID_MAP) > 2000:
+            for k in list(_DISPLAY_NAME_TO_ID_MAP.keys())[:500]:
+                _DISPLAY_NAME_TO_ID_MAP.pop(k, None)
         _DISPLAY_NAME_TO_ID_MAP[norm_key] = user_identity_obj
 
     # Invalidate search memo for this specific chat so search is always fresh

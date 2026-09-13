@@ -41,10 +41,10 @@ def read_document_file(file_path: str, max_chars: int = 4000) -> str:
     if base_name.startswith("."):
         return "⛔ دسترسی غیرمجاز: خواندن فایل‌های پنهان سیستمی مسدود است."
 
-    allowed_exts = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt", ".rtf", ".pptx", ".md"}
+    allowed_exts = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt", ".rtf", ".pptx", ".md", ".zip", ".json", ".log"}
     ext = os.path.splitext(real_p)[1].lower()
     if ext not in allowed_exts:
-        return f"⛔ دسترسی غیرمجاز: فرمت فایل '{ext}' برای استخراج سند مجاز نیست (فقط اسناد آفیس، PDF، متنی و CSV)."
+        return f"⛔ دسترسی غیرمجاز: فرمت فایل '{ext}' برای استخراج سند مجاز نیست (فقط اسناد آفیس، PDF، متنی، CSV و ZIP)."
 
     sensitive_markers = ("key", "token", "secret", "id_rsa", "password", "credential", "environ", ".env")
     if any(sm in base_name for sm in sensitive_markers):

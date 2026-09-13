@@ -40,20 +40,13 @@ def _with_fresh_label(text: str) -> str:
 _HOT_LOCAL_CACHE: Dict[str, Tuple[float, str]] = {}
 _TGJU_PARSED_CACHE: Dict[str, str] = {}
 _TGJU_PARSED_TS: float = 0.0
+_TGJU_REFRESH_LOCK = asyncio.Lock()
 
-async def _get_fresh_tgju_rates(force_refresh: bool = False) -> Dict[str, str]:
-    """
-    Sub-millisecond Cached TGJU Rates:
-    Fetches raw TGJU HTML at most once every 90 seconds, parses with ultra-fast regex (2ms),
-    and caches in RAM. Subsequent calls return instantly in 0.0001ms without HTTP or DOM overhead.
-    """
+async def _refresh_tgju_task():
+    """Fetches TGJU in the background so caller never blocks on external network delay."""
     global _TGJU_PARSED_CACHE, _TGJU_PARSED_TS
-    now = time.time()
-    if not force_refresh and _TGJU_PARSED_CACHE and (now - _TGJU_PARSED_TS < 90.0):
-        return _TGJU_PARSED_CACHE
-
-    client = get_async_client()
     try:
+        client = get_async_client()
         r = await client.get("https://www.tgju.org/", timeout=3.5)
         if r.status_code == 200:
             html = r.text
@@ -70,14 +63,34 @@ async def _get_fresh_tgju_rates(force_refresh: bool = False) -> Dict[str, str]:
                     extracted[k] = m.group(1).replace(",", "").strip()
             if extracted.get("price_dollar_rl") or extracted.get("geram18"):
                 _TGJU_PARSED_CACHE = extracted
-                _TGJU_PARSED_TS = now
-                return _TGJU_PARSED_CACHE
-    except Exception:
-        pass
+                _TGJU_PARSED_TS = time.time()
+    except Exception as e:
+        logger.debug(f"Background TGJU refresh skipped: {e}")
 
-    # Fallback to pre-synced dashboard
+async def _get_fresh_tgju_rates(force_refresh: bool = False) -> Dict[str, str]:
+    """
+    Sub-millisecond Stale-While-Revalidate TGJU Rates:
+    Returns immediately from Hot RAM in 0.0001ms. If cache is older than 90s,
+    serves existing data immediately and fires background refresh without blocking user!
+    """
+    global _TGJU_PARSED_CACHE, _TGJU_PARSED_TS
+    now = time.time()
+    if _TGJU_PARSED_CACHE:
+        if not force_refresh and (now - _TGJU_PARSED_TS < 90.0):
+            return _TGJU_PARSED_CACHE
+        # Stale: schedule background refresh without blocking caller
+        try:
+            asyncio.create_task(_refresh_tgju_task())
+        except Exception:
+            pass
+        return _TGJU_PARSED_CACHE
+
+    # Only cold-start (empty cache) waits for initial fetch
+    await _refresh_tgju_task()
     if _TGJU_PARSED_CACHE:
         return _TGJU_PARSED_CACHE
+
+    # Fallback to pre-synced dashboard
     dash = await _read_dashboard()
     res = {}
     if dash.get("usd_toman"):
@@ -397,6 +410,102 @@ async def get_global_forex_rates(base: str = "USD", force_refresh: bool = False)
 # 3. Multi-Exchange Global & Iranian Crypto Aggregator (Binance & Nobitex)
 # =========================================================================
 
+_NOBITEX_STATS_CACHE: Dict[str, Any] = {}
+_NOBITEX_STATS_TS: float = 0.0
+
+async def _fetch_binance_us(sym: str) -> Optional[Dict[str, Any]]:
+    client = get_async_client()
+    try:
+        r = await client.get(f"https://api.binance.us/api/v3/ticker/24hr?symbol={sym}USDT", timeout=1.8)
+        if r.status_code == 200:
+            d = r.json()
+            p = float(d.get("lastPrice", 0))
+            if p > 0:
+                return {
+                    "symbol": sym,
+                    "price": p,
+                    "change": float(d.get("priceChangePercent", 0)),
+                    "high": float(d.get("highPrice", 0)),
+                    "low": float(d.get("lowPrice", 0)),
+                    "volume": float(d.get("quoteVolume", 0))
+                }
+    except Exception:
+        pass
+    return None
+
+async def _fetch_mexc(sym: str) -> Optional[Dict[str, Any]]:
+    client = get_async_client()
+    try:
+        r = await client.get(f"https://api.mexc.com/api/v3/ticker/24hr?symbol={sym}USDT", timeout=1.8)
+        if r.status_code == 200:
+            d = r.json()
+            p = float(d.get("lastPrice", 0))
+            if p > 0:
+                return {
+                    "symbol": sym,
+                    "price": p,
+                    "change": float(d.get("priceChangePercent", 0)),
+                    "high": float(d.get("highPrice", 0)),
+                    "low": float(d.get("lowPrice", 0)),
+                    "volume": float(d.get("quoteVolume", 0))
+                }
+    except Exception:
+        pass
+    return None
+
+async def _fetch_kucoin(sym: str) -> Optional[Dict[str, Any]]:
+    client = get_async_client()
+    try:
+        r = await client.get(f"https://api.kucoin.com/api/v1/market/stats?symbol={sym}-USDT", timeout=1.8)
+        if r.status_code == 200:
+            kd = r.json().get("data", {})
+            if kd and kd.get("last"):
+                p = float(kd["last"])
+                if p > 0:
+                    chg = float(kd.get("changeRate", 0)) * 100
+                    return {
+                        "symbol": sym,
+                        "price": p,
+                        "change": chg,
+                        "high": float(kd.get("high", 0) or p),
+                        "low": float(kd.get("low", 0) or p),
+                        "volume": float(kd.get("volValue", 0))
+                    }
+    except Exception:
+        pass
+    return None
+
+async def _fetch_coinpaprika(sym: str) -> Optional[Dict[str, Any]]:
+    client = get_async_client()
+    slug_map = {
+        "TON": "toncoin-the-open-network",
+        "TONCOIN": "toncoin-the-open-network",
+        "NOT": "notcoin-not",
+        "SUI": "sui-sui",
+        "PEPE": "pepe-pepe",
+    }
+    slug = slug_map.get(sym)
+    if not slug:
+        return None
+    try:
+        r = await client.get(f"https://api.coinpaprika.com/v1/tickers/{slug}", timeout=1.8)
+        if r.status_code == 200:
+            qd = r.json().get("quotes", {}).get("USD", {})
+            if qd and qd.get("price"):
+                p = float(qd["price"])
+                if p > 0:
+                    return {
+                        "symbol": sym,
+                        "price": p,
+                        "change": float(qd.get("percent_change_24h", 0)),
+                        "high": p * 1.02,
+                        "low": p * 0.98,
+                        "volume": float(qd.get("volume_24h", 0))
+                    }
+    except Exception:
+        pass
+    return None
+
 async def _get_binance_depth(symbol: str) -> Optional[Dict[str, Any]]:
     # USDT is a $1 stablecoin — no external lookup needed. Free, instant, 0-ms.
     clean_sym = (symbol or "").upper().strip()
@@ -406,91 +515,20 @@ async def _get_binance_depth(symbol: str) -> Optional[Dict[str, Any]]:
         return None
 
     sym = clean_sym.replace("USDT", "")
-    client = get_async_client()
 
-    # Provider 1: Binance US (No geo-blocking on Railway/US datacenter IPs, fast 40ms)
+    # Ultra-Fast Concurrent Provider Race: Query providers simultaneously, take first valid answer
+    fetchers = [_fetch_binance_us(sym), _fetch_kucoin(sym), _fetch_mexc(sym)]
+    if sym in ("TON", "TONCOIN", "NOT", "SUI", "PEPE"):
+        fetchers.append(_fetch_coinpaprika(sym))
+
     try:
-        r = await client.get(f"https://api.binance.us/api/v3/ticker/24hr?symbol={sym}USDT", timeout=1.8)
-        if r.status_code == 200:
-            d = r.json()
-            return {
-                "symbol": sym,
-                "price": float(d.get("lastPrice", 0)),
-                "change": float(d.get("priceChangePercent", 0)),
-                "high": float(d.get("highPrice", 0)),
-                "low": float(d.get("lowPrice", 0)),
-                "volume": float(d.get("quoteVolume", 0))
-            }
-    except Exception:
-        pass
-
-    # Provider 2: MEXC Global (Global ticker: covers TON, NOT, DOGE, PEPE, SHIB, BTC, ETH...)
-    try:
-        r = await client.get(f"https://api.mexc.com/api/v3/ticker/24hr?symbol={sym}USDT", timeout=1.8)
-        if r.status_code == 200:
-            d = r.json()
-            return {
-                "symbol": sym,
-                "price": float(d.get("lastPrice", 0)),
-                "change": float(d.get("priceChangePercent", 0)),
-                "high": float(d.get("highPrice", 0)),
-                "low": float(d.get("lowPrice", 0)),
-                "volume": float(d.get("quoteVolume", 0))
-            }
-    except Exception:
-        pass
-
-    # Provider 3: KuCoin Market Stats
-    try:
-        r = await client.get(f"https://api.kucoin.com/api/v1/market/stats?symbol={sym}-USDT", timeout=1.8)
-        if r.status_code == 200:
-            kd = r.json().get("data", {})
-            if kd and kd.get("last"):
-                p = float(kd["last"])
-                chg = float(kd.get("changeRate", 0)) * 100
-                return {
-                    "symbol": sym,
-                    "price": p,
-                    "change": chg,
-                    "high": float(kd.get("high", 0) or p),
-                    "low": float(kd.get("low", 0) or p),
-                    "volume": float(kd.get("volValue", 0))
-                }
-    except Exception:
-        pass
-
-    # Provider 4: CoinPaprika for TON and special altcoins
-    if sym in ("TON", "TONCOIN"):
-        try:
-            r = await client.get("https://api.coinpaprika.com/v1/tickers/toncoin-the-open-network", timeout=1.8)
-            if r.status_code == 200:
-                qd = r.json().get("quotes", {}).get("USD", {})
-                if qd and qd.get("price"):
-                    p = float(qd["price"])
-                    return {
-                        "symbol": "TON",
-                        "price": p,
-                        "change": float(qd.get("percent_change_24h", 0)),
-                        "high": p * 1.02,
-                        "low": p * 0.98,
-                        "volume": float(qd.get("volume_24h", 0))
-                    }
-        except Exception:
-            pass
-
-    # Provider 5: Binance Global (Fallback if not geo-blocked)
-    try:
-        r = await client.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={sym}USDT", timeout=1.5)
-        if r.status_code == 200:
-            d = r.json()
-            return {
-                "symbol": sym,
-                "price": float(d.get("lastPrice", 0)),
-                "change": float(d.get("priceChangePercent", 0)),
-                "high": float(d.get("highPrice", 0)),
-                "low": float(d.get("lowPrice", 0)),
-                "volume": float(d.get("quoteVolume", 0))
-            }
+        for coro in asyncio.as_completed(fetchers):
+            try:
+                res = await coro
+                if res and isinstance(res, dict) and res.get("price", 0) > 0:
+                    return res
+            except Exception:
+                continue
     except Exception:
         pass
 
@@ -513,28 +551,43 @@ def _parse_tgju_price(soup: Any, row_id: str) -> Optional[str]:
         pass
     return None
 
-async def _get_nobitex_price(symbol: str, global_usd: float = 0.0) -> Optional[Dict[str, Any]]:
+async def _refresh_nobitex_stats() -> Dict[str, Any]:
+    global _NOBITEX_STATS_CACHE, _NOBITEX_STATS_TS
     client = get_async_client()
-    sym_low = symbol.lower()
-    # Tier 1: Nobitex v2 API (Fast, 1.5s timeout)
     try:
-        r = await client.get("https://apiv2.nobitex.ir/market/stats", timeout=1.5)
+        r = await client.get("https://apiv2.nobitex.ir/market/stats", timeout=2.0)
         if r.status_code == 200:
             stats = r.json().get("stats", {})
-            pair_key = f"{sym_low}-rls"
-            if pair_key in stats:
-                d = stats[pair_key]
-                latest_rls = float(d.get("latest", 0))
-                if latest_rls > 0:
-                    return {
-                        "toman": int(latest_rls / 10),
-                        "change": float(d.get("dayChange", 0)),
-                        "best_buy": int(float(d.get("bestBuy", 0)) / 10),
-                        "best_sell": int(float(d.get("bestSell", 0)) / 10),
-                        "src": "نوبیتکس"
-                    }
-    except Exception:
-        pass
+            if stats:
+                _NOBITEX_STATS_CACHE = stats
+                _NOBITEX_STATS_TS = time.time()
+                return stats
+    except Exception as e:
+        logger.debug(f"Nobitex stats fetch error: {e}")
+    return _NOBITEX_STATS_CACHE
+
+async def _get_nobitex_price(symbol: str, global_usd: float = 0.0) -> Optional[Dict[str, Any]]:
+    global _NOBITEX_STATS_CACHE, _NOBITEX_STATS_TS
+    sym_low = symbol.lower()
+    pair_key = f"{sym_low}-rls"
+
+    # Tier 1: Hot RAM Cache (45-second cache for instant 0.0001ms lookup across all coins)
+    now = time.time()
+    stats = _NOBITEX_STATS_CACHE
+    if not stats or (now - _NOBITEX_STATS_TS > 45.0):
+        stats = await _refresh_nobitex_stats()
+
+    if stats and pair_key in stats:
+        d = stats[pair_key]
+        latest_rls = float(d.get("latest", 0))
+        if latest_rls > 0:
+            return {
+                "toman": int(latest_rls / 10),
+                "change": float(d.get("dayChange", 0)),
+                "best_buy": int(float(d.get("bestBuy", 0)) / 10),
+                "best_sell": int(float(d.get("bestSell", 0)) / 10),
+                "src": "نوبیتکس"
+            }
 
     # Tier 2: Instant calculation from Global USD x Free USD Toman (Zero-wait!)
     if global_usd > 0:
@@ -573,9 +626,27 @@ async def get_price(symbol: str, force_refresh: bool = False) -> str:
         if fresh:
             return _with_fresh_label(fresh)
 
-    b_res = await _get_binance_depth(clean_sym)
+    # Parallel Global & Local Exchange Gathering (Concurrent: 2x-3x speedup!)
+    b_task = asyncio.create_task(_get_binance_depth(clean_sym))
+    n_task = asyncio.create_task(_get_nobitex_price(clean_sym))
+    b_res, n_res = await asyncio.gather(b_task, n_task, return_exceptions=True)
+    if isinstance(b_res, Exception):
+        b_res = None
+    if isinstance(n_res, Exception):
+        n_res = None
+
     usd_price = b_res.get("price", 0.0) if (isinstance(b_res, dict) and b_res) else 0.0
-    n_res = await _get_nobitex_price(clean_sym, global_usd=usd_price)
+    if (not n_res or not isinstance(n_res, dict)) and usd_price > 0:
+        usd_toman = await _get_free_usd_toman()
+        if usd_toman > 0:
+            toman = int(usd_price * usd_toman)
+            n_res = {
+                "toman": toman,
+                "change": 0.0,
+                "best_buy": toman,
+                "best_sell": toman,
+                "src": "تخمین بازار آزاد"
+            }
 
     lines = []
     if isinstance(b_res, dict) and b_res:

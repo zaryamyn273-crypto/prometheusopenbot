@@ -905,7 +905,7 @@ async def sh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"💻 <b>فرمان اجرا شد ({status_badge}):</b>\n<code>{html.escape(cmd_text[:300])}</code>\n\n<pre><code>{html.escape(truncated_preview)}</code></pre>{group_notice}",
                     parse_mode=ParseMode.HTML
                 )
-                doc_file = io.BytesIO(result_str.encode("utf-8"))
+                doc_file = io.BytesIO(masked_str.encode("utf-8"))
                 doc_file.name = "shell_output.log"
                 await chat.send_document(
                     document=doc_file,

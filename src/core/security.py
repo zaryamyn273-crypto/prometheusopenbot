@@ -34,7 +34,9 @@ def _build_secrets_list() -> List[str]:
         os.getenv("SPOTIFY_CLIENT_SECRET", ""),
         os.getenv("E2B_API_KEY", ""),
         getattr(_config, "E2B_API_KEY", ""),
+        os.getenv("RAILWAY_TOKEN", ""),
         os.getenv("RAILWAY_API_TOKEN", ""),
+        os.getenv("API_KEY_SECRET", ""),
     ]
     out = []
     seen = set()
