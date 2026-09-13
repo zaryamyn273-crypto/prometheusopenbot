@@ -9,50 +9,67 @@ from src.core.config import GITHUB_TOKEN
 logger = logging.getLogger(__name__)
 
 # =========================================================================
-# 1. Reddit Explorer & Community Discussions Search
+# 1. Reddit Explorer & Community Discussions Search (Zero-API Resilient)
 # =========================================================================
+
+_L1_REDDIT_CACHE: dict = {}
 
 @register_tool(
     name="reddit_search",
-    description="جستجو و کاوش در ردیت (Reddit) برای یافتن تاپیک‌ها، تجربیات کاربران، حل مشکلات برنامه‌نویسی و بحث‌های جامعه ردیت",
+    description="جستجوی زنده تاپیک‌ها، مباحث تخصصی، تجربیات کاربران، رفع باگ‌ها و بحث‌های جوامع ردیت (Reddit) بر اساس ساب‌ردیت، میزان رای (Upvotes) و کامنت‌ها بدون نیاز به کلید API",
     category="dev"
 )
 async def reddit_search(query: str, subreddit: str = "", sort: str = "relevance", max_results: int = 5) -> str:
     """
-    :param query: موضوع، خطا یا سوال مورد نظر برای جستجو در ردیت
-    :param subreddit: ساب‌ردیت خاص در صورت تمایل (مانند: python, learnprogramming, reactjs, webdev)
-    :param sort: نحوه مرتب‌سازی (relevance, top, new)
+    :param query: موضوع، سوال، نام پکیج یا ارور مورد نظر برای کاوش در ردیت
+    :param subreddit: ساب‌ردیت مشخص (اختیاری؛ مانند python, learnprogramming, webdev, iranian, artificial)
+    :param sort: نحوه مرتب‌سازی ('relevance', 'top', 'new', 'hot')
     :param max_results: حداکثر تعداد نتایج (۱ تا ۱۰)
     """
+    import time
     clean_q = (query or "").strip()
     if not clean_q:
         return "عبارت جستجو برای ردیت مشخص نشده است."
 
     sub_clean = (subreddit or "").strip().replace("r/", "").replace("/", "")
-    cache_key = f"REDDIT_{sub_clean}_{clean_q.lower().replace(' ', '_')}_{sort}"
+    sort_clean = (sort or "relevance").lower().strip()
+    if sort_clean not in ("relevance", "top", "new", "hot"):
+        sort_clean = "relevance"
+
+    cache_key = f"REDDIT_{sub_clean}_{clean_q.lower().replace(' ', '_')}_{sort_clean}"
+    now = time.time()
+    if cache_key in _L1_REDDIT_CACHE:
+        ts, val = _L1_REDDIT_CACHE[cache_key]
+        if (now - ts) < 600.0:
+            return val
+
     cached = await database.kv_get_cache_async(cache_key)
     if cached:
+        _L1_REDDIT_CACHE[cache_key] = (now, cached)
         return cached
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 PrometheusRedditAgent/3.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
     }
 
+    lines = []
     # Tier 1: Reddit Real-Time Search RSS Feed
     try:
         async with shared_client_ctx("web") as client:
-            encoded_q = urllib.parse.quote(clean_q)
+            enc_q = urllib.parse.quote(clean_q)
             if sub_clean:
-                rss_url = f"https://www.reddit.com/r/{sub_clean}/search.rss?q={encoded_q}&restrict_sr=1&sort={sort}"
+                rss_url = f"https://www.reddit.com/r/{sub_clean}/search.rss?q={enc_q}&restrict_sr=1&sort={sort_clean}"
             else:
-                rss_url = f"https://www.reddit.com/search.rss?q={encoded_q}&sort={sort}"
+                rss_url = f"https://www.reddit.com/search.rss?q={enc_q}&sort={sort_clean}"
 
-            r = await client.get(rss_url, headers=headers)
-            if r.status_code == 200 and len(r.text) > 200:
+            r = await client.get(rss_url, headers=headers, follow_redirects=True, timeout=8.0)
+            if r.status_code == 200 and len(r.text) > 300 and "<feed" in r.text:
                 soup = BeautifulSoup(r.text, "xml")
                 entries = soup.find_all("entry")
                 if entries:
-                    lines = [f"👽 *نتایج جستجو در ردیت (Reddit) برای «{clean_q}»:*\n"]
+                    lines.append(f"👽 *نتایج جستجوی زنده در ردیت (Reddit) برای «{clean_q}»:*\n")
                     count = 0
                     for entry in entries:
                         if count >= max(1, min(10, max_results)):
@@ -69,9 +86,9 @@ async def reddit_search(query: str, subreddit: str = "", sort: str = "relevance"
                         snippet = ""
                         if c_tag:
                             snippet_soup = BeautifulSoup(c_tag.get_text(), "html.parser")
-                            for bad in snippet_soup(["a", "img"]):
+                            for bad in snippet_soup(["a", "img", "table"]):
                                 bad.decompose()
-                            snippet = snippet_soup.get_text(separator=" ", strip=True)[:300]
+                            snippet = snippet_soup.get_text(separator=" ", strip=True)[:280]
 
                         sub_name = ""
                         if "/r/" in link:
@@ -86,27 +103,74 @@ async def reddit_search(query: str, subreddit: str = "", sort: str = "relevance"
 
                         res_entry = f"{header_line}\n   👤 نویسنده: `{author}`\n"
                         if snippet:
-                            res_entry += f"   📄 {snippet}\n"
+                            res_entry += f"   📄 _{snippet}_\n"
                         if link:
                             res_entry += f"   🔗 [مشاهده تاپیک در ردیت]({link})\n"
                         lines.append(res_entry)
                         count += 1
-
-                    out_text = "\n".join(lines)
-                    await database.kv_set_cache_async(cache_key, out_text, expiration_ttl=600)
-                    return out_text
     except Exception as e:
         logger.debug(f"Reddit RSS error: {e}")
 
-    # Tier 2: Site-directed web search fallback
-    try:
-        from src.tools.web_network import web_search
-        site_term = f"site:reddit.com/r/{sub_clean}" if sub_clean else "site:reddit.com"
-        searched = await web_search(f"{site_term} {clean_q}", max_results=max_results)
-        if searched and "یافت نشد" not in searched:
-            return f"👽 *نتایج ردیت (از موتور جستجو):*\n\n{searched}"
-    except Exception:
-        pass
+    # Tier 2: Resilient DuckDuckGo HTML Site Search for Reddit (with votes & comments extraction)
+    if not lines:
+        try:
+            async with shared_client_ctx("web") as client:
+                ddg_site = f"site:reddit.com/r/{sub_clean}" if sub_clean else "site:reddit.com"
+                ddg_q = f"{ddg_site} {clean_q}"
+                r_ddg = await client.post("https://html.duckduckgo.com/html/", data={"q": ddg_q}, headers=headers, timeout=8.0)
+                if r_ddg.status_code == 200 and len(r_ddg.text) > 1000:
+                    soup_ddg = BeautifulSoup(r_ddg.text, "html.parser")
+                    r_divs = soup_ddg.select(".result__body")
+                    if r_divs:
+                        lines.append(f"👽 *نتایج ردیت (Reddit) برای «{clean_q}»:*\n")
+                        count = 0
+                        for div in r_divs:
+                            if count >= max(1, min(10, max_results)):
+                                break
+                            t_el = div.select_one(".result__title")
+                            s_el = div.select_one(".result__snippet")
+                            u_el = div.select_one(".result__url")
+                            if not t_el:
+                                continue
+
+                            title = t_el.get_text(strip=True).replace(" - Reddit", "").replace(" : r/", " (r/").strip()
+                            raw_snip = s_el.get_text(strip=True) if s_el else ""
+                            raw_u = u_el.get_text(strip=True) if u_el else ""
+
+                            # Extract votes and comments stats
+                            stats_match = re.search(r"([\d\.,kK]+\s+votes?,\s+[\d\.,kK]+\s+comments?)", raw_snip, re.IGNORECASE)
+                            stats_label = f" ({stats_match.group(1)})" if stats_match else ""
+
+                            # Clean link
+                            link = f"https://{raw_u.strip()}" if not raw_u.strip().startswith("http") else raw_u.strip()
+
+                            lines.append(
+                                f"{count + 1}. *{title}*{stats_label}\n"
+                                f"   📄 _{raw_snip[:260]}_\n"
+                                f"   🔗 [مشاهده در Reddit]({link})\n"
+                            )
+                            count += 1
+        except Exception as ddg_err:
+            logger.debug(f"Reddit DDG fallback error: {ddg_err}")
+
+    # Tier 3: General web_search fallback
+    if not lines:
+        try:
+            from src.tools.web_network import web_search
+            site_term = f"site:reddit.com/r/{sub_clean}" if sub_clean else "site:reddit.com"
+            searched = await web_search(f"{site_term} {clean_q}", max_results=max_results)
+            if searched and "یافت نشد" not in searched:
+                out_text = f"👽 *نتایج ردیت (از موتور جستجو):*\n\n{searched}"
+                _L1_REDDIT_CACHE[cache_key] = (now, out_text)
+                return out_text
+        except Exception:
+            pass
+
+    if lines:
+        out_text = "\n".join(lines)
+        _L1_REDDIT_CACHE[cache_key] = (now, out_text)
+        await database.kv_set_cache_async(cache_key, out_text, expiration_ttl=600)
+        return out_text
 
     return f"موردی برای «{clean_q}» در ردیت یافت نشد."
 

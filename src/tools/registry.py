@@ -218,7 +218,8 @@ def get_all_tool_definitions(include_internal: bool = False) -> List[Dict[str, A
 CATEGORY_KEYWORDS = {
     "financial": [
         "دلار", "تتر", "بیتکوین", "بیت کوین", "ارز", "طلا", "سکه", "یورو", "پوند", "درهم", "لیر",
-        "کریپتو", "اتریوم", "forex", "crypto", "btc", "eth", "usdt", "nobitex", "binance", "سرمایه", "نرخ طلا", "نرخ ارز", "صرافی"
+        "کریپتو", "اتریوم", "forex", "crypto", "btc", "eth", "usdt", "nobitex", "binance", "سرمایه", "نرخ طلا", "نرخ ارز", "صرافی",
+        "نقره", "نفت", "برنت", "حباب سکه", "ارزش ذاتی", "silver", "oil", "brent", "commodities", "کالاهای اساسی"
     ],
     "crypto": [
         "بیتکوین", "بیت کوین", "کریپتو", "اتریوم", "btc", "eth", "usdt", "nobitex", "binance", "رمزارز", "تون", "داج", "سولانا"
@@ -229,6 +230,7 @@ CATEGORY_KEYWORDS = {
     "search": [
         "سرچ", "جستجو", "گوگل", "خبر", "اخبار", "search", "news", "پیدا کن", "مقاله", "تحقیق",
         "دیجیکالا", "دیجی کالا", "دیجی", "digikala", "خرید", "کالا", "اجناس", "گوشی", "موبایل", "لپتاپ", "لپ تاپ",
+        "آمازون", "amazon", "ای بی", "ای‌بی", "ebay", "خرید خارجی", "محصولات خارجی", "قیمت آمازون", "قیمت ای بی",
         "توییتر", "توییت", "twitter", "tweet", "اکس", "x.com", "توییت ها", "هشتگ", "پست های توییتر",
         "tavily", "تاویلی", "وب", "اینترنت", "اطلاعات روز", "تازه‌ترین", "تازه ترین", "جدیدترین"
     ],
@@ -587,7 +589,10 @@ TOOL_FALLBACKS: Dict[str, List[str]] = {
     "stackoverflow_search": ["web_search", "github_issues_search"],
     "github_issues_search": ["stackoverflow_search", "web_search"],
     "github_search_repositories": ["github_repo_info", "bot_fallback_search"],
-    "digikala_search": ["web_search", "bot_fallback_search"],
+    "digikala_search": ["amazon_search", "ebay_search", "web_search"],
+    "amazon_search": ["ebay_search", "digikala_search", "web_search"],
+    "ebay_search": ["amazon_search", "digikala_search", "web_search"],
+    "get_commodities_price": ["get_gold_and_coin_price", "web_search"],
     "download_music_track": ["get_song_lyrics", "bot_music_fallback"],
     "get_song_lyrics": ["bot_lyrics_fallback", "bot_fallback_search"],
     "transcribe_audio_tool": ["bot_fallback_search"],

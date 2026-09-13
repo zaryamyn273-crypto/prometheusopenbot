@@ -713,7 +713,8 @@ async def generate_response(
                 "web_search", "tavily_search",
                 "reconstruct_damaged_barcode_tool", "generate_barcode_tool",
                 "calculate_math_expression", "statistics_summary",
-                "get_price", "get_current_datetime_info", "digikala_search"
+                "get_price", "get_current_datetime_info", "digikala_search",
+                "amazon_search", "ebay_search", "get_commodities_price"
             }
             prompt_tool_names = {t.get("function", {}).get("name") for t in (tools_schema or [])}
             combined_tool_names = vision_essential | prompt_tool_names
@@ -900,7 +901,7 @@ async def generate_response(
                 "list_joined_groups_tool", "leave_group_by_admin_tool", "resolve_dns",
                 "check_website_status", "get_ip_info", "generate_hash_digest",
                 "base64_encode_decode", "url_encode_decode", "generate_uuid",
-                "digikala_search", "reddit_search", "stackoverflow_search", "github_issues_search", "extract_user_id_tool", "ban_group_by_name_or_id_tool", "twitter_search", "cloudflare_d1_store_record", "cloudflare_d1_retrieve_record", "cloudflare_d1_delete_record", "cloudflare_d1_list_records", "cloudflare_d1_search_records", "manage_admin_memory",
+                "digikala_search", "amazon_search", "ebay_search", "get_commodities_price", "reddit_search", "stackoverflow_search", "github_issues_search", "extract_user_id_tool", "ban_group_by_name_or_id_tool", "twitter_search", "cloudflare_d1_store_record", "cloudflare_d1_retrieve_record", "cloudflare_d1_delete_record", "cloudflare_d1_list_records", "cloudflare_d1_search_records", "manage_admin_memory",
                 "quick_http_inspect_tool",
                 "tavily_search", "web_search", "deep_search_and_read", "live_news", "fetch_webpage_content", "transcribe_audio_tool",
                 "publish_telegraph_article", "check_ssl_certificate",

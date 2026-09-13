@@ -641,6 +641,46 @@ async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = scientific.calculate_math_expression(expr)
     await reply_safely(message, await _maybe_translate(update, res))
 
+async def digikala_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    q = " ".join(context.args).strip() if context.args else ""
+    if not q:
+        await reply_safely(message, "🛍 لطفاً نام محصول مورد نظر برای استعلام در دیجی‌کالا را وارد کنید.\nمثال: `/digikala گوشی سامسونگ s24`")
+        return
+    from src.tools.web_network import digikala_search
+    res = await digikala_search(q)
+    await reply_safely(message, res)
+
+async def amazon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    q = " ".join(context.args).strip() if context.args else ""
+    if not q:
+        await reply_safely(message, "📦 لطفاً نام کالا برای استعلام دلاری در آمازون را وارد کنید.\nمثال: `/amazon macbook air m3`")
+        return
+    from src.tools.web_network.ecommerce import amazon_search
+    res = await amazon_search(q)
+    await reply_safely(message, res)
+
+async def ebay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    q = " ".join(context.args).strip() if context.args else ""
+    if not q:
+        await reply_safely(message, "🛒 لطفاً نام کالا برای استعلام در eBay را وارد کنید.\nمثال: `/ebay thinkpad x1 carbon`")
+        return
+    from src.tools.web_network.ecommerce import ebay_search
+    res = await ebay_search(q)
+    await reply_safely(message, res)
+
+async def reddit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    q = " ".join(context.args).strip() if context.args else ""
+    if not q:
+        await reply_safely(message, "👽 لطفاً عبارت مورد نظر برای کاوش در ردیت را وارد کنید.\nمثال: `/reddit python asyncio`")
+        return
+    from src.tools.dev import reddit_search
+    res = await reddit_search(q)
+    await reply_safely(message, res)
+
 async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from src.tools.admin import group_manager
     user = update.effective_user
@@ -3259,6 +3299,14 @@ def build_application():
     app.add_handler(_pcmd("search_prometheus", search_command))
     app.add_handler(_pcmd("calc", calc_command))
     app.add_handler(_pcmd("calc_prometheus", calc_command))
+    app.add_handler(_pcmd("digikala", digikala_command))
+    app.add_handler(_pcmd("digikala_prometheus", digikala_command))
+    app.add_handler(_pcmd("amazon", amazon_command))
+    app.add_handler(_pcmd("amazon_prometheus", amazon_command))
+    app.add_handler(_pcmd("ebay", ebay_command))
+    app.add_handler(_pcmd("ebay_prometheus", ebay_command))
+    app.add_handler(_pcmd("reddit", reddit_command))
+    app.add_handler(_pcmd("reddit_prometheus", reddit_command))
     app.add_handler(_pcmd("code", code_command))
     app.add_handler(_pcmd("code_prometheus", code_command))
     app.add_handler(_pcmd("sh", sh_command))

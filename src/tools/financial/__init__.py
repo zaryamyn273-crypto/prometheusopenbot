@@ -185,6 +185,22 @@ def _safe_toman(raw: Any, fallback: int = 0) -> int:
     except Exception:
         return fallback
 
+def _safe_float(raw: Any, fallback: float = 0.0) -> float:
+    """Parses Persian/English digit floats safely, never raises."""
+    try:
+        if raw is None:
+            return fallback
+        s = str(raw).strip().replace(",", "").replace("٬", "").replace("،", "")
+        fa_digits = "۰۱۲۳۴۵۶۷۸۹"
+        for i, d in enumerate(fa_digits):
+            s = s.replace(d, str(i))
+        cleaned = re.sub(r"[^\d\.]", "", s)
+        if not cleaned:
+            return fallback
+        return float(cleaned)
+    except Exception:
+        return fallback
+
 async def _read_dashboard() -> Dict[str, Any]:
     """Reads the 5-minute pre-synced market dashboard (real values, may be stale)."""
     try:
@@ -615,6 +631,15 @@ async def get_price(symbol: str, force_refresh: bool = False) -> str:
     raw_upper = symbol.upper().strip()
     if not raw_upper:
         return "اطلاعات قیمتی برای نماد «» در صرافی‌های جهانی یافت نشد."
+
+    # Direct Redirection for Precious Metals, Commodities & Energy
+    if raw_upper in ("SILVER", "XAG", "نقره"):
+        return await get_commodities_price(force_refresh=force_refresh)
+    if raw_upper in ("OIL", "BRENT", "CRUDE", "WTI", "نفت", "برنت"):
+        return await get_commodities_price(force_refresh=force_refresh)
+    if raw_upper in ("GOLD", "XAU", "طلا", "سکه", "انس"):
+        return await get_gold_and_coin_price(force_refresh=force_refresh)
+
     if raw_upper in ("USDT", "تتر", "TETHER"):
         clean_sym = "USDT"
     else:
@@ -754,10 +779,8 @@ async def get_gold_and_coin_price(force_refresh: bool = False) -> str:
     p_rob = _safe_toman(rates.get("rob"))
     p_bahar = _safe_toman(rates.get("sekeb"))
     p_abshodeh = _safe_toman(rates.get("mesghal"))
-    try:
-        p_ons = float(str(rates.get("ons", "0")).replace(',', '').strip())
-    except (TypeError, ValueError):
-        p_ons = 0.0
+    p_gerami = _safe_toman(rates.get("gerami"))
+    p_ons = _safe_float(rates.get("ons"))
 
     if not p_18 and not p_sekkeh:
         dash = await _read_dashboard()
@@ -769,19 +792,47 @@ async def get_gold_and_coin_price(force_refresh: bool = False) -> str:
             "🥇 *تابلوی زنده نرخ طلا و مسکوکات بازار تهران*:\n",
         ]
         if p_18:
+            p_24 = int(p_18 * (24.0 / 18.0))
             lines.append(f"• *هر گرم طلای ۱۸ عیار*: *{p_18:,} تومان* (معادل *{p_18*10:,} ریال*)")
+            lines.append(f"• *هر گرم طلای ۲۴ عیار (محاسباتی)*: *{p_24:,} تومان*")
         if p_ons > 0:
             lines.append(f"• *انس جهانی طلا (XAU/USD)*: *${p_ons:,.2f}*")
+        if p_abshodeh:
+            lines.append(f"• *مثقال طلا (آبشده)*: *{p_abshodeh:,} تومان*")
+
+        # Coin Breakdown
         if p_sekkeh:
+            lines.append(f"\n🪙 *نرخ مسکوکات طلا*:")
             lines.append(f"• *سکه تمام بهار آزادی (امامی)*: *{p_sekkeh:,} تومان* (معادل *{p_sekkeh*10:,} ریال*)")
         if p_bahar:
             lines.append(f"• *سکه بهار آزادی (طرح قدیم)*: *{p_bahar:,} تومان*")
-        if p_abshodeh:
-            lines.append(f"• *مثقال طلا (آبشده)*: *{p_abshodeh:,} تومان*")
         if p_nim:
             lines.append(f"• *نیم سکه بهار آزادی*: *{p_nim:,} تومان*")
         if p_rob:
             lines.append(f"• *ربع سکه بهار آزادی*: *{p_rob:,} تومان*")
+        if p_gerami:
+            lines.append(f"• *سکه یک گرمی بانک مرکزی*: *{p_gerami:,} تومان*")
+
+        # Coin Bubble Calculation (حباب سکه بر مبنای ارزش ذاتی طلای خالص)
+        usd_toman = await _get_free_usd_toman()
+        if p_ons > 0 and usd_toman > 0 and p_sekkeh > 0:
+            # Emami: 8.133g, fineness 900 -> 7.3197g pure 24K gold
+            intrinsic_emami = int((p_ons * usd_toman * 7.3197) / 31.1035)
+            bubble_emami = p_sekkeh - intrinsic_emami
+            bubble_emami_pct = (bubble_emami / p_sekkeh) * 100 if p_sekkeh > 0 else 0
+            bubble_sign = "+" if bubble_emami >= 0 else ""
+
+            lines.append(
+                f"\n🫧 *تحلیل حباب و ارزش ذاتی مسکوکات*:\n"
+                f"• *ارزش ذاتی سکه امامی*: *{intrinsic_emami:,} تومان*\n"
+                f"• *حباب سکه امامی*: *{bubble_sign}{bubble_emami:,} تومان* ({bubble_sign}{bubble_emami_pct:.1f}%)\n"
+                f"• *مبنای محاسبه*: انس جهانی `${p_ons:,.2f}` × دلار آزاد `{usd_toman:,}` تومان"
+            )
+            if p_rob and p_rob > 0:
+                intrinsic_rob = int((p_ons * usd_toman * 1.8299) / 31.1035)
+                bubble_rob = p_rob - intrinsic_rob
+                bubble_rob_pct = (bubble_rob / p_rob) * 100 if p_rob > 0 else 0
+                lines.append(f"• *حباب ربع سکه*: *{bubble_rob:,} تومان* ({bubble_rob_pct:.1f}%) | ارزش ذاتی: *{intrinsic_rob:,} تومان*")
 
         out_text = "\n".join(lines)
         await _put_cached(cache_key, out_text, ttl=300)
@@ -796,6 +847,57 @@ async def get_gold_and_coin_price(force_refresh: bool = False) -> str:
         pass
 
     return "دریافت اطلاعات طلا و سکه با اختلال موقت مواجه است."
+
+@register_tool(
+    name="get_commodities_price",
+    description="استعلام زنده، چندمنبعی و لحظه‌ای نرخ فلزات گرانبها و کالاهای استراتژیک جهان (انس جهانی نقره، هر گرم نقره ۹۹۹ و ۹۲۵ بازار ایران، نفت خام برنت و WTI، و نسبت طلا به نقره)",
+    category="financial"
+)
+async def get_commodities_price(force_refresh: bool = False) -> str:
+    cache_key = "COMMODITIES_PRICES"
+    if not force_refresh:
+        fresh = await _get_cached_or_refresh(cache_key, 180, lambda: get_commodities_price(force_refresh=True))
+        if fresh:
+            return _with_fresh_label(fresh)
+
+    rates = await _get_fresh_tgju_rates(force_refresh=force_refresh)
+    silver_ons = _safe_float(rates.get("silver"))
+    silver_999 = _safe_toman(rates.get("silver_999"))
+    silver_925 = _safe_toman(rates.get("silver_925"))
+    oil_brent = _safe_float(rates.get("oil_brent"))
+    oil_wti = _safe_float(rates.get("oil"))
+    oil_opec = _safe_float(rates.get("oil_opec"))
+    ratio_silver = _safe_float(rates.get("ratio_silver"))
+
+    lines = ["🛢 *تابلوی زنده فلزات گرانبها، انرژی و نفت جهانی*:\n"]
+    if silver_ons > 0:
+        lines.append(f"• *انس جهانی نقره (XAG/USD)*: *${silver_ons:,.2f}*")
+    if silver_999:
+        lines.append(f"• *هر گرم نقره ۹۹۹ (شمس نقره ایران)*: *{silver_999:,} تومان*")
+    if silver_925:
+        lines.append(f"• *هر گرم نقره ۹۲۵ (استرلینگ)*: *{silver_925:,} تومان*")
+    if ratio_silver > 0:
+        lines.append(f"• *نسبت طلا به نقره (Gold/Silver Ratio)*: *{ratio_silver:.2f}*")
+    if oil_brent > 0:
+        lines.append(f"• *نفت خام برنت دریای شمال (Brent)*: *${oil_brent:,.2f}*")
+    if oil_wti > 0:
+        lines.append(f"• *نفت خام سبک تگزاس (WTI)*: *${oil_wti:,.2f}*")
+    if oil_opec > 0:
+        lines.append(f"• *سبد مرجع نفتی اوپک (OPEC)*: *${oil_opec:,.2f}*")
+
+    if len(lines) > 1:
+        out_text = "\n".join(lines)
+        await _put_cached(cache_key, out_text, ttl=300)
+        return _with_fresh_label(out_text)
+
+    try:
+        from src.tools import web_network as _web
+        searched = await _web.web_search("قیمت انس نقره و نفت برنت امروز", max_results=3)
+        if searched and "یافت نشد" not in searched:
+            return f"⚠️ *نتیجه زنده وب برای نقره و نفت:*\n\n{searched}"
+    except Exception:
+        pass
+    return "اطلاعات کالاهای اساسی و نفت در حال حاضر در دسترس نیست."
 
 @register_tool(
     name="get_fiat_overview",
