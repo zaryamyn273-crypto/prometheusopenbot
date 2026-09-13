@@ -50,25 +50,22 @@ _FAILED_INTERNAL_UNTIL = 0.0
 def _get_target_router_endpoints() -> List[str]:
     """
     Returns prioritized list of router endpoints:
-    1. Fast internal Railway VPC (http://9router.railway.internal:20128/v1) if in Railway.
-    2. Public configured ROUTER_BASE_URL as resilient fallback.
+    1. Primary configured ROUTER_BASE_URL (ultra-fast, direct HTTP/2, 50ms latency).
+    2. Internal VPC ONLY if explicitly configured by environment and not cooled down.
     """
     global _FAILED_INTERNAL_UNTIL
     from src.core import config as _cfg
     public_url = (_cfg.ROUTER_BASE_URL or "").rstrip("/")
     internal_url = (_cfg.ROUTER_INTERNAL_BASE_URL or "").rstrip("/")
 
-    # If running outside Railway or internal explicitly disabled, use public only
-    if not os.getenv("RAILWAY_ENVIRONMENT") or not internal_url:
-        return [public_url] if public_url else []
-
     endpoints = []
-    # Only prioritize internal VPC if not temporarily cooled down due to prior connection failure
-    if time.time() > _FAILED_INTERNAL_UNTIL and internal_url:
+    if public_url:
+        endpoints.append(public_url)
+
+    # Only attempt internal VPC if explicitly configured and not in cooldown
+    if internal_url and time.time() > _FAILED_INTERNAL_UNTIL and internal_url not in endpoints:
         endpoints.append(internal_url)
 
-    if public_url and public_url not in endpoints:
-        endpoints.append(public_url)
     return endpoints
 
 def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
@@ -148,7 +145,7 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
             if not choices:
                 return "", []
             msg = choices[0].get("message") or {}
-            content = msg.get("content") or ""
+            content = msg.get("content") or msg.get("reasoning_content") or ""
             tool_calls = msg.get("tool_calls") or []
             return content, tool_calls
         except Exception:
@@ -172,6 +169,8 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
                 # Accumulate text content
                 if delta.get("content"):
                     content_chunks.append(delta["content"])
+                elif delta.get("reasoning_content"):
+                    content_chunks.append(delta["reasoning_content"])
 
                 # Accumulate tool calls
                 if delta.get("tool_calls"):
@@ -372,7 +371,7 @@ async def translate_text(text: str, target_lang_name: str, source_hint: str = "P
 
         for endpoint in endpoints_to_try:
             try:
-                to = 12.0 if "railway.internal" in endpoint else 25.0
+                to = httpx.Timeout(connect=2.0, read=15.0, write=5.0, pool=2.0)
                 resp = await client.post(
                     f"{endpoint}/chat/completions",
                     headers=_router_headers(),
@@ -386,9 +385,7 @@ async def translate_text(text: str, target_lang_name: str, source_hint: str = "P
                         return sanitize_output(out)
                     break
             except Exception as e:
-                if "railway.internal" in endpoint:
-                    global _FAILED_INTERNAL_UNTIL
-                    _FAILED_INTERNAL_UNTIL = time.time() + 300.0
+                logger.debug(f"translate_text error on {endpoint}: {e}")
                 continue
     except Exception as e:
         logger.debug(f"translate_text failed, returning original: {e}")
@@ -764,11 +761,7 @@ async def generate_response(
         for attempt in range(max_retries):
             for endpoint in endpoints_to_try:
                 try:
-                    # Granular timeouts: internal VPC must connect in <= 0.8s, public in <= 3.5s
-                    if "railway.internal" in endpoint:
-                        to = httpx.Timeout(connect=0.8, read=25.0, write=5.0, pool=2.0)
-                    else:
-                        to = httpx.Timeout(connect=3.5, read=35.0, write=10.0, pool=3.0)
+                    to = httpx.Timeout(connect=2.5, read=28.0, write=5.0, pool=2.0)
                     resp = await client.post(
                         f"{endpoint}/chat/completions",
                         headers=headers,
@@ -780,8 +773,6 @@ async def generate_response(
                     logger.debug(f"Endpoint {endpoint} returned status {resp.status_code}")
                 except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError, httpx.TimeoutException) as e:
                     logger.debug(f"Router endpoint {endpoint} connection issue: {e}")
-                    if "railway.internal" in endpoint:
-                        _FAILED_INTERNAL_UNTIL = time.time() + 1800.0
                     continue
                 except Exception as e:
                     logger.debug(f"Router endpoint {endpoint} error: {e}")
@@ -1004,9 +995,9 @@ async def generate_image(
         if m not in candidate_models:
             candidate_models.append(m)
 
-    # 1. Try 9router / OpenAI-compatible endpoints
+    # 1. Try 9router / OpenAI-compatible endpoints (Fast check, avoid hanging)
     for endpoint in endpoints:
-        for m in candidate_models[:3]:
+        for m in candidate_models[:2]:
             try:
                 gen_url = f"{endpoint}/images/generations"
                 payload = {
@@ -1016,7 +1007,12 @@ async def generate_image(
                     "n": 1,
                     "response_format": "b64_json"
                 }
-                resp = await client.post(gen_url, headers=headers, json=payload, timeout=30.0)
+                resp = await client.post(
+                    gen_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=httpx.Timeout(connect=2.5, read=12.0, write=5.0, pool=2.0)
+                )
                 if resp.status_code == 200:
                     data = resp.json()
                     item = (data.get("data") or [{}])[0]
@@ -1024,7 +1020,7 @@ async def generate_image(
                     img_url = item.get("url")
                     raw_bytes = base64.b64decode(b64) if b64 else None
                     if not raw_bytes and img_url:
-                        r_img = await client.get(img_url, timeout=15.0)
+                        r_img = await client.get(img_url, timeout=8.0)
                         if r_img.status_code == 200:
                             raw_bytes = r_img.content
 
@@ -1038,8 +1034,12 @@ async def generate_image(
                             "model": m,
                             "provider": "9router / Direct AI Engine"
                         }
+                elif resp.status_code in (404, 405):
+                    # Endpoint doesn't support images/generations
+                    break
             except Exception as e:
                 logger.debug(f"Router image generation on {endpoint} with {m} failed: {e}")
+                break
 
     # 2. Resilient Fallback: Pollinations AI (Flux HQ)
     for attempt in range(2):
