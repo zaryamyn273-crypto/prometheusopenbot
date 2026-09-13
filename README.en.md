@@ -93,21 +93,166 @@ docker compose up -d --build
 
 ---
 
-## Tools Matrix & Telegram Commands
+## Telegram Commands Matrix
 
-### 1. Telegram Slash Commands:
-* `/del <count>` or `/purge <count>`: Bulk delete recent bot messages or delete replied-to messages.
-* `/railway [status|redeploy|vars]`: Monitor Railway services, trigger instant container redeploys, or inspect environment variables.
-* `/sh <linux command>`: Execute authenticated shell commands with directory persistence and log upload.
-* `/remind <time> <text>` or `/schedule`: Schedule tasks, recurring cron jobs, or reminders with timezone intelligence.
-* `/schedules`: List all active scheduled tasks for current chat.
-* `/cancel_schedule <id>`: Cancel a scheduled task by numeric ID.
-* `/timezone` or `/tz`: View or set local timezone.
-* `/whois`: Extract numeric user ID, username, and identity metadata.
-* `/admin`: Master Admin glass control dashboard.
-* `/ban` and `/unban`: Manage user blacklist across D1 and RAM.
+Prometheus provides an extensive command ecosystem. To prevent cross-bot collision and noise, **in supergroups commands require the `_prometheus` suffix or a bot mention** (e.g., `/help_prometheus` or `/del_prometheus 10`). In direct private messages (PV), both standard and suffixed commands execute identically.
 
-### 2. Autonomous Agent Tools:
+### 1. Core & General Commands
+* **`/start`**
+  - **Description:** Initializes personal interaction, introduces capabilities, verifies permissions, and loads session state.
+  - **Permission:** Public (All Users).
+* **`/help`**
+  - **Description:** Multilingual interactive guide detailing available features, tools, group etiquette, and usage syntax.
+  - **Permission:** Public.
+* **`/tools` (or `/tools_prometheus`)**
+  - **Description:** Displays the live categorized catalog of connected agent tools (web search, vision, OSINT, financial tables, file generation, etc.).
+  - **Permission:** Public.
+* **`/clear` (or `/clear_prometheus`)**
+  - **Description:** Resets the active rolling conversation window in RAM for the current chat, initiating a pristine zero-context session.
+  - **Permission:** Public.
+* **`/id` or `/getid` (or `/id_prometheus`)**
+  - **Description:** Extracts numeric identifiers (`user_id` / `chat_id`), username, and chat metadata of the sender or replied-to message.
+  - **Permission:** Public.
+
+### 2. Live Intelligence, Finance & Media
+* **`/search <query>`**
+  - **Description:** Triggers a sub-second speculative web search race across Tavily AI, Bing, and DuckDuckGo, synthesizing factual, cited results.
+  - **Example:** `/search quantum computing breakthrough 2026`
+  - **Permission:** Public.
+* **`/crypto [symbol]`**
+  - **Description:** Fetches real-time cryptocurrency rates (BTC, ETH, USDT, TON, SOL) with 24-hour price change percentage.
+  - **Example:** `/crypto btc` or `/crypto` (for market overview).
+  - **Permission:** Public.
+* **`/gold`**
+  - **Description:** Displays live gold spot prices (18K, melted gold), sovereign coins, and international bullion rates.
+  - **Permission:** Public.
+* **`/weather <city>`**
+  - **Description:** Retrieves real-time meteorological conditions, temperature, humidity, wind speed, and atmospheric forecast for any city.
+  - **Example:** `/weather Tokyo` or `/weather London`
+  - **Permission:** Public.
+* **`/calc <expression>`**
+  - **Description:** High-precision algebraic and scientific calculator supporting trigonometry, percentages, and factorials without LLM arithmetic errors.
+  - **Example:** `/calc (1450 * 0.18) + sqrt(256)`
+  - **Permission:** Public.
+* **`/music <track / artist>`**
+  - **Description:** Searches and downloads studio-grade 320kbps audio files accompanied by synchronized `.lrc` lyric files.
+  - **Example:** `/music Hans Zimmer Time`
+  - **Permission:** Public.
+
+### 3. International Task Scheduler & Timezone
+* **`/remind <time> <message>` (or `/schedule`)**
+  - **Description:** Schedules tasks, recurring cron jobs, or reminders with persistent Cloudflare D1 SQL storage (fully resilient against restarts).
+  - **Examples:**
+    - `/remind 15m Check oven`
+    - `/remind tomorrow at 5 pm Dubai time Project sync`
+    - `/remind at 14:00 London time Team meeting`
+    - `/remind */30 * * * * System heartbeat check`
+  - **Permission:** Public.
+* **`/schedules`**
+  - **Description:** Lists all active scheduled tasks for the current chat along with task ID, recurrence type, and next execution timestamp.
+  - **Permission:** Public.
+* **`/cancel_schedule <id>`**
+  - **Description:** Cancels and purges a scheduled task by its numeric ID (`/cancel_schedule 4`).
+  - **Permission:** Public (Task owner or Admin).
+* **`/timezone <city/zone>` (or `/tz`)**
+  - **Description:** Views or updates user local timezone preference for accurate scheduling (`/tz London` or `/tz America/New_York`).
+  - **Permission:** Public.
+
+### 4. Message Cleanup & Bulk Purge
+* **`/del` (Reply Mode)**
+  - **Description:** Immediately deletes the specific replied-to message.
+  - **Permission:** Master Admin and Group Administrators.
+* **`/purge <count>` (or `/del <count>`, `/clean <count>`)**
+  - **Description:** Rapidly purges the last N messages sent by the bot (1 to 100) with atomic synchronization across Telegram API, Cloudflare D1, and RAM buffer, accompanied by a 4-second self-destructing confirmation notice.
+  - **Example:** `/purge 10` (Also responds to natural language: "delete your last 10 messages").
+  - **Permission:** Master Admin and Group Administrators.
+
+### 5. Railway Cloud Infrastructure Management
+* **`/railway status`**
+  - **Description:** Real-time infrastructure telemetry displaying project status, environment (`production`), active services (`prometheusopenbot`, `9router`), and deployment states (SUCCESS / BUILDING / CRASHED).
+  - **Permission:** Master Admin Only.
+* **`/railway redeploy [service]`**
+  - **Description:** Triggers an immediate zero-downtime container rebuild and redeployment on Railway via GraphQL API without opening the web dashboard.
+  - **Example:** `/railway redeploy prometheusopenbot`
+  - **Permission:** Master Admin Only.
+* **`/railway vars [service]`**
+  - **Description:** Inspects deployed environment variables with strict zero-leak masking for tokens, passwords, and sensitive keys.
+  - **Permission:** Master Admin Only.
+
+### 6. Linux Terminal Shell & Cloud Sandboxes
+* **`/sh <command>` (or `/bash`)**
+  - **Description:** Hardened server terminal shell with working directory persistence (`cd`), 35-second timeout, pre-authenticated Railway/GitHub credentials, and automatic document upload (`shell_output.log`) for large outputs exceeding 3500 characters.
+  - **Example:** `/sh uname -a && free -m` or `/sh cd src && ls -la`
+  - **Permission:** Master Admin Only (Destructive commands remain permanently blocked).
+* **`/e2b <code>`**
+  - **Description:** Executes Python or JavaScript inside isolated cloud micro-containers powered by E2B with zero host RCE risk.
+  - **Permission:** Master Admin Only.
+* **`/e2bsh <command>`**
+  - **Description:** Runs bash commands inside the remote E2B sandbox environment.
+  - **Permission:** Master Admin Only.
+* **`/e2bstatus`**
+  - **Description:** Reports the health, connectivity, and token validity of the E2B cloud client.
+  - **Permission:** Master Admin Only.
+* **`/set_e2b <api_key>`**
+  - **Description:** Sets or hot-swaps the runtime E2B API key in the admin session.
+  - **Permission:** Master Admin Only.
+* **`/set_github <token>`**
+  - **Description:** Sets or updates the personal GitHub token for automated repository creation and file commits.
+  - **Permission:** Master Admin Only.
+
+### 7. User & Quota Administration
+* **`/limit`**
+  - **Description:** Displays the user's daily quota consumption and remaining AI requests (default: 40 AI turns per day, resetting at 00:00 UTC).
+  - **Permission:** Public (Master Admin has unlimited quota).
+* **`/setquota <user_id> <limit>`**
+  - **Description:** Adjusts or overrides a specific user's daily message allowance.
+  - **Example:** `/setquota 987654321 150`
+  - **Permission:** Master Admin Only.
+* **`/resetquota <user_id>`**
+  - **Description:** Resets a user's daily quota counter back to zero consumed.
+  - **Permission:** Master Admin Only.
+* **`/ban <target>`**
+  - **Description:** Blacklists a user across all bot layers and D1 SQL by numeric ID, username, or reply.
+  - **Permission:** Master Admin Only.
+* **`/unban <target>`**
+  - **Description:** Removes a user from the global blacklist and restores access.
+  - **Permission:** Master Admin Only.
+* **`/mute` & `/unmute`**
+  - **Description:** Restricts or restores user speaking permissions within the current group.
+  - **Permission:** Master Admin and Group Administrators.
+* **`/mutelist`**
+  - **Description:** Lists all muted users in the current group.
+  - **Permission:** Master Admin and Group Administrators.
+
+### 8. Group & Network Operations
+* **`/admin` (or `/panel`)**
+  - **Description:** Master Admin control dashboard showing real-time resource telemetry, RAM metrics, D1 connectivity, and system state.
+  - **Permission:** Master Admin Only.
+* **`/groups`**
+  - **Description:** Lists all groups the bot has joined, showing ID, title, and approval status (`active` / `pending`).
+  - **Permission:** Master Admin Only.
+* **`/leave <group_id>`**
+  - **Description:** Directly commands the bot to exit a specific group cleanly without deleting archived history.
+  - **Permission:** Master Admin Only.
+* **`/bangroup <group_id>`**
+  - **Description:** Permanently blacklists a group, commands the bot to depart, and forbids re-invitation.
+  - **Permission:** Master Admin Only.
+* **`/channels`**
+  - **Description:** Lists connected broadcast channels monitored by the bot.
+  - **Permission:** Master Admin Only.
+* **`/net`**
+  - **Description:** Diagnoses server network connectivity and evaluates egress access to global APIs.
+  - **Permission:** Master Admin Only.
+* **`/remember <key> <value>`**
+  - **Description:** Stores a permanent rule, invariant fact, or directive into immutable long-term memory (`manage_admin_memory`).
+  - **Permission:** Master Admin Only.
+* **`/forget <key>`**
+  - **Description:** Deletes a permanent rule or fact from long-term memory.
+  - **Permission:** Master Admin Only.
+
+---
+
+## Autonomous Agent Tools Matrix
 * `purge_chat_messages_tool`: Clean up recent bot messages in response to admin natural language requests.
 * `railway_status_tool` & `railway_redeploy_tool`: Live status and container redeploy management for Railway.
 * `osint_person_dossier`: Multi-platform public footprint and identity dossier generation.

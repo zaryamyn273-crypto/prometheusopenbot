@@ -69,6 +69,165 @@ Pipeline : update Telegram → gatekeepers → archive D1 en fond → **triage T
 
 ---
 
+## Matrice Complète des Commandes Telegram (Telegram Commands)
+
+Prometheus dispose d'un ensemble complet de commandes. Pour éviter les conflits avec d'autres bots, **dans les supergroupes les commandes requièrent le suffixe `_prometheus` ou une mention du bot** (par exemple `/help_prometheus` ou `/del_prometheus 10`). Dans les messages privés (PV), les commandes standards et celles avec suffixe fonctionnent indistinctement.
+
+### 1. Commandes Principales et Générales
+* **`/start`**
+  - **Description :** Démarre l'interaction privée, présente les fonctionnalités et vérifie les permissions de l'utilisateur.
+  - **Permission :** Public (tous les utilisateurs).
+* **`/help`**
+  - **Description :** Guide interactif multilingue expliquant le fonctionnement, les outils connectés et les règles dans les groupes.
+  - **Permission :** Public.
+* **`/tools` (ou `/tools_prometheus`)**
+  - **Description :** Affiche le catalogue catégorisé des outils connectés au modèle (recherche web, vision, finance, fichiers, OSINT, etc.).
+  - **Permission :** Public.
+* **`/clear` (ou `/clear_prometheus`)**
+  - **Description :** Réinitialise le contexte de discussion en mémoire RAM pour le chat actuel et commence une conversation vierge.
+  - **Permission :** Public.
+* **`/id` ou `/getid` (ou `/id_prometheus`)**
+  - **Description :** Extrait l'identifiant numérique (`user_id` / `chat_id`), le nom d'utilisateur et les métadonnées de l'expéditeur ou du message cité.
+  - **Permission :** Public.
+
+### 2. Données en Direct, Finance et Multimédia
+* **`/search <requête>`**
+  - **Description :** Lance une recherche web spéculative ultra-rapide (Tavily AI, Bing, DuckDuckGo) avec des sources sourcées en moins de 1,2 s.
+  - **Exemple :** `/search avancées intelligence artificielle 2026`
+  - **Permission :** Public.
+* **`/crypto [symbole]`**
+  - **Description :** Cours en direct des cryptomonnaies (BTC, ETH, USDT, TON, SOL) et variation sur 24 heures.
+  - **Exemple :** `/crypto btc` ou `/crypto` (pour la vue d'ensemble).
+  - **Permission :** Public.
+* **`/gold`**
+  - **Description :** Tableau des cours de l'or (18K, lingots), pièces d'investissement et cours mondial spot.
+  - **Permission :** Public.
+* **`/weather <ville>`**
+  - **Description :** Météo en direct, température, humidité, vent et prévisions pour toute ville du monde.
+  - **Exemple :** `/weather Paris` ou `/weather Montréal`
+  - **Permission :** Public.
+* **`/calc <expression>`**
+  - **Description :** Calculatrice algébrique et scientifique haute précision (trigonométrie, pourcentages, factorielles) sans erreurs de calcul du LLM.
+  - **Exemple :** `/calc (250 * 1.20) + sqrt(144)`
+  - **Permission :** Public.
+* **`/music <titre / artiste>`**
+  - **Description :** Recherche et téléchargement direct de musique en qualité studio 320 kbps avec fichier de paroles synchronisées (.lrc).
+  - **Exemple :** `/music Daft Punk Get Lucky`
+  - **Permission :** Public.
+
+### 3. Planificateur International et Cron
+* **`/remind <temps> <message>` (ou `/schedule`)**
+  - **Description :** Planifie des rappels, tâches ou cron récurrents avec persistance complète dans Cloudflare D1 SQL (résilient aux redémarrages).
+  - **Exemples :**
+    - `/remind 15m Vérifier le four`
+    - `/remind demain à 17h heure de Paris Réunion d'équipe`
+    - `/remind at 14:00 London time Team sync`
+    - `/remind */30 * * * * Vérification d'état`
+  - **Permission :** Public.
+* **`/schedules`**
+  - **Description :** Affiche la liste des tâches actives planifiées pour le chat actuel avec leur ID et la prochaine heure d'exécution.
+  - **Permission :** Public.
+* **`/cancel_schedule <id>`**
+  - **Description :** Annule et supprime une tâche planifiée à partir de son identifiant numérique (`/cancel_schedule 3`).
+  - **Permission :** Public (créateur de la tâche ou administrateur).
+* **`/timezone <ville>` (ou `/tz`)**
+  - **Description :** Consulte ou définit le fuseau horaire de l'utilisateur (`/tz Europe/Paris` ou `/tz America/Montreal`).
+  - **Permission :** Public.
+
+### 4. Nettoyage et Suppression Massive de Messages
+* **`/del` (en réponse à un message)**
+  - **Description :** Supprime instantanément le message ciblé par la réponse.
+  - **Permission :** Master Admin et administrateurs du groupe.
+* **`/purge <nombre>` (ou `/del <nombre>`, `/clean <nombre>`)**
+  - **Description :** Suppression groupée rapide des N derniers messages envoyés par le bot (de 1 à 100) synchronisée dans Telegram, Cloudflare D1 et la RAM, avec un message de confirmation qui s'autodétruit en 4 secondes.
+  - **Exemple :** `/purge 10` (déclenchable aussi en langage naturel : « supprime tes 10 derniers messages »).
+  - **Permission :** Master Admin et administrateurs du groupe.
+
+### 5. Gestion Cloud de Railway
+* **`/railway status`**
+  - **Description :** État télémétrique en direct des conteneurs Railway, des services actifs (`prometheusopenbot`, `9router`) et statut du dernier déploiement (SUCCESS / BUILDING / CRASHED).
+  - **Permission :** Uniquement Master Admin.
+* **`/railway redeploy [service]`**
+  - **Description :** Déclenche un redéploiement et une recompilation immédiate du conteneur sur Railway sans passer par le navigateur web.
+  - **Exemple :** `/railway redeploy prometheusopenbot`
+  - **Permission :** Uniquement Master Admin.
+* **`/railway vars [service]`**
+  - **Description :** Affiche les variables d'environnement du service avec masquage automatique et sécurisé de tous les secrets.
+  - **Permission :** Uniquement Master Admin.
+
+### 6. Terminal Linux et Sandboxes Cloud
+* **`/sh <commande>` (ou `/bash`)**
+  - **Description :** Shell serveur avec persistance du répertoire de travail (`cd`), délai d'expiration de 35 secondes, environnement pré-authentifié et envoi des logs volumineux (>3500 caractères) sous forme de fichier `.log`.
+  - **Exemple :** `/sh df -h && uptime` ou `/sh cd src && ls -la`
+  - **Permission :** Uniquement Master Admin (les commandes destructives sont bloquées en permanence).
+* **`/e2b <code_source>`**
+  - **Description :** Exécution isolée de code Python ou JavaScript dans des micro-conteneurs cloud E2B sans aucun risque pour le serveur.
+  - **Permission :** Uniquement Master Admin.
+* **`/e2bsh <commande>`**
+  - **Description :** Exécute des commandes bash dans l'environnement sandbox distant E2B.
+  - **Permission :** Uniquement Master Admin.
+* **`/e2bstatus`**
+  - **Description :** Rapporte l'état de connexion et la validité du client cloud E2B.
+  - **Permission :** Uniquement Master Admin.
+* **`/set_e2b <clé>`**
+  - **Description :** Définit ou met à jour la clé API E2B dans la session administrateur.
+  - **Permission :** Uniquement Master Admin.
+* **`/set_github <token>`**
+  - **Description :** Enregistre ou met à jour le token GitHub personnel pour la création de dépôts et les commits.
+  - **Permission :** Uniquement Master Admin.
+
+### 7. Administration des Utilisateurs et Quotas
+* **`/limit`**
+  - **Description :** Affiche la consommation quotidienne de requêtes IA et le solde restant (40 par défaut, réinitialisation à 00:00 UTC).
+  - **Permission :** Public (le Master Admin dispose d'un quota illimité).
+* **`/setquota <id_utilisateur> <limite>`**
+  - **Description :** Personnalise le quota quotidien d'un utilisateur spécifique.
+  - **Exemple :** `/setquota 123456789 100`
+  - **Permission :** Uniquement Master Admin.
+* **`/resetquota <id_utilisateur>`**
+  - **Description :** Remet immédiatement à zéro le compteur de consommation d'un utilisateur.
+  - **Permission :** Uniquement Master Admin.
+* **`/ban <cible>`**
+  - **Description :** Bannit définitivement un utilisateur sur toutes les couches du bot et D1 par identifiant, pseudonyme ou citation.
+  - **Permission :** Uniquement Master Admin.
+* **`/unban <cible>`**
+  - **Description :** Débannit un utilisateur et rétablit ses accès.
+  - **Permission :** Uniquement Master Admin.
+* **`/mute` et `/unmute`**
+  - **Description :** Réduit au silence ou réactive la parole d'un utilisateur dans le groupe.
+  - **Permission :** Master Admin et administrateurs du groupe.
+* **`/mutelist`**
+  - **Description :** Liste des utilisateurs réduits au silence dans le groupe actuel.
+  - **Permission :** Master Admin et administrateurs du groupe.
+
+### 8. Opérations de Groupes et Réseau
+* **`/admin` (ou `/panel`)**
+  - **Description :** Panneau de contrôle administrateur affichant les métriques CPU, RAM, D1 et l'état des services.
+  - **Permission :** Uniquement Master Admin.
+* **`/groups`**
+  - **Description :** Liste complète des groupes rejoints par le bot avec leur statut (`active` ou `pending`).
+  - **Permission :** Uniquement Master Admin.
+* **`/leave <id_groupe>`**
+  - **Description :** Ordonne au bot de quitter proprement un groupe ciblé sans supprimer l'historique archivé.
+  - **Permission :** Uniquement Master Admin.
+* **`/bangroup <id_groupe>`**
+  - **Description :** Bannit définitivement un groupe, force la sortie immédiate du bot et bloque toute réinvitation.
+  - **Permission :** Uniquement Master Admin.
+* **`/channels`**
+  - **Description :** Liste les canaux publics ou connectés surveillés par le bot.
+  - **Permission :** Uniquement Master Admin.
+* **`/net`**
+  - **Description :** Diagnostique la connectivité réseau du serveur et évalue les accès aux API globales.
+  - **Permission :** Uniquement Master Admin.
+* **`/remember <clé> <valeur>`**
+  - **Description :** Enregistre une règle immuable, un fait ou une consigne permanente dans la mémoire du bot (`manage_admin_memory`).
+  - **Permission :** Uniquement Master Admin.
+* **`/forget <clé>`**
+  - **Description :** Supprime une consigne enregistrée de la mémoire permanente.
+  - **Permission :** Uniquement Master Admin.
+
+---
+
 ## Outils
 
 ~**90 outils** en 6 familles (finance, web/réseau, média, science, système/admin, GitHub) + mémoire cloud. Matrice complète : [docs/architecture/tooling.md](docs/architecture/tooling.md)
