@@ -1,3 +1,5 @@
+import os
+import time
 import json
 import logging
 import asyncio
@@ -41,6 +43,33 @@ def _router_headers() -> Dict[str, str]:
         "Authorization": f"Bearer {_cfg.ROUTER_API_KEY}",
         "Content-Type": "application/json",
     }
+
+
+_FAILED_INTERNAL_UNTIL = 0.0
+
+def _get_target_router_endpoints() -> List[str]:
+    """
+    Returns prioritized list of router endpoints:
+    1. Fast internal Railway VPC (http://9router.railway.internal:20128/v1) if in Railway.
+    2. Public configured ROUTER_BASE_URL as resilient fallback.
+    """
+    global _FAILED_INTERNAL_UNTIL
+    from src.core import config as _cfg
+    public_url = (_cfg.ROUTER_BASE_URL or "").rstrip("/")
+    internal_url = (_cfg.ROUTER_INTERNAL_BASE_URL or "").rstrip("/")
+
+    # If running outside Railway or internal explicitly disabled, use public only
+    if not os.getenv("RAILWAY_ENVIRONMENT") or not internal_url:
+        return [public_url] if public_url else []
+
+    endpoints = []
+    # Only prioritize internal VPC if not temporarily cooled down due to prior connection failure
+    if time.time() > _FAILED_INTERNAL_UNTIL and internal_url:
+        endpoints.append(internal_url)
+
+    if public_url and public_url not in endpoints:
+        endpoints.append(public_url)
+    return endpoints
 
 def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
     """
@@ -333,17 +362,30 @@ async def translate_text(text: str, target_lang_name: str, source_hint: str = "P
                 {"role": "user", "content": clean[:3000]},
             ],
         }
-        resp = await client.post(
-            f"{_base}/chat/completions",
-            headers=_router_headers(),
-            json=payload,
-            timeout=25.0,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            out = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-            if out:
-                return sanitize_output(out)
+        endpoints_to_try = _get_target_router_endpoints()
+        if not endpoints_to_try:
+            endpoints_to_try = [_base]
+
+        for endpoint in endpoints_to_try:
+            try:
+                to = 12.0 if "railway.internal" in endpoint else 25.0
+                resp = await client.post(
+                    f"{endpoint}/chat/completions",
+                    headers=_router_headers(),
+                    json=payload,
+                    timeout=to,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    out = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+                    if out:
+                        return sanitize_output(out)
+                    break
+            except Exception as e:
+                if "railway.internal" in endpoint:
+                    global _FAILED_INTERNAL_UNTIL
+                    _FAILED_INTERNAL_UNTIL = time.time() + 300.0
+                continue
     except Exception as e:
         logger.debug(f"translate_text failed, returning original: {e}")
     return text
@@ -667,41 +709,45 @@ async def generate_response(
 
         resp = None
         max_retries = 3
-        backoff_delays = [0.4, 1.0, 2.0]
+        backoff_delays = [0.3, 0.8, 1.5]
+
+        endpoints_to_try = _get_target_router_endpoints()
+        if not endpoints_to_try:
+            endpoints_to_try = [_live_base]
 
         for attempt in range(max_retries):
-            try:
-                resp = await client.post(
-                    f"{_live_base}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=35.0
-                )
-                if resp.status_code == 200:
-                    break
-                if resp.status_code in [429, 500, 502, 503, 504] and attempt < max_retries - 1:
-                    await asyncio.sleep(backoff_delays[attempt])
+            for endpoint in endpoints_to_try:
+                try:
+                    to = 16.0 if "railway.internal" in endpoint else 35.0
+                    resp = await client.post(
+                        f"{endpoint}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=to
+                    )
+                    if resp.status_code == 200:
+                        break
+                    logger.debug(f"Endpoint {endpoint} returned status {resp.status_code}")
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError, httpx.TimeoutException) as e:
+                    logger.debug(f"Router endpoint {endpoint} connection issue: {e}")
+                    if "railway.internal" in endpoint:
+                        _FAILED_INTERNAL_UNTIL = time.time() + 300.0
                     continue
-                else:
-                    if last_tool_outputs:
-                        return "\n\n".join(last_tool_outputs), extra_action
-                    return _t(_ulang, "ai_server_error", code=resp.status_code), None
-            except (httpx.TimeoutException, httpx.NetworkError):
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(backoff_delays[attempt])
+                except Exception as e:
+                    logger.debug(f"Router endpoint {endpoint} error: {e}")
                     continue
-                if last_tool_outputs:
-                    return "\n\n".join(last_tool_outputs), extra_action
-                return _t(_ulang, "ai_timeout"), None
-            except Exception as e:
-                logger.error(f"Router request error: {e}")
-                if last_tool_outputs:
-                    return "\n\n".join(last_tool_outputs), extra_action
-                return _t(_ulang, "ai_comm_error", err=str(e)), None
+
+            if resp is not None and resp.status_code == 200:
+                break
+            if resp is not None and resp.status_code in [429, 500, 502, 503, 504] and attempt < max_retries - 1:
+                await asyncio.sleep(backoff_delays[attempt])
+                continue
 
         if resp is None or resp.status_code != 200:
             if last_tool_outputs:
                 return "\n\n".join(last_tool_outputs), extra_action
+            if resp is not None:
+                return _t(_ulang, "ai_server_error", code=resp.status_code), None
             return _t(_ulang, "ai_no_response"), None
 
         try:

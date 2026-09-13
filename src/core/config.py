@@ -24,6 +24,7 @@ ADMIN_ID = _parse_admin_id(os.getenv("ADMIN_ID", "0"))
 # 2. High-Performance AI Router Configuration
 # ==========================================
 ROUTER_BASE_URL = os.getenv("ROUTER_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+ROUTER_INTERNAL_BASE_URL = os.getenv("ROUTER_INTERNAL_BASE_URL", "http://9router.railway.internal:20128/v1").rstrip("/")
 ROUTER_API_KEY = os.getenv("ROUTER_API_KEY", "")
 ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-4o-mini")
 

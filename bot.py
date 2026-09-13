@@ -1854,6 +1854,57 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
                 return _out, None
     except Exception:
         pass
+
+    # Tier 1b: Atomic Weather Fast Path (<100ms response with zero LLM overhead)
+    try:
+        _weather_prefixes = ["هوای", "وضعیت هوای", "هواشناسی", "هوا در", "وضعیت آب و هوای", "weather in", "weather"]
+        _matching_wp = None
+        for wp in _weather_prefixes:
+            if _norm.startswith(wp):
+                _matching_wp = wp
+                break
+
+        if _matching_wp and len(_norm.split()) <= 4:
+            _forbidden_weather = ["اگر", "ولی", "برنامه", "سفر", "چرا", "میشه", "چیکار", "لباس", "خوبه", "بارون میاد", "فردا", "پس فردا", "هفته"]
+            if not any(fw in _norm for fw in _forbidden_weather):
+                raw_city = _norm[len(_matching_wp):].strip(" :؟?،,.-")
+                if 2 <= len(raw_city) <= 25:
+                    from src.tools.web_network import get_weather
+                    w_out = await get_weather(city=raw_city)
+                    if w_out and isinstance(w_out, str) and w_out.startswith("🌦"):
+                        if ulang != "fa":
+                            try:
+                                from src.core import ai_service as _ai_tr_w
+                                w_out = await _ai_tr_w.translate_text(w_out, lang_name(
+                                    getattr(user, "language_code", "") or "fa"))
+                            except Exception:
+                                pass
+                        return w_out, None
+    except Exception:
+        pass
+
+    # Tier 1c: Instant Arithmetic Expressions (<1ms execution without LLM hallucination)
+    try:
+        _calc_prefixes = ["/calc", "calc", "حساب کن", "محاسبه کن", "چقدر میشه", "حاصل"]
+        _math_candidate = _norm
+        for cp in _calc_prefixes:
+            if _math_candidate.startswith(cp):
+                _math_candidate = _math_candidate[len(cp):].strip()
+                break
+
+        if _math_candidate and len(_math_candidate) <= 60:
+            if re.match(r"^[\d\s+\-*/^%.()]+$", _math_candidate):
+                if any(op in _math_candidate for op in ("+", "-", "*", "/", "^", "%")):
+                    try:
+                        from src.tools.scientific import calculate_math_expression
+                        math_out = calculate_math_expression(expression=_math_candidate)
+                        if math_out and "🧮" in math_out:
+                            return math_out, None
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     return None
 
 

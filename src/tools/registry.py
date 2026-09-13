@@ -454,7 +454,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
 
     # --- Multi-request bundle: several intents at once -> send the full set ---
     _intent_hits = len(relevant_categories - {"time"})
-    _complex = _intent_hits >= 4 or len(prompt_lower) > 200
+    _complex = _intent_hits >= 4
 
     # Core bundle that are fast & frequently used (live in scientific).
     core_names = {
