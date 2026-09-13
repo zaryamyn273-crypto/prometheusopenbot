@@ -6,14 +6,6 @@
 [![Security Hardened](https://img.shields.io/badge/security-hardened-green.svg)](#سیستم-امنیت-و-مقاومسازی-چندلایه)
 [![Sub-Millisecond Engine](https://img.shields.io/badge/latency-sub--millisecond-brightgreen.svg)](#معماریهای-پیشرفته-سرعت-و-بهرهوری-سیستم)
 
-<p align="center">
-  <a href="README.md">🇮🇷 فارسی</a> ·
-  <a href="README.en.md">🇬🇧 English</a> ·
-  <a href="README.ru.md">🇷🇺 Русский</a> ·
-  <a href="README.es.md">🇪🇸 Español</a> ·
-  <a href="README.fr.md">🇫🇷 Français</a>
-</p>
-
 ---
 
 ## 📖 فهرست مطالب
