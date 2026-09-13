@@ -497,7 +497,7 @@ async def generate_response(
         + memory_section
         + caller_info
         + _lang_rule
-        + f"\n\n[تاریخ امروز: {_today_j} (شمسی) — ساعت تهران: {_today_hm} — میلادی (ISO): {_today_iso}]"
+        + f"\n\n[تاریخ تقویم: {_today_j} (شمسی) — میلادی (ISO): {_today_iso}]"
         + "\n[دستور جستجوی زنده]: برای اخبار/حوادث روز/مقایسه نسخه‌ها از ابزار جستجوی زنده استفاده کن — اگر tavily_search در دسترس بود از آن، وگرنه از web_search رایگان. هرگز از داده‌های ذهنی بدون ابزار پاسخ نده.]"
         + "\n[قانون سهمیه]: سهمیه شخصی کاربر در ربات فقط با دستور /limit نمایش داده می‌شود — خودت هرگز عدد سهمیه شخصی اعلام نکن. سؤال درباره سهمیه موضوعات دیگر (بنزین، اینترنت و ...) سؤال عادی است: عادی جواب بده و اسمی از سهمیه کاربر در ربات نبر."
         + "\n\n[دستور قطعی لحن، اسکوپ و تمرکز پاسخ]:"
@@ -594,7 +594,8 @@ async def generate_response(
             "۷. محصولات و اشیاء: اگر کالایی در عکس است، ویژگی‌ها، مدل و مشخصات آن را اعلام کن و در صورت نیاز قیمت آن را استعلام بگیر.\n"
             "۸. لحن پرومته: قاطع، مسلط، فنی، فشرده و بدون حاشیه‌روی با چاشنی طعنه ظریف و کنایه هوشمندانه."
         )
-        current_text = f"{user_prompt}\n\n[{system_vision_prompt}]" if user_prompt else system_vision_prompt
+        turn_prefix = f"[ساعت فعلی: {_today_hm}]\n" if _today_hm else ""
+        current_text = f"{turn_prefix}{user_prompt}\n\n[{system_vision_prompt}]" if user_prompt else f"{turn_prefix}[{system_vision_prompt}]"
         current_content = [
             {
                 "type": "text",
@@ -610,7 +611,8 @@ async def generate_response(
         ]
         messages.append({"role": "user", "content": current_content})
     else:
-        messages.append({"role": "user", "content": user_prompt})
+        turn_text = f"[ساعت فعلی: {_today_hm}]\n{user_prompt}" if _today_hm else user_prompt
+        messages.append({"role": "user", "content": turn_text})
 
     headers = _router_headers()
 
