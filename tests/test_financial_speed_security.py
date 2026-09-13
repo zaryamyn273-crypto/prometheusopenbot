@@ -65,9 +65,41 @@ def test_path_traversal_jail():
     assert "غیرمجاز" in read_document_file("src/core/config.py")
 
 
+def test_query_rewriter_intent_preservation():
+    from src.tools.internal import bot_query_rewriter
+    # Repeated consecutive words should be deduplicated
+    assert bot_query_rewriter("سلام سلام") == "__PINGPONG__ سلام"
+    
+    # Non-consecutive words in grammar/math should be preserved completely!
+    res1 = bot_query_rewriter("قیمت اتریوم به دلار و بیت کوین به دلار")
+    assert "به دلار" in res1
+    assert res1.count("دلار") == 2
+    
+    res2 = bot_query_rewriter("x = x + 1")
+    assert res2 == "x = x + 1"
+
+
+def test_vision_preprocessor():
+    from PIL import Image
+    import io
+    from src.core.ai_service import optimize_image_for_vision
+    
+    # Generate dummy test image
+    img = Image.new("RGB", (400, 300), color=(73, 109, 137))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    raw = buf.getvalue()
+    
+    b64, mime = optimize_image_for_vision(raw)
+    assert mime == "image/jpeg"
+    assert len(b64) > 100
+
+
 if __name__ == "__main__":
     asyncio.run(test_financial_stale_while_revalidate())
     asyncio.run(test_dollar_and_gold_instant_response())
     test_security_sanitization_railway_token()
     test_path_traversal_jail()
+    test_query_rewriter_intent_preservation()
+    test_vision_preprocessor()
     print("ALL FINANCIAL SPEED & SECURITY TESTS PASSED!")

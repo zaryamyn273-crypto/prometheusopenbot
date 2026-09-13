@@ -130,13 +130,14 @@ def bot_query_rewriter(query: str = "") -> str:
         q = (query or "").strip()
         q = q.replace("\u064a", "\u06cc").replace("\u0643", "\u06a9")
         q = re.sub(r"\s+", " ", q)
-        seen = set()
+        words = q.split(" ")
         out_words = []
-        for w in q.split(" "):
+        prev = None
+        for w in words:
             lw = w.lower()
-            if lw not in seen:
-                seen.add(lw)
+            if lw != prev:
                 out_words.append(w)
+                prev = lw
         norm = " ".join(out_words).strip()
         # Ping/pong marker: pure social chatter — downstream skips tools entirely.
         if norm and norm.lower() in _PINGPONG_WORDS:

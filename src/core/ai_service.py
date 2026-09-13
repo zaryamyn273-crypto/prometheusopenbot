@@ -105,6 +105,10 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
             max_dim = 2048
             if max(img.size) > max_dim:
                 img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+            elif min(img.size) < 320 and max(img.size) < 600:
+                # Upscale tiny crops or low-res screenshots 2x with Lanczos to clarify fine text and barcodes
+                scale_factor = 2
+                img = img.resize((img.width * scale_factor, img.height * scale_factor), Image.Resampling.LANCZOS)
 
             # 4. Adaptive contrast normalization to eliminate dark shadows & phone camera gradients
             try:
@@ -115,12 +119,12 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
             # 5. Adaptive sharpness & edge clarity enhancement for fine Persian fonts & OCR
             try:
                 enhancer = ImageEnhance.Sharpness(img)
-                img = enhancer.enhance(1.20)
+                img = enhancer.enhance(1.25)
             except Exception:
                 pass
 
             buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=92, optimize=True)
+            img.save(buffer, format="JPEG", quality=94, optimize=True)
             opt_bytes = buffer.getvalue()
             b64_str = base64.b64encode(opt_bytes).decode("utf-8")
             return b64_str, "image/jpeg"
@@ -560,13 +564,15 @@ async def generate_response(
     if image_bytes:
         b64_img, mime = optimize_image_for_vision(image_bytes)
         system_vision_prompt = (
-            "راهنمای پردازش تصویر و هوش بصری فوق‌پیشرفته پرومته:\n"
-            "- تصویر ارسالی را با حداکثر دقت، قدرت تحلیل عمیق و هوش بصری چندحالته واکاوی کن.\n"
-            "- استخراج متن (OCR کامل): هرگونه نوشته، دست‌خط، فاکتور، سند، سربرگ یا تابلوی درون عکس (به ویژه متن‌های فارسی یا انگلیسی) را با دقت ۱۰۰٪ و بدون جا انداختن حتی یک واژه استخراج کن.\n"
-            "- تحلیل کد و دیباگ: اگر تصویر اسکرین‌شات ادیتور، کنسول یا خطای سیستم است، منشأ باگ را سریعاً تشخیص بده و کد تمیز و رفع‌شده را در بلوک کد تحویل بده.\n"
-            "- ریاضی، آمار و نمودار: معادلات، فرمول‌ها، جدول‌ها و محورهای نمودار را با دقت تحلیل کن و نتیجه نهایی را مشخص نما.\n"
-            "- بازسازی بارکدهای مخدوش و خط‌خورده: اگر در تصویر بارکد میله‌ای (Code128, EAN13) یا کیوآرکد (QR Code) آسیب‌دیده، خط‌کشیده‌شده، کثیف، پاره یا محو وجود دارد، ساختار میله‌های باقی‌مانده و ارقام زیر آن را دقیق بازیابی کن و کد کامل را استخراج کرده و اعلام نما.\n"
-            "- هویت بصری و جزئیات محیط: چهره‌ها، اشیاء، سبک و مفهوم نهفته در عکس را با نگاهی تحلیل‌گر، دقیق، موجز و با همان لحن حرفه‌ای و کمی طعنه‌آمیز تشریح کن."
+            "راهنمای جامع پردازش هوشمند تصویر و هوش بصری چندحالته (Multimodal Vision Engine):\n"
+            "۱. کشف خودکار نیت بدون بلاتکلیفی (Zero-Assumption Intent Discovery): منتظر سوال کاربر نمان. بلافاصله هسته موضوعی تصویر را شناسایی کن و کامل پاسخ بده.\n"
+            "۲. استخراج کامل متن (Full-Fidelity OCR): هرگونه متن چاپی، دست‌خط، اعداد، جدول، فاکتور، سند، سربرگ یا کارت ویزیت (فارسی و انگلیسی) را بدون جاانداختن واژه‌ها استخراج و ساختاریافته تحویل بده.\n"
+            "۳. رفع باگ، دیباگ کد و خطا: اسکرین‌شات‌های ادیتور (VSCode, PyCharm)، ترمینال یا پیام خطا را خط‌به‌خط تحلیل کن، ریشه باگ را در ۱ جمله تشریح کن و سورس کد اصلاح‌شده و کامل را درون بلوک کد ارائه بده.\n"
+            "۴. مسائل علمی، ریاضی و امتحانی: معادلات، هندسه، فرمول‌ها و صورت سوال را با استدلال گام‌به‌گام حل کن و پاسخ نهایی را پررنگ بنویس.\n"
+            "۵. بارکدها و کیوآرکدها: اگر بارکد میله‌ای (EAN13, Code128) یا کیوآرکد (QR Code) در عکس است، محتوا، ارقام و لینک آن را بخوان؛ در صورت خط‌خوردگی، با کمک ابزار یا الگوریتم چک‌سام رقم مفقود را بازیابی کن.\n"
+            "۶. چارت‌ها، نمودارها و ارقام مالی: روندها، نقاط اوج/کف و تحلیل بنیادی/تکنیکال را استخراج و خلاصه نتیجه را مشخص کن.\n"
+            "۷. محصولات و اشیاء: اگر کالایی در عکس است، ویژگی‌ها، مدل و مشخصات آن را اعلام کن و در صورت نیاز قیمت آن را استعلام بگیر.\n"
+            "۸. لحن پرومته: قاطع، مسلط، فنی، فشرده و بدون حاشیه‌روی با چاشنی طعنه ظریف و کنایه هوشمندانه."
         )
         current_text = f"{user_prompt}\n\n[{system_vision_prompt}]" if user_prompt else system_vision_prompt
         current_content = [
@@ -669,14 +675,29 @@ async def generate_response(
     except Exception:
         _live_model, _live_base = ROUTER_MODEL, ROUTER_BASE_URL
 
-    # High-Performance Vision Routing:
-    # 1. Route image turns to 'Good' (Gemini 3.8 Flash) which has dedicated multimodal vision weights & 1.2s latency.
-    # 2. Prune heavy non-search tools for pure vision analysis to eliminate 3,000 tokens of schema overhead.
+    # High-Performance Multimodal Vision Routing:
+    # 1. Route image turns to 'Good' (Gemini 3.8 Flash High) with dedicated multimodal vision weights & 1.2s latency.
+    # 2. Provide an intelligent multimodal companion toolkit so the model can verify facts, read/repair barcodes,
+    #    compute mathematical formulas, check market prices, or search github issues directly from visual input.
     if image_bytes:
         _live_model = "Good"
-        _wants_web_search = any(w in clean_p_low for w in ["سرچ", "بگرد", "جستجو", "پیدا کن", "لینک", "search", "google", "وب"])
-        if not _wants_web_search:
-            tools_schema = []
+        try:
+            from src.tools.registry import ensure_category, REGISTRY
+            ensure_category("media")
+            ensure_category("search")
+            ensure_category("scientific")
+            ensure_category("financial")
+            vision_essential = {
+                "web_search", "tavily_search",
+                "reconstruct_damaged_barcode_tool", "generate_barcode_tool",
+                "calculate_math_expression", "statistics_summary",
+                "get_price", "get_current_datetime_info", "digikala_search"
+            }
+            prompt_tool_names = {t.get("function", {}).get("name") for t in (tools_schema or [])}
+            combined_tool_names = vision_essential | prompt_tool_names
+            tools_schema = [t["schema"] for name, t in REGISTRY.items() if name in combined_tool_names and name != "extract_user_id_tool"]
+        except Exception as e:
+            logger.warning(f"Error configuring vision tool cabinet: {e}")
 
     for loop_idx in range(max_tool_loops):
         # Mid-loop escalation: if the model stalls without calling tools twice,
