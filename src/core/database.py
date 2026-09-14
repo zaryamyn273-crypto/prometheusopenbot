@@ -121,10 +121,13 @@ except Exception:
 _TS_LOCK = threading.Lock()
 _LAST_TS_SEC: int = 0
 _CACHED_TIMESTAMPS: Tuple[str, str, str] = ("", "", "")
+_LAST_DATE_KEY: Tuple[int, int, int] = (0, 0, 0)
+_CACHED_DATE_PREFIX: str = ""
+_CACHED_JDATE_STR: str = ""
 
 def get_tehran_timestamps() -> Tuple[str, str, str]:
     """Returns (created_at_iso, time_str, jalali_date_str) with high-speed 1-second memoization."""
-    global _LAST_TS_SEC, _CACHED_TIMESTAMPS
+    global _LAST_TS_SEC, _CACHED_TIMESTAMPS, _LAST_DATE_KEY, _CACHED_DATE_PREFIX, _CACHED_JDATE_STR
     current_sec = int(time.time())
     if current_sec == _LAST_TS_SEC:
         return _CACHED_TIMESTAMPS
@@ -135,17 +138,25 @@ def get_tehran_timestamps() -> Tuple[str, str, str]:
         try:
             tz = _TEHRAN_TZ or pytz.timezone("Asia/Tehran")
             now = datetime.now(tz)
-            j_now = jdatetime.datetime.fromgregorian(datetime=now)
+            date_key = (now.year, now.month, now.day)
+            if date_key != _LAST_DATE_KEY:
+                j_now = jdatetime.datetime.fromgregorian(datetime=now)
+                _CACHED_DATE_PREFIX = f"{now.year:04d}-{now.month:02d}-{now.day:02d}"
+                _CACHED_JDATE_STR = f"{j_now.year:04d}/{j_now.month:02d}/{j_now.day:02d}"
+                _LAST_DATE_KEY = date_key
+
             time_str = f"{now.hour:02d}:{now.minute:02d}:{now.second:02d}"
-            iso_str = f"{now.year:04d}-{now.month:02d}-{now.day:02d} {time_str}"
-            j_date_str = f"{j_now.year:04d}/{j_now.month:02d}/{j_now.day:02d}"
-            res = (iso_str, time_str, j_date_str)
-            _LAST_TS_SEC = current_sec
+            iso_str = f"{_CACHED_DATE_PREFIX} {time_str}"
+            res = (iso_str, time_str, _CACHED_JDATE_STR)
             _CACHED_TIMESTAMPS = res
+            _LAST_TS_SEC = current_sec
             return res
         except Exception:
             iso_fallback = time.strftime("%Y-%m-%d %H:%M:%S")
-            return iso_fallback, iso_fallback, iso_fallback
+            res = (iso_fallback, iso_fallback, iso_fallback)
+            _CACHED_TIMESTAMPS = res
+            _LAST_TS_SEC = current_sec
+            return res
 
 # --- Tier 1: L1 Fast Sub-Millisecond Memory Buffer ---
 
@@ -206,18 +217,15 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
 
         # New key: bound capacity without massive low-water mark dump storms
         if len(_L1_CACHE) >= _L1_MAX_SIZE:
-            evicted = False
-            for old_k in list(islice(_L1_CACHE, 16)):
+            for old_k in list(islice(_L1_CACHE, 32)):
                 old_v = _L1_CACHE.get(old_k)
                 if old_v is not None and now > old_v.get("expires_at", 0.0):
                     _L1_CACHE.pop(old_k, None)
-                    evicted = True
-            if not evicted and len(_L1_CACHE) >= _L1_MAX_SIZE:
-                while len(_L1_CACHE) >= _L1_MAX_SIZE:
-                    try:
-                        _L1_CACHE.popitem(last=False)
-                    except KeyError:
-                        break
+            while len(_L1_CACHE) >= _L1_MAX_SIZE:
+                try:
+                    _L1_CACHE.popitem(last=False)
+                except KeyError:
+                    break
 
         _L1_CACHE[key] = {
             "value": clean_val,
@@ -230,7 +238,8 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
 def l1_delete(key: str):
     with _L1_LOCK:
         _L1_CACHE.pop(key, None)
-    _KV_NEGATIVE_CACHE.pop(key, None)
+    with _KV_NEG_LOCK:
+        _KV_NEGATIVE_CACHE.pop(key, None)
 
 # --- Tier 2: High-Speed Cloudflare Workers KV Operations ---
 # Cloudflare free plan allows ~1000 KV writes/day. The 5-minute bulk market
@@ -250,19 +259,24 @@ _KV_LAST_CLOUD_HASH: Dict[str, int] = {}
 _KV_LAST_CLOUD_ERROR: str = ""
 _KV_IN_FLIGHT_WRITES: set = set()
 _KV_IN_FLIGHT_READS: Dict[str, asyncio.Future] = {}
-_KV_NEGATIVE_CACHE: Dict[str, float] = {}
+_KV_NEGATIVE_CACHE: OrderedDict[str, float] = OrderedDict()
 _KV_NEGATIVE_MAX_SIZE: int = 1000
+_KV_NEG_LOCK = threading.Lock()
 
 def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
     now = time.time()
-    if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-        expired = [k for k, exp in _KV_NEGATIVE_CACHE.items() if now >= exp]
-        for k in expired:
-            _KV_NEGATIVE_CACHE.pop(k, None)
+    with _KV_NEG_LOCK:
         if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-            for k in list(islice(_KV_NEGATIVE_CACHE, 200)):
-                _KV_NEGATIVE_CACHE.pop(k, None)
-    _KV_NEGATIVE_CACHE[key] = now + ttl_sec
+            for old_k in list(islice(_KV_NEGATIVE_CACHE, 64)):
+                if now >= _KV_NEGATIVE_CACHE.get(old_k, 0.0):
+                    _KV_NEGATIVE_CACHE.pop(old_k, None)
+            while len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
+                try:
+                    _KV_NEGATIVE_CACHE.popitem(last=False)
+                except KeyError:
+                    break
+        _KV_NEGATIVE_CACHE[key] = now + ttl_sec
+        _KV_NEGATIVE_CACHE.move_to_end(key)
 
 def kv_cloud_circuit_open() -> bool:
     return time.time() < _KV_CIRCUIT_OPEN_UNTIL
@@ -280,11 +294,12 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
 
     # Fast negative cache check to avoid hammering KV for cold missing keys
     now = time.time()
-    neg_exp = _KV_NEGATIVE_CACHE.get(key)
-    if neg_exp is not None:
-        if now < neg_exp:
-            return None
-        _KV_NEGATIVE_CACHE.pop(key, None)
+    with _KV_NEG_LOCK:
+        neg_exp = _KV_NEGATIVE_CACHE.get(key)
+        if neg_exp is not None:
+            if now < neg_exp:
+                return None
+            _KV_NEGATIVE_CACHE.pop(key, None)
 
     base_url = _get_kv_base_url()
     if not base_url:
@@ -293,7 +308,7 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     # Anti-stampede: coalesce concurrent reads for the same cold key
     loop = asyncio.get_running_loop()
     fut = _KV_IN_FLIGHT_READS.get(key)
-    if fut is not None:
+    if fut is not None and not fut.done() and fut.get_loop() is loop:
         try:
             return await asyncio.shield(fut)
         except asyncio.CancelledError:
@@ -312,7 +327,8 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
         if resp.status_code == 200:
             result = resp.text
             l1_set(key, result, ttl_sec=120)
-            _KV_NEGATIVE_CACHE.pop(key, None)
+            with _KV_NEG_LOCK:
+                _KV_NEGATIVE_CACHE.pop(key, None)
         elif resp.status_code == 404:
             _set_kv_negative_cache(key, ttl_sec=60.0)
         if not fut.done():
@@ -326,7 +342,8 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     finally:
         if not fut.done():
             fut.set_result(None)
-        _KV_IN_FLIGHT_READS.pop(key, None)
+        if _KV_IN_FLIGHT_READS.get(key) is fut:
+            _KV_IN_FLIGHT_READS.pop(key, None)
 
 async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cloud_write: bool = True, cloud_min_interval_sec: Optional[int] = None) -> bool:
     """
@@ -339,7 +356,8 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     val_str = value if isinstance(value, str) else str(value or "")
     clean_ttl = max(60, int(expiration_ttl))
     l1_set(key, val_str, ttl_sec=clean_ttl)
-    _KV_NEGATIVE_CACHE.pop(key, None)
+    with _KV_NEG_LOCK:
+        _KV_NEGATIVE_CACHE.pop(key, None)
 
     base_url = _get_kv_base_url()
     if not cloud_write or not base_url:
