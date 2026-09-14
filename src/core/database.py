@@ -194,26 +194,7 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
         clean_val = clean_val[:65536]
 
     with _L1_LOCK:
-        # Opportunistic O(1) bounded inspection of oldest entries without premature blocking
-        for oldest_k in list(islice(_L1_CACHE.keys(), 8)):
-            oldest_v = _L1_CACHE.get(oldest_k)
-            if oldest_v and now > oldest_v.get("expires_at", 0.0):
-                _L1_CACHE.pop(oldest_k, None)
-
-        # High-water mark eviction: only evict when over max capacity
-        if key not in _L1_CACHE and len(_L1_CACHE) >= _L1_MAX_SIZE:
-            # First pass: prune any expired entries
-            expired = [k for k, v in _L1_CACHE.items() if now > v.get("expires_at", 0.0)]
-            for k in expired:
-                _L1_CACHE.pop(k, None)
-            # Second pass: if still at or above capacity, evict oldest LRU items down to low-water mark
-            if len(_L1_CACHE) >= _L1_MAX_SIZE:
-                while len(_L1_CACHE) >= _L1_LOW_WATER:
-                    try:
-                        _L1_CACHE.popitem(last=False)
-                    except KeyError:
-                        break
-
+        # Fast path: in-place update for existing keys with zero eviction checks
         existing = _L1_CACHE.get(key)
         if existing is not None:
             existing["value"] = clean_val
@@ -221,18 +202,35 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
             existing["ttl"] = _ttl
             existing["set_at"] = now
             _L1_CACHE.move_to_end(key)
-        else:
-            _L1_CACHE[key] = {
-                "value": clean_val,
-                "expires_at": now + _ttl,
-                "ttl": _ttl,
-                "hits": 0,
-                "set_at": now,
-            }
+            return
+
+        # New key: bound capacity without massive low-water mark dump storms
+        if len(_L1_CACHE) >= _L1_MAX_SIZE:
+            evicted = False
+            for old_k in list(islice(_L1_CACHE, 16)):
+                old_v = _L1_CACHE.get(old_k)
+                if old_v is not None and now > old_v.get("expires_at", 0.0):
+                    _L1_CACHE.pop(old_k, None)
+                    evicted = True
+            if not evicted and len(_L1_CACHE) >= _L1_MAX_SIZE:
+                while len(_L1_CACHE) >= _L1_MAX_SIZE:
+                    try:
+                        _L1_CACHE.popitem(last=False)
+                    except KeyError:
+                        break
+
+        _L1_CACHE[key] = {
+            "value": clean_val,
+            "expires_at": now + _ttl,
+            "ttl": _ttl,
+            "hits": 0,
+            "set_at": now,
+        }
 
 def l1_delete(key: str):
     with _L1_LOCK:
         _L1_CACHE.pop(key, None)
+    _KV_NEGATIVE_CACHE.pop(key, None)
 
 # --- Tier 2: High-Speed Cloudflare Workers KV Operations ---
 # Cloudflare free plan allows ~1000 KV writes/day. The 5-minute bulk market
@@ -252,6 +250,19 @@ _KV_LAST_CLOUD_HASH: Dict[str, int] = {}
 _KV_LAST_CLOUD_ERROR: str = ""
 _KV_IN_FLIGHT_WRITES: set = set()
 _KV_IN_FLIGHT_READS: Dict[str, asyncio.Future] = {}
+_KV_NEGATIVE_CACHE: Dict[str, float] = {}
+_KV_NEGATIVE_MAX_SIZE: int = 1000
+
+def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
+    now = time.time()
+    if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
+        expired = [k for k, exp in _KV_NEGATIVE_CACHE.items() if now >= exp]
+        for k in expired:
+            _KV_NEGATIVE_CACHE.pop(k, None)
+        if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
+            for k in list(islice(_KV_NEGATIVE_CACHE, 200)):
+                _KV_NEGATIVE_CACHE.pop(k, None)
+    _KV_NEGATIVE_CACHE[key] = now + ttl_sec
 
 def kv_cloud_circuit_open() -> bool:
     return time.time() < _KV_CIRCUIT_OPEN_UNTIL
@@ -267,6 +278,14 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     if val is not None:
         return val
 
+    # Fast negative cache check to avoid hammering KV for cold missing keys
+    now = time.time()
+    neg_exp = _KV_NEGATIVE_CACHE.get(key)
+    if neg_exp is not None:
+        if now < neg_exp:
+            return None
+        _KV_NEGATIVE_CACHE.pop(key, None)
+
     base_url = _get_kv_base_url()
     if not base_url:
         return None
@@ -276,7 +295,9 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     fut = _KV_IN_FLIGHT_READS.get(key)
     if fut is not None:
         try:
-            return await fut
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             return l1_get(key)
 
@@ -291,6 +312,9 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
         if resp.status_code == 200:
             result = resp.text
             l1_set(key, result, ttl_sec=120)
+            _KV_NEGATIVE_CACHE.pop(key, None)
+        elif resp.status_code == 404:
+            _set_kv_negative_cache(key, ttl_sec=60.0)
         if not fut.done():
             fut.set_result(result)
         return result
@@ -315,6 +339,7 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     val_str = value if isinstance(value, str) else str(value or "")
     clean_ttl = max(60, int(expiration_ttl))
     l1_set(key, val_str, ttl_sec=clean_ttl)
+    _KV_NEGATIVE_CACHE.pop(key, None)
 
     base_url = _get_kv_base_url()
     if not cloud_write or not base_url:
@@ -340,7 +365,7 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
 
     # Memory optimization: bound tracking structures with islice to avoid full list allocation
     if len(_KV_LAST_CLOUD_WRITE) >= 2000:
-        for old_k in list(islice(_KV_LAST_CLOUD_WRITE.keys(), 400)):
+        for old_k in list(islice(_KV_LAST_CLOUD_WRITE, 400)):
             _KV_LAST_CLOUD_WRITE.pop(old_k, None)
             _KV_LAST_CLOUD_HASH.pop(old_k, None)
 
