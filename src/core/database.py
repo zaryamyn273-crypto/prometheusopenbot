@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 _L1_CACHE: OrderedDict[str, Dict[str, Any]] = OrderedDict()
-_L1_LOCK = threading.RLock()
+_L1_LOCK = threading.Lock()
 _MEMORY_DIRECTIVES: List[str] = []
 _BANNED_USERS: set = set()
 _BANNED_USERNAMES: set = set()
@@ -58,12 +58,22 @@ _BATCH_WORKER_TASK: Optional[asyncio.Task] = None
 
 _http_limits = httpx.Limits(max_keepalive_connections=200, max_connections=400, keepalive_expiry=600.0)
 _cf_client: Optional[httpx.AsyncClient] = None
+_cf_client_loop: Optional[asyncio.AbstractEventLoop] = None
 
 def get_cf_client() -> httpx.AsyncClient:
     # No auth header in the pool — token is attached per-request via _cf_headers()
     # so Railway variable rotation works without restart.
-    global _cf_client
-    if _cf_client is None or _cf_client.is_closed:
+    global _cf_client, _cf_client_loop
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    if (
+        _cf_client is None
+        or _cf_client.is_closed
+        or (_cf_client_loop is not None and current_loop is not None and _cf_client_loop != current_loop)
+    ):
         _cf_client = httpx.AsyncClient(
             limits=_http_limits,
             http2=True,
@@ -72,6 +82,7 @@ def get_cf_client() -> httpx.AsyncClient:
                 "Content-Type": "application/json"
             }
         )
+        _cf_client_loop = current_loop
     return _cf_client
 
 
@@ -145,26 +156,23 @@ _L1_LAST_HIT_AT: float = 0.0
 
 def l1_get(key: str) -> Optional[str]:
     global _L1_HITS, _L1_MISSES, _L1_LAST_HIT_AT
+    now = time.time()
     with _L1_LOCK:
         item = _L1_CACHE.get(key)
-        if not item:
+        if item is None:
             _L1_MISSES += 1
             return None
-        now = time.time()
         if now > item["expires_at"]:
             _L1_CACHE.pop(key, None)
             _L1_MISSES += 1
             return None
         # Sliding refresh: hot keys live longer (up to +50% of original TTL).
-        try:
-            hits = item["hits"] + 1
-            item["hits"] = hits
-            if hits % 5 == 0:
-                item["expires_at"] = min(item["expires_at"] + 60.0, now + item["ttl"] * 1.5)
-            # True LRU touch: move to most recently used position
-            _L1_CACHE.move_to_end(key)
-        except Exception:
-            pass
+        hits = item["hits"] + 1
+        item["hits"] = hits
+        if hits % 5 == 0:
+            item["expires_at"] = min(item["expires_at"] + 60.0, now + item["ttl"] * 1.5)
+        # True LRU touch: move to most recently used position
+        _L1_CACHE.move_to_end(key)
         _L1_HITS += 1
         _L1_LAST_HIT_AT = now
         return item["value"]
@@ -186,27 +194,25 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
         clean_val = clean_val[:65536]
 
     with _L1_LOCK:
-        # Opportunistic O(1) eviction of expired entries from the head (LRU oldest)
-        for _ in range(5):
-            if not _L1_CACHE:
-                break
-            oldest_k = next(iter(_L1_CACHE))
-            oldest_v = _L1_CACHE[oldest_k]
-            if now > oldest_v.get("expires_at", 0):
+        # Opportunistic O(1) bounded inspection of oldest entries without premature blocking
+        for oldest_k in list(islice(_L1_CACHE.keys(), 8)):
+            oldest_v = _L1_CACHE.get(oldest_k)
+            if oldest_v and now > oldest_v.get("expires_at", 0.0):
                 _L1_CACHE.pop(oldest_k, None)
-            else:
-                break
 
-        # High-water mark eviction
+        # High-water mark eviction: only evict when over max capacity
         if key not in _L1_CACHE and len(_L1_CACHE) >= _L1_MAX_SIZE:
-            expired = [k for k, v in _L1_CACHE.items() if now > v.get("expires_at", 0)]
+            # First pass: prune any expired entries
+            expired = [k for k, v in _L1_CACHE.items() if now > v.get("expires_at", 0.0)]
             for k in expired:
                 _L1_CACHE.pop(k, None)
-            while len(_L1_CACHE) >= _L1_LOW_WATER:
-                try:
-                    _L1_CACHE.popitem(last=False)
-                except KeyError:
-                    break
+            # Second pass: if still at or above capacity, evict oldest LRU items down to low-water mark
+            if len(_L1_CACHE) >= _L1_MAX_SIZE:
+                while len(_L1_CACHE) >= _L1_LOW_WATER:
+                    try:
+                        _L1_CACHE.popitem(last=False)
+                    except KeyError:
+                        break
 
         existing = _L1_CACHE.get(key)
         if existing is not None:
@@ -214,10 +220,7 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
             existing["expires_at"] = now + _ttl
             existing["ttl"] = _ttl
             existing["set_at"] = now
-            try:
-                _L1_CACHE.move_to_end(key)
-            except Exception:
-                pass
+            _L1_CACHE.move_to_end(key)
         else:
             _L1_CACHE[key] = {
                 "value": clean_val,
@@ -247,6 +250,8 @@ _KV_CIRCUIT_OPEN_UNTIL: float = 0.0
 _KV_LAST_CLOUD_WRITE: Dict[str, float] = {}
 _KV_LAST_CLOUD_HASH: Dict[str, int] = {}
 _KV_LAST_CLOUD_ERROR: str = ""
+_KV_IN_FLIGHT_WRITES: set = set()
+_KV_IN_FLIGHT_READS: Dict[str, asyncio.Future] = {}
 
 def kv_cloud_circuit_open() -> bool:
     return time.time() < _KV_CIRCUIT_OPEN_UNTIL
@@ -266,17 +271,38 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     if not base_url:
         return None
 
+    # Anti-stampede: coalesce concurrent reads for the same cold key
+    loop = asyncio.get_running_loop()
+    fut = _KV_IN_FLIGHT_READS.get(key)
+    if fut is not None:
+        try:
+            return await fut
+        except Exception:
+            return l1_get(key)
+
+    fut = loop.create_future()
+    _KV_IN_FLIGHT_READS[key] = fut
+
     try:
         client = get_cf_client()
         url = f"{base_url}/{key}"
         resp = await client.get(url, headers=_cf_headers(), timeout=3.5)
+        result: Optional[str] = None
         if resp.status_code == 200:
-            val_str = resp.text
-            l1_set(key, val_str, ttl_sec=120)
-            return val_str
+            result = resp.text
+            l1_set(key, result, ttl_sec=120)
+        if not fut.done():
+            fut.set_result(result)
+        return result
     except Exception as e:
         logger.debug(f"KV get error ({key}): {e}")
-    return None
+        if not fut.done():
+            fut.set_result(None)
+        return None
+    finally:
+        if not fut.done():
+            fut.set_result(None)
+        _KV_IN_FLIGHT_READS.pop(key, None)
 
 async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cloud_write: bool = True, cloud_min_interval_sec: Optional[int] = None) -> bool:
     """
@@ -286,8 +312,9 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     Returns True when the value is safely cached (L1), even if the cloud sync
     was deferred — use get_cache_health_async() to inspect cloud state.
     """
+    val_str = value if isinstance(value, str) else str(value or "")
     clean_ttl = max(60, int(expiration_ttl))
-    l1_set(key, value, ttl_sec=clean_ttl)
+    l1_set(key, val_str, ttl_sec=clean_ttl)
 
     base_url = _get_kv_base_url()
     if not cloud_write or not base_url:
@@ -302,9 +329,14 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     if now - _KV_LAST_CLOUD_WRITE.get(key, 0.0) < max(0, int(cloud_min_interval_sec)):
         return True
 
-    val_hash = hash(value)
+    val_hash = hash(val_str)
     if key in _KV_LAST_CLOUD_WRITE and _KV_LAST_CLOUD_HASH.get(key) == val_hash:
         return True
+
+    # Coalesce concurrent cloud writes for the exact same key
+    if key in _KV_IN_FLIGHT_WRITES:
+        return True
+    _KV_IN_FLIGHT_WRITES.add(key)
 
     # Memory optimization: bound tracking structures with islice to avoid full list allocation
     if len(_KV_LAST_CLOUD_WRITE) >= 2000:
@@ -315,7 +347,7 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     try:
         client = get_cf_client()
         url = f"{base_url}/{key}?expiration_ttl={clean_ttl}"
-        resp = await client.put(url, headers=_cf_headers(), content=value.encode("utf-8"), timeout=3.5)
+        resp = await client.put(url, headers=_cf_headers(), content=val_str.encode("utf-8"), timeout=3.5)
         if resp.status_code == 200:
             _KV_LAST_CLOUD_WRITE[key] = now
             _KV_LAST_CLOUD_HASH[key] = val_hash
@@ -341,6 +373,8 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     except Exception as e:
         logger.debug(f"KV set error ({key}): {e}")
         return True
+    finally:
+        _KV_IN_FLIGHT_WRITES.discard(key)
 
 async def kv_get_cloud_async(key: str) -> Optional[str]:
     """Direct Cloudflare KV read that bypasses L1 (used for startup warmup)."""
