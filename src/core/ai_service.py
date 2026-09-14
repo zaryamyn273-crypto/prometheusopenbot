@@ -125,12 +125,20 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
             except Exception:
                 pass
 
-            # 2. Ensure RGB mode with clean single-pass alpha flattening
-            if img.mode in ("RGBA", "LA", "P"):
+            # 2. Ensure RGB mode with fast single-channel alpha flattening (avoid 4-band split)
+            if img.mode in ("RGBA", "LA"):
                 rgba = img.convert("RGBA")
                 bg = Image.new("RGB", rgba.size, (255, 255, 255))
-                bg.paste(rgba, mask=rgba.split()[3])
+                bg.paste(rgba, mask=rgba.getchannel("A"))
                 img = bg
+            elif img.mode == "P":
+                if "transparency" in img.info:
+                    rgba = img.convert("RGBA")
+                    bg = Image.new("RGB", rgba.size, (255, 255, 255))
+                    bg.paste(rgba, mask=rgba.getchannel("A"))
+                    img = bg
+                else:
+                    img = img.convert("RGB")
             elif img.mode != "RGB":
                 img = img.convert("RGB")
 
@@ -157,8 +165,8 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
                 pass
 
             with io.BytesIO() as buffer:
-                # Quality 88 provides optimal OCR fidelity with 3-4x smaller base64 payload than 94
-                img.save(buffer, format="JPEG", quality=88, optimize=True)
+                # Quality 88 provides optimal OCR fidelity without CPU-intensive Huffman table recalculation
+                img.save(buffer, format="JPEG", quality=88, optimize=False)
                 b64_str = base64.b64encode(buffer.getvalue()).decode("ascii")
             return b64_str, "image/jpeg"
     except Exception as e:
@@ -169,6 +177,7 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Parses standard OpenAI JSON and SSE data stream response formats from 9Router/OpenAI proxies.
     Robustly buffers streamed tool call names, arguments, and deep reasoning content.
+    Supports Anthropic/Gemini proxy deltas (content block lists and 'text' keys).
     """
     clean_text = resp_text.strip()
     if not clean_text:
@@ -188,14 +197,22 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
             if not choices:
                 return "", []
             msg = choices[0].get("message") or choices[0].get("delta") or {}
-            content = (
+            raw_content = (
                 msg.get("content")
                 or msg.get("reasoning_content")
                 or msg.get("reasoning")
                 or msg.get("thinking")
                 or ""
             )
+            if isinstance(raw_content, list):
+                content = "".join(str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in raw_content)
+            else:
+                content = str(raw_content) if raw_content else ""
             tool_calls = msg.get("tool_calls") or []
+            for tc in tool_calls:
+                fn = tc.get("function")
+                if isinstance(fn, dict) and isinstance(fn.get("arguments"), dict):
+                    fn["arguments"] = json.dumps(fn["arguments"], ensure_ascii=False)
             return content, tool_calls
         except Exception:
             pass
@@ -226,16 +243,30 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
 
             delta = choices[0].get("delta") or choices[0].get("message") or {}
 
-            # Accumulate text content and reasoning chain (supporting DeepSeek, Claude 3.7, o-series)
+            # Accumulate text content and reasoning chain (supporting DeepSeek, Claude 3.7, o-series, Gemini)
             c = delta.get("content")
-            if c:
+            if c is None:
+                c = delta.get("text")
+            if isinstance(c, str) and c:
                 content_chunks.append(c)
+            elif isinstance(c, list):
+                for part in c:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        t = part.get("text")
+                        if t:
+                            content_chunks.append(str(t))
+                    elif isinstance(part, str) and part:
+                        content_chunks.append(part)
 
             rc = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
-            if rc:
+            if isinstance(rc, str) and rc:
                 reasoning_chunks.append(rc)
+            elif isinstance(rc, dict):
+                t = rc.get("thinking") or rc.get("text")
+                if t:
+                    reasoning_chunks.append(str(t))
 
-            # Accumulate tool calls using chunked buffer to avoid quadratic string concatenation
+            # Accumulate tool calls safely formatting dict arguments to strings
             tcs = delta.get("tool_calls")
             if tcs:
                 for tc in tcs:
@@ -243,8 +274,12 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
                     if idx is None:
                         idx = 0
                     fn = tc.get("function") or {}
-                    fn_name = fn.get("name") or ""
-                    fn_args = fn.get("arguments") or ""
+                    fn_name = str(fn.get("name") or "")
+                    fn_args = fn.get("arguments")
+                    if isinstance(fn_args, dict):
+                        fn_args = json.dumps(fn_args, ensure_ascii=False)
+                    else:
+                        fn_args = str(fn_args) if fn_args is not None else ""
                     tc_id = tc.get("id")
                     if idx not in tool_calls_map:
                         tool_calls_map[idx] = {
@@ -292,14 +327,17 @@ class StreamingTokenBuffer:
     """
     High-performance token buffer for Telegram streaming responses:
     - Buffers rapid delta tokens to prevent hitting Telegram's 1-edit-per-second rate limit (FloodWait/429).
-    - Yields on configurable intervals (default 0.75s) or character increments (default 25 chars).
-    - O(1) incremental character tracking with intermediate buffer compaction to eliminate GC pressure.
+    - Dual-trigger flushing: rate-limit intervals (min_interval / min_chars) and timeout deadline (max_interval)
+      to eliminate UI starvation during slow generation, reasoning pauses, or short answers.
+    - Responsive initial flush for instant TTFT (Time-To-First-Token) visual feedback.
+    - O(1) incremental character tracking with compacted intermediate buffer to minimize GC pressure.
     """
-    __slots__ = ("min_interval", "min_chars", "last_flush_time", "last_flushed_len", "buffer", "_current_len")
+    __slots__ = ("min_interval", "min_chars", "max_interval", "last_flush_time", "last_flushed_len", "buffer", "_current_len")
 
-    def __init__(self, min_interval: float = 0.75, min_chars: int = 25):
+    def __init__(self, min_interval: float = 0.75, min_chars: int = 25, max_interval: float = 1.6):
         self.min_interval = min_interval
         self.min_chars = min_chars
+        self.max_interval = max(max_interval, min_interval)
         self.last_flush_time = 0.0
         self.last_flushed_len = 0
         self.buffer: List[str] = []
@@ -311,7 +349,17 @@ class StreamingTokenBuffer:
         self.buffer.append(chunk)
         self._current_len += len(chunk)
         now = time.monotonic()
-        if (now - self.last_flush_time >= self.min_interval) and (self._current_len - self.last_flushed_len >= self.min_chars):
+        elapsed = now - self.last_flush_time
+        new_chars = self._current_len - self.last_flushed_len
+
+        # 1. Fast initial flush for low TTFT visual response
+        initial_ready = (self.last_flushed_len == 0 and new_chars >= 12 and elapsed >= 0.35)
+        # 2. Standard rate-limited batch flush
+        interval_ready = (elapsed >= self.min_interval and new_chars >= self.min_chars)
+        # 3. Timeout deadline to prevent starvation on slow streaming / reasoning tokens
+        timeout_ready = (new_chars > 0 and elapsed >= self.max_interval)
+
+        if initial_ready or interval_ready or timeout_ready:
             self.last_flush_time = now
             self.last_flushed_len = self._current_len
             full_text = "".join(self.buffer)
@@ -324,6 +372,8 @@ class StreamingTokenBuffer:
             return ""
         if len(self.buffer) > 1:
             self.buffer = ["".join(self.buffer)]
+        self.last_flushed_len = self._current_len
+        self.last_flush_time = time.monotonic()
         return self.buffer[0]
 
 
