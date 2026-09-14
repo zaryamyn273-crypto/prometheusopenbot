@@ -25,14 +25,14 @@ _BROWSER_UA = (
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
 
-# Fallback and profile-tuned connection limits (increased keepalive pool headroom prevents TLS churn)
-_LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=30.0)
+# Fallback and profile-tuned connection limits (tuned keepalive expiry avoids stale Cloudflare/proxy sockets)
+_LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=20.0)
 
 _PROFILE_LIMITS: Dict[str, httpx.Limits] = {
-    "web": httpx.Limits(max_keepalive_connections=100, max_connections=200, keepalive_expiry=30.0),
-    "api": httpx.Limits(max_keepalive_connections=100, max_connections=200, keepalive_expiry=30.0),
-    "fast": httpx.Limits(max_keepalive_connections=50, max_connections=100, keepalive_expiry=30.0),
-    "stream": httpx.Limits(max_keepalive_connections=25, max_connections=60, keepalive_expiry=60.0),
+    "web": httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=20.0),
+    "api": httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=15.0),
+    "fast": httpx.Limits(max_keepalive_connections=50, max_connections=150, keepalive_expiry=15.0),
+    "stream": httpx.Limits(max_keepalive_connections=30, max_connections=80, keepalive_expiry=45.0),
 }
 
 # Granular connect/pool/read timeouts prevent hanging socket handshakes
@@ -228,16 +228,28 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
                 try:
                     if old_loop is not None and old_loop.is_running():
                         if current_loop is not None and old_loop is current_loop:
-                            current_loop.create_task(old_client.aclose())
+                            current_loop.create_task(_safe_aclose(old_client))
                         else:
-                            asyncio.run_coroutine_threadsafe(old_client.aclose(), old_loop)
-                    elif current_loop is not None and current_loop.is_running():
-                        current_loop.create_task(old_client.aclose())
+                            asyncio.run_coroutine_threadsafe(_safe_aclose(old_client), old_loop)
+                    elif (
+                        (old_loop is None or old_loop is current_loop)
+                        and current_loop is not None
+                        and current_loop.is_running()
+                    ):
+                        current_loop.create_task(_safe_aclose(old_client))
                 except Exception:
                     pass
         elif client_loop is None and current_loop is not None:
             _CLIENT_LOOPS[profile] = current_loop
         return client
+
+
+async def _safe_aclose(client: httpx.AsyncClient) -> None:
+    """Close an AsyncClient swallowing transport errors from dead or mismatched loops."""
+    try:
+        await client.aclose()
+    except Exception:
+        pass
 
 
 try:
@@ -259,4 +271,4 @@ async def aclose_all() -> None:
 
     open_clients = [client for _, client in items if not client.is_closed]
     if open_clients:
-        await asyncio.gather(*(client.aclose() for client in open_clients), return_exceptions=True)
+        await asyncio.gather(*(_safe_aclose(client) for client in open_clients), return_exceptions=True)
