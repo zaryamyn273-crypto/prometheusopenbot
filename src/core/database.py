@@ -224,14 +224,16 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
 
         # New key: bound capacity without massive low-water mark dump storms
         if len(_L1_CACHE) >= _L1_MAX_SIZE:
-            for old_k, old_v in list(islice(_L1_CACHE.items(), 64)):
-                if now > old_v["expires_at"]:
-                    _L1_CACHE.pop(old_k, None)
-            while len(_L1_CACHE) >= _L1_MAX_SIZE:
-                try:
-                    _L1_CACHE.popitem(last=False)
-                except KeyError:
-                    break
+            expired_keys = [k for k, v in islice(_L1_CACHE.items(), 64) if now > v["expires_at"]]
+            for k in expired_keys:
+                _L1_CACHE.pop(k, None)
+            if len(_L1_CACHE) >= _L1_MAX_SIZE:
+                target_size = max(_L1_LOW_WATER, _L1_MAX_SIZE - 32)
+                while len(_L1_CACHE) >= target_size:
+                    try:
+                        _L1_CACHE.popitem(last=False)
+                    except KeyError:
+                        break
 
         _L1_CACHE[key] = {
             "value": clean_val,
@@ -246,6 +248,8 @@ def l1_delete(key: str):
         _L1_CACHE.pop(key, None)
     with _KV_NEG_LOCK:
         _KV_NEGATIVE_CACHE.pop(key, None)
+    with _KV_IN_FLIGHT_LOCK:
+        _KV_IN_FLIGHT_READS.pop(key, None)
 
 # --- Tier 2: High-Speed Cloudflare Workers KV Operations ---
 # Cloudflare free plan allows ~1000 KV writes/day. The 5-minute bulk market
@@ -265,6 +269,7 @@ _KV_LAST_CLOUD_HASH: Dict[str, int] = {}
 _KV_LAST_CLOUD_ERROR: str = ""
 _KV_IN_FLIGHT_WRITES: set = set()
 _KV_IN_FLIGHT_READS: Dict[str, asyncio.Future] = {}
+_KV_IN_FLIGHT_LOCK = threading.Lock()
 _KV_NEGATIVE_CACHE: OrderedDict[str, float] = OrderedDict()
 _KV_NEGATIVE_MAX_SIZE: int = 1000
 _KV_NEG_LOCK = threading.Lock()
@@ -273,14 +278,16 @@ def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
     now = time.time()
     with _KV_NEG_LOCK:
         if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-            for old_k, exp_t in list(islice(_KV_NEGATIVE_CACHE.items(), 64)):
-                if now >= exp_t:
-                    _KV_NEGATIVE_CACHE.pop(old_k, None)
-            while len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-                try:
-                    _KV_NEGATIVE_CACHE.popitem(last=False)
-                except KeyError:
-                    break
+            expired = [k for k, exp_t in islice(_KV_NEGATIVE_CACHE.items(), 64) if now >= exp_t]
+            for k in expired:
+                _KV_NEGATIVE_CACHE.pop(k, None)
+            if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
+                target = _KV_NEGATIVE_MAX_SIZE - 32
+                while len(_KV_NEGATIVE_CACHE) >= target:
+                    try:
+                        _KV_NEGATIVE_CACHE.popitem(last=False)
+                    except KeyError:
+                        break
         _KV_NEGATIVE_CACHE[key] = now + ttl_sec
         _KV_NEGATIVE_CACHE.move_to_end(key)
 
@@ -316,21 +323,34 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
 
     # Anti-stampede: coalesce concurrent reads for the same cold key
     loop = asyncio.get_running_loop()
-    fut = _KV_IN_FLIGHT_READS.get(key)
-    if fut is not None and fut.get_loop() is loop:
-        if not fut.done():
-            try:
-                return await asyncio.shield(fut)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                return l1_get(key)
-        cached = l1_get(key)
-        if cached is not None:
-            return cached
+    with _KV_IN_FLIGHT_LOCK:
+        fut = _KV_IN_FLIGHT_READS.get(key)
+        if fut is not None and fut.get_loop() is loop:
+            if not fut.done():
+                is_leader = False
+            else:
+                try:
+                    return fut.result()
+                except Exception:
+                    pass
+                cached = l1_get(key)
+                if cached is not None:
+                    return cached
+                fut = loop.create_future()
+                _KV_IN_FLIGHT_READS[key] = fut
+                is_leader = True
+        else:
+            fut = loop.create_future()
+            _KV_IN_FLIGHT_READS[key] = fut
+            is_leader = True
 
-    fut = loop.create_future()
-    _KV_IN_FLIGHT_READS[key] = fut
+    if not is_leader:
+        try:
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return l1_get(key)
 
     try:
         client = get_cf_client()
@@ -339,9 +359,12 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
         result: Optional[str] = None
         if resp.status_code == 200:
             result = resp.text
-            l1_set(key, result, ttl_sec=120)
-            with _KV_NEG_LOCK:
-                _KV_NEGATIVE_CACHE.pop(key, None)
+            with _KV_IN_FLIGHT_LOCK:
+                still_valid = _KV_IN_FLIGHT_READS.get(key) is fut
+            if still_valid:
+                l1_set(key, result, ttl_sec=120)
+                with _KV_NEG_LOCK:
+                    _KV_NEGATIVE_CACHE.pop(key, None)
         elif resp.status_code == 404:
             _set_kv_negative_cache(key, ttl_sec=60.0)
         elif resp.status_code == 429:
@@ -362,8 +385,9 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     finally:
         if not fut.done():
             fut.set_result(None)
-        if _KV_IN_FLIGHT_READS.get(key) is fut:
-            _KV_IN_FLIGHT_READS.pop(key, None)
+        with _KV_IN_FLIGHT_LOCK:
+            if _KV_IN_FLIGHT_READS.get(key) is fut:
+                _KV_IN_FLIGHT_READS.pop(key, None)
 
 async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cloud_write: bool = True, cloud_min_interval_sec: Optional[int] = None) -> bool:
     """
