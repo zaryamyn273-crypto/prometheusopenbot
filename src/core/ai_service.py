@@ -47,26 +47,56 @@ def _router_headers() -> Dict[str, str]:
 
 
 _FAILED_INTERNAL_UNTIL = 0.0
+_FAILED_ENDPOINTS: Dict[str, float] = {}
+
+def mark_endpoint_failure(endpoint: str, cooldown_sec: float = 60.0) -> None:
+    """Marks an endpoint as failed, initiating cooldown backoff to avoid cascading timeouts."""
+    global _FAILED_INTERNAL_UNTIL
+    clean_ep = (endpoint or "").rstrip("/")
+    if not clean_ep:
+        return
+    now = time.time()
+    _FAILED_ENDPOINTS[clean_ep] = now + cooldown_sec
+    from src.core import config as _cfg
+    internal_url = (_cfg.ROUTER_INTERNAL_BASE_URL or "").rstrip("/")
+    if clean_ep == internal_url:
+        _FAILED_INTERNAL_UNTIL = now + cooldown_sec
+    logger.warning(f"Router endpoint '{clean_ep}' cooled down for {cooldown_sec:.1f}s")
+
+def mark_endpoint_success(endpoint: str) -> None:
+    """Clears failure cooldown upon successful response."""
+    clean_ep = (endpoint or "").rstrip("/")
+    _FAILED_ENDPOINTS.pop(clean_ep, None)
+
+async def close_shared_client() -> None:
+    """Gracefully shuts down the persistent HTTP/2 connection pool."""
+    global _shared_client
+    if _shared_client is not None and not _shared_client.is_closed:
+        await _shared_client.aclose()
+        _shared_client = None
 
 def _get_target_router_endpoints() -> List[str]:
     """
-    Returns prioritized list of router endpoints:
+    Returns prioritized list of router endpoints with timeout resilience:
     1. Primary configured ROUTER_BASE_URL (ultra-fast, direct HTTP/2, 50ms latency).
     2. Internal VPC ONLY if explicitly configured by environment and not cooled down.
+    3. Healthy endpoints prioritized over cooled-down ones.
     """
     global _FAILED_INTERNAL_UNTIL
     from src.core import config as _cfg
     public_url = (_cfg.ROUTER_BASE_URL or "").rstrip("/")
     internal_url = (_cfg.ROUTER_INTERNAL_BASE_URL or "").rstrip("/")
 
+    now = time.time()
     endpoints = []
     if public_url:
         endpoints.append(public_url)
 
-    # Only attempt internal VPC if explicitly configured and not in cooldown
-    if internal_url and time.time() > _FAILED_INTERNAL_UNTIL and internal_url not in endpoints:
+    if internal_url and now > _FAILED_INTERNAL_UNTIL and internal_url not in endpoints:
         endpoints.append(internal_url)
 
+    # Prioritize healthy endpoints over those under cooldown
+    endpoints.sort(key=lambda ep: 1 if _FAILED_ENDPOINTS.get(ep, 0) > now else 0)
     return endpoints
 
 def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
@@ -130,7 +160,8 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
 
 def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
     """
-    Parses both standard OpenAI JSON and SSE data stream response formats from 9Router.
+    Parses standard OpenAI JSON and SSE data stream response formats from 9Router/OpenAI proxies.
+    Robustly buffers streamed tool call names, arguments, and deep reasoning content.
     """
     clean_text = resp_text.strip()
     if not clean_text:
@@ -140,11 +171,21 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
     if clean_text.startswith("{") and clean_text.endswith("}"):
         try:
             data = json.loads(clean_text)
+            if "error" in data:
+                err_msg = data["error"].get("message", "Router API error")
+                logger.error(f"Router API error payload: {err_msg}")
+                return f"Error: {err_msg}", []
             choices = data.get("choices") or []
             if not choices:
                 return "", []
             msg = choices[0].get("message") or {}
-            content = msg.get("content") or msg.get("reasoning_content") or ""
+            content = (
+                msg.get("content")
+                or msg.get("reasoning_content")
+                or msg.get("reasoning")
+                or msg.get("thinking")
+                or ""
+            )
             tool_calls = msg.get("tool_calls") or []
             return content, tool_calls
         except Exception:
@@ -170,38 +211,44 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
 
             delta = choices[0].get("delta") or choices[0].get("message") or {}
 
-            # Accumulate text content cleanly separated from reasoning chain
+            # Accumulate text content and reasoning chain (supporting DeepSeek, Claude 3.7, o-series)
             c = delta.get("content")
             if c:
                 content_chunks.append(c)
-            else:
-                rc = delta.get("reasoning_content")
-                if rc:
-                    reasoning_chunks.append(rc)
+
+            rc = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+            if rc:
+                reasoning_chunks.append(rc)
 
             # Accumulate tool calls using chunked buffer to avoid quadratic string concatenation
             tcs = delta.get("tool_calls")
             if tcs:
                 for tc in tcs:
-                    idx = tc.get("index", 0)
+                    idx = tc.get("index")
+                    if idx is None:
+                        idx = 0
                     fn = tc.get("function") or {}
                     fn_name = fn.get("name") or ""
                     fn_args = fn.get("arguments") or ""
+                    tc_id = tc.get("id")
                     if idx not in tool_calls_map:
                         tool_calls_map[idx] = {
-                            "id": tc.get("id") or f"call_{idx}",
-                            "type": "function",
+                            "id": tc_id or f"call_{idx}",
+                            "type": tc.get("type") or "function",
                             "function": {
-                                "name": fn_name,
+                                "_name_chunks": [fn_name] if fn_name else [],
                                 "_arg_chunks": [fn_args] if fn_args else []
                             }
                         }
                     else:
-                        entry_fn = tool_calls_map[idx]["function"]
+                        entry = tool_calls_map[idx]
+                        if tc_id:
+                            entry["id"] = tc_id
+                        entry_fn = entry["function"]
                         if fn_name:
-                            entry_fn["name"] = fn_name
+                            entry_fn.setdefault("_name_chunks", []).append(fn_name)
                         if fn_args:
-                            entry_fn["_arg_chunks"].append(fn_args)
+                            entry_fn.setdefault("_arg_chunks", []).append(fn_args)
         except Exception:
             continue
 
@@ -213,12 +260,133 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
         final_content = ""
 
     final_tool_calls: List[Dict[str, Any]] = []
-    for tc in tool_calls_map.values():
+    for idx in sorted(tool_calls_map.keys()):
+        tc = tool_calls_map[idx]
         tc_fn = tc["function"]
+        tc_fn["name"] = "".join(tc_fn.pop("_name_chunks", []))
         tc_fn["arguments"] = "".join(tc_fn.pop("_arg_chunks", []))
         final_tool_calls.append(tc)
 
     return final_content, final_tool_calls
+
+
+class StreamingTokenBuffer:
+    """
+    High-performance token buffer for Telegram streaming responses:
+    - Buffers rapid delta tokens to prevent hitting Telegram's 1-edit-per-second rate limit (FloodWait/429).
+    - Yields on configurable intervals (default 0.75s) or character increments (default 25 chars).
+    """
+    __slots__ = ("min_interval", "min_chars", "last_flush_time", "last_flushed_len", "buffer")
+
+    def __init__(self, min_interval: float = 0.75, min_chars: int = 25):
+        self.min_interval = min_interval
+        self.min_chars = min_chars
+        self.last_flush_time = 0.0
+        self.last_flushed_len = 0
+        self.buffer: List[str] = []
+
+    def feed(self, chunk: str) -> Optional[str]:
+        if not chunk:
+            return None
+        self.buffer.append(chunk)
+        current_len = sum(len(c) for c in self.buffer)
+        now = time.monotonic()
+        if (now - self.last_flush_time >= self.min_interval) and (current_len - self.last_flushed_len >= self.min_chars):
+            self.last_flush_time = now
+            self.last_flushed_len = current_len
+            return "".join(self.buffer)
+        return None
+
+    def flush(self) -> str:
+        return "".join(self.buffer)
+
+
+def compact_messages(
+    messages: List[Dict[str, Any]],
+    max_tokens: int = MAX_SHORT_TERM_TOKENS,
+    system_prompt: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Compacts conversation history strictly within MAX_SHORT_TERM_TOKENS:
+    - Preserves system prompt and the latest user turn.
+    - Fast estimation (~3 chars/token for mixed Persian/English).
+    - Preserves paired assistant tool_calls and tool result responses to prevent 400 Bad Request errors.
+    """
+    if not messages:
+        base_prompt = system_prompt or SYSTEM_PROMPT or ""
+        return [{"role": "system", "content": base_prompt}] if base_prompt else []
+
+    def _estimate_tokens(content: Any) -> int:
+        if not content:
+            return 0
+        if isinstance(content, list):
+            return sum(_estimate_tokens(item) for item in content)
+        if isinstance(content, dict):
+            return sum(_estimate_tokens(v) for v in content.values())
+        return max(1, len(str(content)) // 3)
+
+    sys_msgs = [m for m in messages if m.get("role") == "system"]
+    chat_turns = [m for m in messages if m.get("role") != "system"]
+
+    if not sys_msgs:
+        base_prompt = system_prompt or SYSTEM_PROMPT or ""
+        if base_prompt:
+            sys_msgs = [{"role": "system", "content": base_prompt}]
+
+    sys_tokens = sum(_estimate_tokens(m.get("content")) for m in sys_msgs)
+    available_budget = max(600, max_tokens - sys_tokens)
+
+    if not chat_turns:
+        return sys_msgs
+
+    kept_turns: List[Dict[str, Any]] = []
+    used_tokens = 0
+    i = len(chat_turns) - 1
+
+    while i >= 0:
+        turn = chat_turns[i]
+        turn_tokens = _estimate_tokens(turn.get("content"))
+
+        # Tool message pairing: keep assistant tool_calls paired with tool role response
+        required_preceding: List[Dict[str, Any]] = []
+        if turn.get("role") == "tool" and i > 0 and chat_turns[i - 1].get("role") == "assistant":
+            prev_turn = chat_turns[i - 1]
+            turn_tokens += _estimate_tokens(prev_turn.get("content"))
+            required_preceding.append(prev_turn)
+
+        if kept_turns and (used_tokens + turn_tokens > available_budget):
+            break
+
+        kept_turns.append(turn)
+        if required_preceding:
+            kept_turns.extend(required_preceding)
+            i -= 1
+
+        used_tokens += turn_tokens
+        i -= 1
+
+    kept_turns.reverse()
+    return sys_msgs + kept_turns
+
+compact_prompt = compact_messages
+
+
+def select_dynamic_tools(prompt: str, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """
+    Dynamic Tool Selector: filters registry down to high-relevance tools to save context budget and boost TTFT.
+    """
+    try:
+        is_admin = bool(user_id and ADMIN_ID and str(user_id) == str(ADMIN_ID))
+        import inspect
+        sig = inspect.signature(get_smart_tools_for_prompt)
+        if "is_admin" in sig.parameters:
+            tools = get_smart_tools_for_prompt(prompt, is_admin=is_admin)
+        else:
+            tools = get_smart_tools_for_prompt(prompt)
+        return tools or []
+    except Exception as e:
+        logger.warning(f"Dynamic tool selection fallback: {e}")
+        return []
 
 _RE_KHETAB = re.compile(r"\(خطاب:[^)]+\)")
 
@@ -274,6 +442,17 @@ _CRYPTO_OVERVIEW_TRIGGERS = (
     "بازار رمزارز", "crypto market", "crypto prices", "cryptocurrency", "crypto board"
 )
 
+_RE_DK_CLEAN = re.compile(r"(قیمت|سرچ|جستجو|در|از|کالای|محصول|چنده|چند است|رو|رو چک کن|چک کن)")
+
+# Precompute crypto phrase mappings to eliminate 360 dynamic f-string allocations per message
+_PRECOMPUTED_CRYPTO_EXACT: Dict[str, str] = {}
+_PRECOMPUTED_CRYPTO_PHRASES: List[Tuple[str, str]] = []
+for _sym, _triggers in _CRYPTO_MAP.items():
+    for _tr in _triggers:
+        _PRECOMPUTED_CRYPTO_EXACT[_tr] = _sym
+        for _tpl in ("قیمت {}", "نرخ {}", "{} چنده", "{} چند است", "price of {}", "{} price", "how much is {}"):
+            _PRECOMPUTED_CRYPTO_PHRASES.append((_tpl.format(_tr), _sym))
+
 async def _try_fast_market_match(prompt: str) -> Optional[str]:
     """
     Sub-Second Financial Dispatcher (Zero-LLM Latency):
@@ -302,13 +481,14 @@ async def _try_fast_market_match(prompt: str) -> Optional[str]:
         from src.tools import financial
         return await financial.get_gold_and_coin_price()
 
-    for sym, triggers in _CRYPTO_MAP.items():
-        if any(
-            f"قیمت {tr}" in p or f"نرخ {tr}" in p or f"{tr} چنده" in p
-            or f"{tr} چند است" in p or p == tr
-            or f"price of {tr}" in p or f"{tr} price" in p or f"how much is {tr}" in p
-            for tr in triggers
-        ):
+    # O(1) exact lookup and precomputed substring scan for zero-alloc matching
+    matched_sym = _PRECOMPUTED_CRYPTO_EXACT.get(p)
+    if matched_sym:
+        from src.tools import financial
+        return await financial.get_price(matched_sym)
+
+    for phrase, sym in _PRECOMPUTED_CRYPTO_PHRASES:
+        if phrase in p:
             from src.tools import financial
             return await financial.get_price(sym)
 
@@ -317,12 +497,12 @@ async def _try_fast_market_match(prompt: str) -> Optional[str]:
         return await financial.get_crypto_overview()
 
     # 5. Direct Digikala Search Fast-Path
-    dk_triggers = ["دیجیکالا", "دیجی کالا", "digikala"]
+    dk_triggers = ("دیجیکالا", "دیجی کالا", "digikala")
     if any(dkt in p for dkt in dk_triggers):
         query_clean = p
         for dkt in dk_triggers:
             query_clean = query_clean.replace(dkt, " ")
-        query_clean = re.sub(r"(قیمت|سرچ|جستجو|در|از|کالای|محصول|چنده|چند است|رو|رو چک کن|چک کن)", " ", query_clean).strip()
+        query_clean = _RE_DK_CLEAN.sub(" ", query_clean).strip()
         if len(query_clean) >= 2:
             from src.tools.web_network.digikala import digikala_search
             return await digikala_search(query_clean, max_results=4)
