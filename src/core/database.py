@@ -239,15 +239,25 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
             _L1_CACHE.move_to_end(key)
             return
 
-        # New key: bound capacity without eviction storms; throttle full expired sweeps
+        # New key: bound capacity without eviction storms; prune expired before evicting warm LRU items
         if len(_L1_CACHE) >= _L1_MAX_SIZE:
-            if now - _L1_LAST_CLEANUP > 30.0:
+            # Fast LRU head expiration check: inspect oldest entries first (O(1) amortized)
+            while _L1_CACHE:
+                oldest_k = next(iter(_L1_CACHE))
+                if now > _L1_CACHE[oldest_k]["expires_at"]:
+                    _L1_CACHE.pop(oldest_k, None)
+                else:
+                    break
+
+            # Throttle full periodic sweep only if head check didn't free space
+            if len(_L1_CACHE) >= _L1_MAX_SIZE and (now - _L1_LAST_CLEANUP > 30.0):
                 _L1_LAST_CLEANUP = now
                 expired_keys = [k for k, v in _L1_CACHE.items() if now > v["expires_at"]]
                 for k in expired_keys:
                     _L1_CACHE.pop(k, None)
-            # Evict LRU items down to low water mark to amortize eviction overhead across subsequent writes
-            while len(_L1_CACHE) > _L1_LOW_WATER:
+
+            # Evict oldest LRU entry to accommodate new key without dropping warm cache in cliffs
+            while len(_L1_CACHE) >= _L1_MAX_SIZE:
                 try:
                     _L1_CACHE.popitem(last=False)
                 except KeyError:
@@ -304,12 +314,21 @@ def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
     now = time.time()
     with _KV_NEG_LOCK:
         if key not in _KV_NEGATIVE_CACHE and len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-            if now - _KV_NEG_LAST_CLEANUP > 30.0:
+            # Fast LRU head expiration check: negative keys have short TTLs and expire quickly
+            while _KV_NEGATIVE_CACHE:
+                head_k = next(iter(_KV_NEGATIVE_CACHE))
+                if now >= _KV_NEGATIVE_CACHE[head_k]:
+                    _KV_NEGATIVE_CACHE.pop(head_k, None)
+                else:
+                    break
+
+            if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE and (now - _KV_NEG_LAST_CLEANUP > 30.0):
                 _KV_NEG_LAST_CLEANUP = now
                 expired = [k for k, exp_t in _KV_NEGATIVE_CACHE.items() if now >= exp_t]
                 for k in expired:
                     _KV_NEGATIVE_CACHE.pop(k, None)
-            while len(_KV_NEGATIVE_CACHE) > _KV_NEGATIVE_LOW_WATER:
+
+            while len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
                 try:
                     _KV_NEGATIVE_CACHE.popitem(last=False)
                 except KeyError:
