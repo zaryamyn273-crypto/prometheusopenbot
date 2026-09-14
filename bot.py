@@ -104,10 +104,17 @@ def check_rate_limit(user_id: int) -> bool:
     if timestamps is None:
         timestamps = deque(maxlen=max_req)
         _USER_RATE_LIMITS[user_id] = timestamps
+    elif timestamps.maxlen != max_req:
+        timestamps = deque(timestamps, maxlen=max_req)
+        _USER_RATE_LIMITS[user_id] = timestamps
 
     cutoff = now - window
-    while timestamps and timestamps[0] <= cutoff:
-        timestamps.popleft()
+    if timestamps:
+        if timestamps[-1] <= cutoff:
+            timestamps.clear()
+        else:
+            while timestamps and timestamps[0] <= cutoff:
+                timestamps.popleft()
 
     if len(timestamps) >= max_req:
         return False
@@ -179,8 +186,7 @@ def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str =
         return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
 
     # Nanosecond C-level strip with comprehensive punctuation characters
-    raw_t = norm_text.strip().lower()
-    t = raw_t.strip(_FASTPATH_PUNCT_CHARS)
+    t = norm_text.lower().strip(_FASTPATH_PUNCT_CHARS)
     if not t:
         return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
 
@@ -189,6 +195,7 @@ def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str =
         t = t.replace("ـ", "")
     if "\u200c" in t:
         t = t.replace("\u200c", " ")
+    t = _FASTPATH_INNER_ZW_RE.sub("", t)
     if " " in t or "\t" in t or "\n" in t or "\u00a0" in t:
         t = " ".join(t.split())
 
@@ -210,7 +217,7 @@ _DEDUP_FUNC: Any = None
 
 async def reply_safely(message, text: str, reply_markup=None):
     """Safely formats markdown to HTML and sends message with fallback + 4096-char chunking."""
-    if not text or not str(text).strip():
+    if not text or not (text.strip() if isinstance(text, str) else str(text).strip()):
         return None
     global _DEDUP_FUNC
     if _DEDUP_FUNC is None:
@@ -239,7 +246,7 @@ async def reply_safely(message, text: str, reply_markup=None):
                 return None
 
     # Telegram hard limit is 4096 chars — split long answers instead of failing silently.
-    if len(formatted) <= 4000 and len(str(text)) <= 4000:
+    if len(formatted) <= 4000 and len(text) <= 4000:
         return await _send_one(formatted, reply_markup)
 
     # Prefer splitting the already-formatted HTML on newlines to keep tags intact.
@@ -305,7 +312,6 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
         return
 
     now = time.time()
-    u_uname = user.username or ""
 
     # 1. Fast-path in-memory cache check: immediate decision without thread dispatch
     cached_banned = _BANNED_CACHE.get(uid)
@@ -315,6 +321,10 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
 
     cached_muted = _MUTED_CACHE.get(uid)
     muted_miss = not (cached_muted and now < cached_muted[1])
+    if not banned_miss and not muted_miss and cached_muted[0] <= 0:
+        return
+
+    u_uname = user.username or ""
 
     # 2. Optimized cache-miss resolution: run DB checks concurrently on double-miss
     if banned_miss and muted_miss:
@@ -346,6 +356,11 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
         if uid not in _BANNED_CACHE:
             _prune_gatekeeper_cache(_BANNED_CACHE, now)
         _BANNED_CACHE[uid] = (_banned, now + _GATEKEEPER_CACHE_TTL)
+
+    if muted_miss:
+        if uid not in _MUTED_CACHE:
+            _prune_gatekeeper_cache(_MUTED_CACHE, now)
+        _MUTED_CACHE[uid] = (_muted_left, now + _GATEKEEPER_CACHE_TTL)
 
     if _banned:
         # Complete radio silence: kill update processing instantly
