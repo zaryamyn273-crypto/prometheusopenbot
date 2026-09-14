@@ -65,21 +65,24 @@ def is_admin(user_id: Any) -> bool:
     """Fast-path admin validation with strict non-zero guard against privilege escalation."""
     if not user_id or _ADMIN_ID_INT <= 0:
         return False
-    if isinstance(user_id, int):
+    # Exact type check: in Python bool subclasses int, guard against bool privilege escalation
+    if type(user_id) is int:
         return user_id == _ADMIN_ID_INT
-    try:
-        return int(user_id) == _ADMIN_ID_INT
-    except (ValueError, TypeError):
-        return False
+    if isinstance(user_id, str):
+        try:
+            return int(user_id) == _ADMIN_ID_INT
+        except ValueError:
+            return False
+    return False
 
 
-# Rate Limiter Memory
+# Rate Limiter Memory - monotonic clock immune to NTP step adjustments
 _USER_RATE_LIMITS: Dict[int, deque] = {}
-_LAST_RATE_LIMIT_CLEANUP: float = 0.0
+_LAST_RATE_LIMIT_CLEANUP: float = time.monotonic()
 
 def check_rate_limit(user_id: int) -> bool:
     global _LAST_RATE_LIMIT_CLEANUP
-    now = time.time()
+    now = time.monotonic()
     max_req = RATE_LIMIT_ADMIN_MAX_REQUESTS if is_admin(user_id) else RATE_LIMIT_USER_MAX_REQUESTS
     if max_req <= 0:
         return True
@@ -97,7 +100,7 @@ def check_rate_limit(user_id: int) -> bool:
             _USER_RATE_LIMITS.pop(suid, None)
         if len(_USER_RATE_LIMITS) > 5000:
             excess = len(_USER_RATE_LIMITS) - 3000
-            for suid in list(islice(_USER_RATE_LIMITS.keys(), excess)):
+            for suid in list(islice(_USER_RATE_LIMITS, excess)):
                 _USER_RATE_LIMITS.pop(suid, None)
 
     timestamps = _USER_RATE_LIMITS.get(user_id)
@@ -291,7 +294,7 @@ def _prune_gatekeeper_cache(cache: Dict[int, Tuple[Any, float]], now: float, max
             cache.pop(k, None)
         if len(cache) > max_size:
             excess = len(cache) - int(max_size * 0.8)
-            for k in list(islice(cache.keys(), excess)):
+            for k in list(islice(cache, excess)):
                 cache.pop(k, None)
 
 async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -313,16 +316,22 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
 
     now = time.time()
 
-    # 1. Fast-path in-memory cache check: immediate decision without thread dispatch
+    # 1. Fast-path in-memory cache checks with optimized gatekeeper ordering
     cached_banned = _BANNED_CACHE.get(uid)
-    banned_miss = not (cached_banned and now < cached_banned[1])
-    if not banned_miss and cached_banned[0]:
-        raise ApplicationHandlerStop()
+    if cached_banned is not None and now < cached_banned[1]:
+        if cached_banned[0]:
+            raise ApplicationHandlerStop()
+        banned_miss = False
+    else:
+        banned_miss = True
 
     cached_muted = _MUTED_CACHE.get(uid)
-    muted_miss = not (cached_muted and now < cached_muted[1])
-    if not banned_miss and not muted_miss and cached_muted[0] <= 0:
-        return
+    if cached_muted is not None and now < cached_muted[1]:
+        if not banned_miss and cached_muted[0] <= 0:
+            return
+        muted_miss = False
+    else:
+        muted_miss = True
 
     u_uname = user.username or ""
 
