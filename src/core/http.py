@@ -11,6 +11,7 @@ import inspect
 import random
 import socket
 import threading
+import weakref
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import httpx
@@ -149,6 +150,20 @@ class BackoffAsyncHTTPTransport(httpx.AsyncHTTPTransport):
         self._max_retries = max(0, max_retries)
         self._backoff_factor = backoff_factor
 
+    @staticmethod
+    def _is_replayable(request: httpx.Request) -> bool:
+        stream = getattr(request, "stream", None)
+        if stream is None:
+            return True
+        can_replay = getattr(stream, "can_replay", None)
+        if callable(can_replay):
+            return bool(can_replay())
+        if getattr(stream, "is_stream_consumed", False) or getattr(stream, "_is_stream_consumed", False):
+            return False
+        if isinstance(stream, httpx.ByteStream):
+            return True
+        return False
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if self._max_retries <= 0:
             return await super().handle_async_request(request)
@@ -157,38 +172,44 @@ class BackoffAsyncHTTPTransport(httpx.AsyncHTTPTransport):
         while True:
             try:
                 return await super().handle_async_request(request)
-            except (httpx.ConnectError, httpx.ConnectTimeout):
-                if attempt >= self._max_retries:
-                    raise
-                stream = getattr(request, "stream", None)
-                can_replay = getattr(stream, "can_replay", None)
-                if can_replay is not None and not can_replay():
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+                if attempt >= self._max_retries or not self._is_replayable(request):
                     raise
                 delay = min(self._backoff_factor * (2 ** attempt) + random.uniform(0.01, 0.05), 2.5)
                 attempt += 1
                 await asyncio.sleep(delay)
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError):
                 # Stale pooled socket recovery: safe for idempotent requests
-                if attempt >= self._max_retries or request.method not in ("GET", "HEAD", "OPTIONS"):
-                    raise
-                stream = getattr(request, "stream", None)
-                can_replay = getattr(stream, "can_replay", None)
-                if can_replay is not None and not can_replay():
+                method = request.method.upper() if isinstance(request.method, str) else ""
+                if (
+                    attempt >= self._max_retries
+                    or method not in ("GET", "HEAD", "OPTIONS", "TRACE")
+                    or not self._is_replayable(request)
+                ):
                     raise
                 # First idle/stale socket reset: retry immediately with minimal jitter to avoid human-perceptible latency
                 if attempt == 0:
                     delay = random.uniform(0.02, 0.05)
                 else:
-                    delay = min(self._backoff_factor * (2 ** attempt) + random.uniform(0.01, 0.05), 2.5)
+                    delay = min(self._backoff_factor * (2 ** (attempt - 1)) + random.uniform(0.01, 0.05), 2.5)
                 attempt += 1
                 await asyncio.sleep(delay)
 
 
 _CLIENTS: Dict[str, httpx.AsyncClient] = {}
-_CLIENT_LOOPS: Dict[str, asyncio.AbstractEventLoop] = {}
+_CLIENT_LOOPS: Dict[str, Any] = {}
 _PER_LOOP_CLIENTS: Dict[Tuple[str, int], httpx.AsyncClient] = {}
-_LOOP_REFS: Dict[int, asyncio.AbstractEventLoop] = {}
+_LOOP_REFS: Dict[int, weakref.ReferenceType[asyncio.AbstractEventLoop]] = {}
 _BUILD_LOCK = threading.Lock()
+
+
+def _cleanup_loop(lid: int) -> None:
+    """Automatic finalizer callback when an AbstractEventLoop is garbage collected."""
+    with _BUILD_LOCK:
+        _LOOP_REFS.pop(lid, None)
+        dead = [k for k in _PER_LOOP_CLIENTS if k[1] == lid]
+        for k in dead:
+            _PER_LOOP_CLIENTS.pop(k, None)
 
 
 def _build(profile: str) -> httpx.AsyncClient:
@@ -225,39 +246,60 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
     loop_id = id(current_loop) if current_loop is not None else 0
     key = (profile, loop_id)
 
-    # Ultra-fast lock-free path: verify loop-specific client validity
+    # Ultra-fast lock-free path: verify loop identity and client validity
     client = _PER_LOOP_CLIENTS.get(key)
     if client is not None and not client.is_closed:
-        return client
+        if current_loop is None:
+            return client
+        lref = _LOOP_REFS.get(loop_id)
+        if lref is not None and lref() is current_loop and not current_loop.is_closed():
+            return client
 
     with _BUILD_LOCK:
         client = _PER_LOOP_CLIENTS.get(key)
         if client is not None and not client.is_closed:
-            return client
+            if current_loop is None:
+                return client
+            lref = _LOOP_REFS.get(loop_id)
+            if lref is not None and lref() is current_loop and not current_loop.is_closed():
+                return client
 
         client = _build(profile)
         _PER_LOOP_CLIENTS[key] = client
         _CLIENTS[profile] = client
         if current_loop is not None:
             _CLIENT_LOOPS[profile] = current_loop
-            _LOOP_REFS[loop_id] = current_loop
+            if loop_id not in _LOOP_REFS:
+                _LOOP_REFS[loop_id] = weakref.ref(current_loop)
+                try:
+                    weakref.finalize(current_loop, _cleanup_loop, loop_id)
+                except Exception:
+                    pass
+            else:
+                _LOOP_REFS[loop_id] = weakref.ref(current_loop)
         else:
             _CLIENT_LOOPS.pop(profile, None)
 
         # Prune dead or closed clients to avoid memory growth across loop lifecycles
         dead_keys: List[Tuple[str, int]] = []
         for k, c in list(_PER_LOOP_CLIENTS.items()):
-            loop_ref = _LOOP_REFS.get(k[1])
-            if c.is_closed or (loop_ref is not None and loop_ref.is_closed()):
+            lref = _LOOP_REFS.get(k[1])
+            l_obj = lref() if lref is not None else None
+            if c.is_closed or l_obj is None or l_obj.is_closed():
                 dead_keys.append(k)
-                if not c.is_closed and current_loop is not None and current_loop.is_running() and k[1] == loop_id:
+
+        for k in dead_keys:
+            dead_client = _PER_LOOP_CLIENTS.pop(k, None)
+            _LOOP_REFS.pop(k[1], None)
+            loop_in_dict = _CLIENT_LOOPS.get(k[0])
+            if loop_in_dict is None or loop_in_dict.is_closed() or id(loop_in_dict) == k[1]:
+                _CLIENT_LOOPS.pop(k[0], None)
+            if dead_client is not None and not dead_client.is_closed:
+                if current_loop is not None and current_loop.is_running() and k[1] == loop_id:
                     try:
-                        current_loop.create_task(_safe_aclose(c))
+                        current_loop.create_task(_safe_aclose(dead_client))
                     except Exception:
                         pass
-        for k in dead_keys:
-            _PER_LOOP_CLIENTS.pop(k, None)
-            _LOOP_REFS.pop(k[1], None)
 
         return client
 
@@ -268,6 +310,11 @@ async def _safe_aclose(client: httpx.AsyncClient) -> None:
         await asyncio.wait_for(client.aclose(), timeout=5.0)
     except Exception:
         pass
+    finally:
+        try:
+            setattr(client, "_is_closed", True)
+        except Exception:
+            pass
 
 
 @asynccontextmanager
