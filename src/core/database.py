@@ -203,7 +203,8 @@ def l1_get(key: str) -> Optional[str]:
         hits = item["hits"] + 1
         item["hits"] = hits
         if hits % 5 == 0:
-            item["expires_at"] = min(item["expires_at"] + 60.0, item.get("set_at", now) + item["ttl"] * 1.5)
+            max_exp = item.get("max_exp", item.get("set_at", now) + item["ttl"] * 1.5)
+            item["expires_at"] = min(item["expires_at"] + 60.0, max_exp)
         # True LRU touch: move to most recently used position (O(1) in CPython)
         _L1_CACHE.move_to_end(key)
         _L1_HITS += 1
@@ -223,8 +224,13 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
     except Exception:
         _ttl = 300
 
-    # Fast type check avoiding unnecessary str() allocations
-    clean_val = value if isinstance(value, str) else str(value or "")
+    # Fast type check avoiding unnecessary str() allocations; safely preserve falsy values like 0 or False
+    if isinstance(value, str):
+        clean_val = value
+    elif value is None:
+        clean_val = ""
+    else:
+        clean_val = str(value)
     if len(clean_val) > 65536:
         clean_val = clean_val[:65536]
 
@@ -236,6 +242,8 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
             existing["expires_at"] = now + _ttl
             existing["ttl"] = _ttl
             existing["set_at"] = now
+            existing["max_exp"] = now + _ttl * 1.5
+            existing["hits"] = 0
             _L1_CACHE.move_to_end(key)
             return
 
@@ -256,12 +264,13 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
                 for k in expired_keys:
                     _L1_CACHE.pop(k, None)
 
-            # Evict oldest LRU entry to accommodate new key without dropping warm cache in cliffs
-            while len(_L1_CACHE) >= _L1_MAX_SIZE:
-                try:
-                    _L1_CACHE.popitem(last=False)
-                except KeyError:
-                    break
+            # Evict oldest LRU entries down to low water mark to amortize eviction across future inserts
+            if len(_L1_CACHE) >= _L1_MAX_SIZE:
+                while len(_L1_CACHE) >= _L1_LOW_WATER:
+                    try:
+                        _L1_CACHE.popitem(last=False)
+                    except KeyError:
+                        break
 
         _L1_CACHE[key] = {
             "value": clean_val,
@@ -269,6 +278,7 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
             "ttl": _ttl,
             "hits": 0,
             "set_at": now,
+            "max_exp": now + _ttl * 1.5,
         }
 
 def l1_delete(key: str):
@@ -278,6 +288,8 @@ def l1_delete(key: str):
         _KV_NEGATIVE_CACHE.pop(key, None)
     with _KV_IN_FLIGHT_LOCK:
         _KV_IN_FLIGHT_READS.pop(key, None)
+    _KV_LAST_CLOUD_WRITE.pop(key, None)
+    _KV_LAST_CLOUD_HASH.pop(key, None)
 
 # --- Tier 2: High-Speed Cloudflare Workers KV Operations ---
 # Cloudflare free plan allows ~1000 KV writes/day. The 5-minute bulk market
@@ -328,11 +340,13 @@ def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
                 for k in expired:
                     _KV_NEGATIVE_CACHE.pop(k, None)
 
-            while len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-                try:
-                    _KV_NEGATIVE_CACHE.popitem(last=False)
-                except KeyError:
-                    break
+            # Evict oldest entries down to low water mark to amortize future negative cache insertions
+            if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
+                while len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_LOW_WATER:
+                    try:
+                        _KV_NEGATIVE_CACHE.popitem(last=False)
+                    except KeyError:
+                        break
         _KV_NEGATIVE_CACHE[key] = now + ttl_sec
         _KV_NEGATIVE_CACHE.move_to_end(key)
 
