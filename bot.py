@@ -80,12 +80,15 @@ def check_rate_limit(user_id: int) -> bool:
     global _LAST_RATE_LIMIT_CLEANUP
     now = time.time()
     max_req = RATE_LIMIT_ADMIN_MAX_REQUESTS if is_admin(user_id) else RATE_LIMIT_USER_MAX_REQUESTS
+    if max_req <= 0:
+        return True
     window = RATE_LIMIT_USER_WINDOW_SEC
 
-    # Active memory maintenance: sweep every 60s (or every 10s if capacity exceeds 5000)
-    # Prevents memory leak below 2000 users and stops per-message sweep thrashing under high load
+    # Active memory maintenance: sweep every 60s, or when capacity hits 5000 (throttled to 10s),
+    # or immediate emergency prune if capacity exceeds 10,000 under high-volume flood attacks.
     time_since_cleanup = now - _LAST_RATE_LIMIT_CLEANUP
-    if (time_since_cleanup > 60.0 and _USER_RATE_LIMITS) or (len(_USER_RATE_LIMITS) > 5000 and time_since_cleanup > 10.0):
+    num_tracked = len(_USER_RATE_LIMITS)
+    if (time_since_cleanup > 60.0 and num_tracked) or (num_tracked > 10000) or (num_tracked > 5000 and time_since_cleanup > 10.0):
         _LAST_RATE_LIMIT_CLEANUP = now
         stale_threshold = now - window
         stale_users = [uid for uid, dq in _USER_RATE_LIMITS.items() if not dq or dq[-1] < stale_threshold]
@@ -148,11 +151,11 @@ async def _maybe_translate(update, text: str) -> str:
 
 
 # Fast-path precompiled regex and lookup sets for deterministic social routing
-# Comprehensive unicode punctuation including zero-width, bidirectional, and smart quotes
-_FASTPATH_PUNCT_CHARS = " \t\n\r\f\v!?,.:;~_-()[]{}<>\"'«»“”؟،؛\u200b\u200c\u200d\u200e\u200f\ufeff\u00a0"
+# Comprehensive unicode punctuation including zero-width, bidirectional, smart quotes, tatweel, ellipsis, and dashes
+_FASTPATH_PUNCT_CHARS = " \t\n\r\f\v!?,.:;~_-()[]{}<>\"'«»“”؟،؛\u200b\u200c\u200d\u200e\u200f\ufeff\u00a0…–—•ـ"
 _FASTPATH_CLEAN_RE = re.compile(
-    r"^[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0]+|"
-    r"[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0]+$"
+    r"^[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0…–—•ـ]+|"
+    r"[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0…–—•ـ]+$"
 )
 _GREETING_WORDS = frozenset({"سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood"})
 _STATUS_WORDS = frozenset({"خوبی", "چطوری", "چه خبر", "خسته نباشی", "how are you", "how are u", "whats up", "what's up"})
@@ -162,12 +165,22 @@ _NO_WORDS = frozenset({"نه", "no", "nope"})
 
 def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str = "fa") -> str:
     """Instant deterministic reply for pure social chatter (no LLM, no tools)."""
-    raw_t = (norm_text or "").strip().lower()
-    # Nanosecond C-level strip with precompiled regex fallback for Persian & English punctuation
-    t = raw_t.strip(_FASTPATH_PUNCT_CHARS)
-    if not t and raw_t:
-        t = _FASTPATH_CLEAN_RE.sub("", raw_t)
     is_fa = (lang == "fa")
+    if not norm_text:
+        return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
+
+    # Nanosecond C-level strip with comprehensive punctuation characters
+    raw_t = norm_text.strip().lower()
+    t = raw_t.strip(_FASTPATH_PUNCT_CHARS)
+    if not t:
+        return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
+
+    # Normalize inner tatweels and collapse redundant whitespace for multi-word phrases (e.g. "چه خبر")
+    if "ـ" in t:
+        t = t.replace("ـ", "")
+    if "  " in t:
+        t = " ".join(t.split())
+
     if t in _GREETING_WORDS:
         if is_admin(user_id):
             return "👑 درود فرمانده! بفرمایید، در خدمتم." if is_fa else "👑 Hello commander! At your command."
@@ -275,53 +288,57 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
     if not user:
         return
 
+    uid = user.id
     # Master Admin is never banned or muted; bypass DB checks instantly
-    if is_admin(user.id):
+    if is_admin(uid):
         return
 
     now = time.time()
     u_uname = user.username or ""
 
-    # 1. Banned check with TTL cache and anti-stampede bounded eviction
-    cached_banned = _BANNED_CACHE.get(user.id)
+    # 1. Banned check with TTL cache and non-blocking thread execution for cache misses
+    cached_banned = _BANNED_CACHE.get(uid)
     if cached_banned and now < cached_banned[1]:
         _banned = cached_banned[0]
     else:
         try:
-            _banned = bool(database.is_user_banned(user.id, username=u_uname))
+            _banned = bool(await asyncio.to_thread(database.is_user_banned, uid, username=u_uname))
         except Exception:
             _banned = False
-        _BANNED_CACHE[user.id] = (_banned, now + _GATEKEEPER_CACHE_TTL)
-        _prune_gatekeeper_cache(_BANNED_CACHE, now)
+        if uid not in _BANNED_CACHE:
+            _prune_gatekeeper_cache(_BANNED_CACHE, now)
+        _BANNED_CACHE[uid] = (_banned, now + _GATEKEEPER_CACHE_TTL)
 
     if _banned:
         # Complete radio silence: kill update processing instantly
         raise ApplicationHandlerStop()
 
-    # 2. Muted check with TTL cache and anti-stampede bounded eviction
-    cached_muted = _MUTED_CACHE.get(user.id)
+    # 2. Muted check with TTL cache and non-blocking thread execution for cache misses
+    cached_muted = _MUTED_CACHE.get(uid)
     if cached_muted and now < cached_muted[1]:
         _muted_left = cached_muted[0]
     else:
         try:
-            _muted_left = float(database.is_user_muted(user.id, username=u_uname) or 0)
+            _muted_left = float(await asyncio.to_thread(database.is_user_muted, uid, username=u_uname) or 0)
         except Exception:
             _muted_left = 0.0
         mute_ttl = min(_GATEKEEPER_CACHE_TTL, max(1.0, _muted_left)) if _muted_left > 0 else _GATEKEEPER_CACHE_TTL
-        _MUTED_CACHE[user.id] = (_muted_left, now + mute_ttl)
-        _prune_gatekeeper_cache(_MUTED_CACHE, now)
+        if uid not in _MUTED_CACHE:
+            _prune_gatekeeper_cache(_MUTED_CACHE, now)
+        _MUTED_CACHE[uid] = (_muted_left, now + mute_ttl)
 
     if _muted_left:
         eff_msg = update.effective_message
         if eff_msg:
             try:
-                _mid = eff_msg.message_id or 0
-                _cid = update.effective_chat.id if update.effective_chat else 0
-                _ct = update.effective_chat.title if update.effective_chat and getattr(update.effective_chat, "title", None) else ""
                 _mt = eff_msg.text or eff_msg.caption or ""
                 if _mt:
+                    _mid = eff_msg.message_id or 0
+                    eff_chat = update.effective_chat
+                    _cid = eff_chat.id if eff_chat else 0
+                    _ct = eff_chat.title if eff_chat and getattr(eff_chat, "title", None) else ""
                     asyncio.create_task(database.save_message_async(
-                        _cid, user.id, "user", f"[MUTED-ARCHIVE] {_mt}",
+                        _cid, uid, "user", f"[MUTED-ARCHIVE] {_mt}",
                         user_name=user.first_name or "x", username=u_uname,
                         chat_title=_ct, message_id=_mid
                     ))
