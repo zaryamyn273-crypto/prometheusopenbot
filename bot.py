@@ -65,17 +65,9 @@ except Exception:
 
 def is_admin(user_id: Any) -> bool:
     """Fast-path admin validation with strict non-zero guard against privilege escalation."""
-    if not user_id or _ADMIN_ID_INT <= 0:
+    if user_id is None or type(user_id) is bool:
         return False
-    # Exact type check: in Python bool subclasses int, guard against bool privilege escalation
-    if type(user_id) is int:
-        return user_id == _ADMIN_ID_INT
-    if isinstance(user_id, str):
-        try:
-            return int(user_id) == _ADMIN_ID_INT
-        except ValueError:
-            return False
-    return False
+    return config.is_admin_id(user_id)
 
 
 # Rate Limiter Memory - monotonic clock immune to NTP step adjustments
@@ -85,7 +77,7 @@ _LAST_RATE_LIMIT_CLEANUP: float = time.monotonic()
 def check_rate_limit(user_id: int) -> bool:
     global _LAST_RATE_LIMIT_CLEANUP
     now = time.monotonic()
-    is_adm = (user_id == _ADMIN_ID_INT and _ADMIN_ID_INT > 0) if type(user_id) is int else is_admin(user_id)
+    is_adm = is_admin(user_id)
     max_req = RATE_LIMIT_ADMIN_MAX_REQUESTS if is_adm else RATE_LIMIT_USER_MAX_REQUESTS
     if max_req <= 0:
         return True
@@ -237,7 +229,7 @@ def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str =
         t = " ".join(t.split())
 
     if t in _GREETING_WORDS:
-        if (user_id == _ADMIN_ID_INT and _ADMIN_ID_INT > 0) if type(user_id) is int else is_admin(user_id):
+        if is_admin(user_id):
             return "👑 درود فرمانده! بفرمایید، در خدمتم." if is_fa else "👑 Hello commander! At your command."
         return "سلام. بفرمایید، کارتان را خلاصه و دقیق مطرح کنید." if is_fa else "Hello. State your request clearly and concisely."
 
@@ -342,7 +334,7 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
 
     uid = user.id
     # Master Admin is never banned or muted; bypass DB checks instantly
-    if (uid == _ADMIN_ID_INT and _ADMIN_ID_INT > 0) if type(uid) is int else is_admin(uid):
+    if is_admin(uid):
         return
 
     now = time.time()
@@ -2426,6 +2418,134 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
             _iso, _, _j = database.get_tehran_timestamps()
             return t(ulang, "date_today", jalali=_j, iso=_iso), None
 
+        # Tier 0-ID: User Identity / WhoAmI Fast Path (<0.1ms execution, zero LLM cost)
+        _whoami_phrases = {
+            "من کی هستم", "من کیم", "من چه کسیم", "مشخصات من", "اطلاعات من",
+            "شناسه من", "آیدی من", "ایدی من", "یوزر آیدی من", "whoami", "who am i",
+            "my id", "my profile", "about me", "id man"
+        }
+        if _norm in _whoami_phrases:
+            _u_fname = getattr(user, "first_name", "") or ""
+            _u_lname = f" {user.last_name}" if getattr(user, "last_name", None) else ""
+            _u_full = f"{_u_fname}{_u_lname}".strip() or ("کاربر" if ulang == "fa" else "User")
+            _u_uname = f"@{user.username}" if getattr(user, "username", None) else ("ندارد" if ulang == "fa" else "None")
+            _is_adm = is_admin(user.id)
+            if _is_adm:
+                if ulang == "fa":
+                    _card = (
+                        "👑 *مشخصات هویتی تأیید شده — فرمانده ارشد سیستم*\n\n"
+                        f"👤 *نام:* {_u_full}\n"
+                        f"🆔 *یوزرنیم:* {_u_uname}\n"
+                        f"🔢 *شناسه عددی (User ID):* `{user.id}`\n"
+                        "🛡️ *سطح دسترسی:* 👑 *فرمانده ارشد و مالک کل پرومته (Master Admin)*\n"
+                        "⚡ *وضعیت:* دسترسی کامل و بدون محدودیت به کلیه فرامین حاکمیتی"
+                    )
+                else:
+                    _card = (
+                        "👑 *Verified Identity — Supreme Commander*\n\n"
+                        f"👤 *Name:* {_u_full}\n"
+                        f"🆔 *Username:* {_u_uname}\n"
+                        f"🔢 *User ID:* `{user.id}`\n"
+                        "🛡️ *Access Level:* 👑 *Master Admin & System Owner*\n"
+                        "⚡ *Status:* Full unrestricted administrative authority"
+                    )
+            else:
+                if ulang == "fa":
+                    _card = (
+                        "👤 *مشخصات کاربری شما در پرومته*\n\n"
+                        f"👤 *نام:* {_u_full}\n"
+                        f"🆔 *یوزرنیم:* {_u_uname}\n"
+                        f"🔢 *شناسه عددی (User ID):* `{user.id}`\n"
+                        "🛡️ *سطح دسترسی:* کاربر عمومی (دسترسی آزاد به ابزارهای عمومی)"
+                    )
+                else:
+                    _card = (
+                        "👤 *Your Prometheus Profile*\n\n"
+                        f"👤 *Name:* {_u_full}\n"
+                        f"🆔 *Username:* {_u_uname}\n"
+                        f"🔢 *User ID:* `{user.id}`\n"
+                        "🛡️ *Access Level:* Standard User"
+                    )
+            return _card, None
+
+        # Tier 0-Owner: Master Admin Inquiry Fast Path (<0.1ms)
+        _owner_phrases = {
+            "ادمین کیه", "ادمین کیست", "فرمانده کیه", "فرمانده کیست", "مالک کیه", "مالک کیست",
+            "سازنده کیه", "سازنده کیست", "خالق کیه", "خالق کیست", "رئیس کیه", "رئیس کیست",
+            "who is admin", "who is the admin", "who is owner", "who is the owner", "creator"
+        }
+        if _norm in _owner_phrases:
+            _m_id = config.ADMIN_ID
+            if ulang == "fa":
+                _ans = (
+                    f"👑 *فرمانده ارشد، مالک و معمار کل سیستم پرومته*\n\n"
+                    f"شناسه عددی تأیید شده فرمانده ارشد: `{_m_id}`\n"
+                    "پرومته منحصراً تحت حاکمیت و فرامین ایشان فعالیت می‌کند."
+                )
+            else:
+                _ans = (
+                    f"👑 *Prometheus Master Admin & Owner*\n\n"
+                    f"Verified Master Admin Numeric ID: `{_m_id}`\n"
+                    "Prometheus operates under their absolute authority."
+                )
+            return _ans, None
+
+        # Tier 0-Bot: Bot Identity Fast Path (<0.1ms)
+        _bot_identity_phrases = {
+            "تو کی هستی", "تو کیستی", "معرفی کن", "خودتو معرفی کن", "who are you",
+            "who r u", "about you", "what are you", "who is prometheus"
+        }
+        if _norm in _bot_identity_phrases:
+            if ulang == "fa":
+                _b_card = (
+                    "⚡ *پرومته سوپر ایجنت (Prometheus AI v5.0 Ultimate)*\n\n"
+                    "دستیار هوش مصنوعی خودمختار با توانمندی‌های پیشرفته:\n"
+                    "• تحلیل زنده بازارهای مالی، کریپتو، طلا و ارز\n"
+                    "• موتور جستجوی وب، اخبار بلادرنگ و تله‌متری سرور\n"
+                    "• پردازش چندوجهی تصویر، اسناد و ابزارهای علمی\n"
+                    "• پردازش فوق سریع پاسخ‌ها با معماری Multi-Tier"
+                )
+            else:
+                _b_card = (
+                    "⚡ *Prometheus Super Agent (v5.0 Ultimate)*\n\n"
+                    "Autonomous multi-modal AI system featuring:\n"
+                    "• Real-time financial, crypto & commodity market tracking\n"
+                    "• Live web intelligence and multi-engine search\n"
+                    "• Vision analysis, document processing & scientific math\n"
+                    "• Sub-millisecond Tier-0 fast paths"
+                )
+            return _b_card, None
+
+        # Tier 0-Ping: Ping & Server Heartbeat Fast Path (<0.1ms)
+        _ping_phrases = {
+            "پینگ", "ping", "ربات بیداری", "پرومته بیداری", "بیداری", "تست سرعت", "تست پینگ"
+        }
+        if _norm in _ping_phrases:
+            _, _hm_p, _ = database.get_tehran_timestamps()
+            if ulang == "fa":
+                _p_card = (
+                    "🏓 *پونگ! پرومته کاملاً بیدار، هوشیار و عملیاتی است.*\n\n"
+                    "⚡ *تأخیر پردازش تریاژ:* کمتر از ۱ میلی‌ثانیه (`<1ms`)\n"
+                    f"🕒 *زمان سرور:* `{_hm_p}` (تهران)\n"
+                    "🟢 *وضعیت موتور پردازش:* آنلاین و پایدار"
+                )
+            else:
+                _p_card = (
+                    "🏓 *Pong! Prometheus is fully operational.*\n\n"
+                    "⚡ *Triage Latency:* `<1ms`\n"
+                    f"🕒 *Server Time:* `{_hm_p}` (Tehran)\n"
+                    "🟢 *Engine Status:* Online & Healthy"
+                )
+            return _p_card, None
+
+        # Admin Fast Path: Instant Server Diagnostics without LLM (<10ms)
+        if is_admin(user.id) and _norm in [
+            "وضعیت سرور", "تله متری", "تله‌متری", "تلهمتری", "استاتوس سرور", "server status", "telemetry", "سیستم سرور"
+        ]:
+            from src.tools.system import admin_system_diagnostics
+            _d_res = admin_system_diagnostics(caller_id=user.id)
+            return _d_res, None
+
         # Admin Fast Path: Instant Live Group Listing & Public Channels without LLM delay
         if is_admin(user.id) and _norm in [
             "لیست گروه", "لیست گروه‌ها", "لیست گروهها", "گروه هام", "گروه های من", "گروه ها", "گروه‌ها", "groups", "my groups", "list groups", "show groups", "group list"
@@ -3034,9 +3154,12 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # trigger Prometheus. In groups, a command ONLY qualifies as a direct command if it is
     # customized for Prometheus (*_prometheus) or explicitly targets @Prometheusbaibot.
     _first_word = user_text.strip().split()[0].lower() if user_text else ""
+    _cur_bot_u = (getattr(context.bot, "username", "") or "").lower()
     _is_prom_cmd_in_group = bool(_first_word.startswith("/") and (
         _first_word.endswith("_prometheus") or 
-        "@prometheusbaibot" in _first_word
+        "@prometheusbaibot" in _first_word or
+        "@amzprometheusopenbot" in _first_word or
+        (_cur_bot_u and f"@{_cur_bot_u}" in _first_word)
     ))
     _is_direct_command = _is_prom_cmd_in_group if not is_pv else bool(user_text and user_text.strip().startswith("/"))
 

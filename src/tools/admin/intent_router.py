@@ -13,7 +13,7 @@ Covered intents: leave-group, ban-group, list-groups, my-quota.
 import logging
 import re
 
-from src.core.config import ADMIN_ID
+from src.core.config import ADMIN_ID, is_admin_id
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ _QUOTA_CLEAR_RES = (
 async def try_admin_intent_async(user_text: str, caller_id: int, current_chat_id=None):
     """Execute the admin's intent from natural text. Returns reply or None."""
     try:
-        if int(caller_id or 0) != int(ADMIN_ID):
+        if not is_admin_id(caller_id):
             return None
     except Exception:
         return None
@@ -198,7 +198,7 @@ async def try_admin_intent_async(user_text: str, caller_id: int, current_chat_id
     if _is_list_groups_intent(norm):
         try:
             from src.tools.admin import group_manager as _gm
-            return await _gm.list_joined_groups_tool(caller_id=int(ADMIN_ID))
+            return await _gm.list_joined_groups_tool(caller_id=int(caller_id))
         except Exception as e:
             logger.warning(f"intent list-groups failed: {e}")
             return None
@@ -352,7 +352,7 @@ async def try_admin_intent_async(user_text: str, caller_id: int, current_chat_id
             return _CLARIFY
         try:
             from src.tools.admin import group_manager as _gm
-            return await _gm.leave_group_by_admin_tool(chat_identifier=target, caller_id=int(ADMIN_ID))
+            return await _gm.leave_group_by_admin_tool(chat_identifier=target, caller_id=int(caller_id))
         except Exception as e:
             logger.warning(f"intent leave failed: {e}")
             return None
@@ -374,7 +374,7 @@ async def try_admin_intent_async(user_text: str, caller_id: int, current_chat_id
             return _CLARIFY
         try:
             from src.tools.admin import group_manager as _gm
-            return await _gm.ban_group_by_name_or_id_tool(group_name=target, caller_id=int(ADMIN_ID))
+            return await _gm.ban_group_by_name_or_id_tool(group_name=target, caller_id=int(caller_id))
         except Exception as e:
             logger.warning(f"intent ban failed: {e}")
             return None

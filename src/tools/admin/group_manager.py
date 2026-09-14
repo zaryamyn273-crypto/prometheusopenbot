@@ -4,7 +4,7 @@ from typing import Optional
 
 from src.tools.registry import register_tool
 from src.core import database
-from src.core.config import ADMIN_ID
+from src.core.config import ADMIN_ID, is_admin_id
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ async def _live_membership(bot_inst, bot_me_id, cid: int):
     category="admin"
 )
 async def list_joined_groups_tool(caller_id: int = 0, is_private_chat: bool = False) -> str:
-    if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
+    if not caller_id or int(caller_id or 0) <= 0 or not is_admin_id(caller_id):
         return "❌ این فرمان منحصراً در اختیار فرمانده ارشد سیستم است."
 
     await database.sync_memory_from_d1_async()
@@ -241,7 +241,7 @@ async def ban_group_by_name_or_id_tool(
     reason: str = "مسدودسازی دائمی گروه به دستور فرمانده",
     caller_id: int = 0
 ) -> str:
-    if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
+    if not caller_id or int(caller_id or 0) <= 0 or not is_admin_id(caller_id):
         return "❌ این فرمان منحصراً در اختیار فرمانده ارشد سیستم است."
     raw_query = str(group_name or target or chat_identifier or chat_id or "").strip()
     if not raw_query:
@@ -313,7 +313,7 @@ async def leave_group_by_admin_tool(
     """
     :param chat_identifier: شناسه عددی چت (مانند -10012345678) یا بخشی از نام گروه
     """
-    if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
+    if not caller_id or int(caller_id or 0) <= 0 or not is_admin_id(caller_id):
         return "❌ این فرمان منحصراً در اختیار فرمانده ارشد سیستم است."
 
     target_raw = str(chat_identifier or group or chat_id or "").strip()

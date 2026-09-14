@@ -1,6 +1,9 @@
 from src.core.config import (
     TELEGRAM_BOT_TOKEN,
     ADMIN_ID,
+    ADMIN_IDS,
+    is_admin_id,
+    get_admin_ids,
     ROUTER_BASE_URL,
     ROUTER_API_KEY,
     ROUTER_MODEL,
@@ -36,6 +39,9 @@ def __getattr__(name: str):
 __all__ = [
     "TELEGRAM_BOT_TOKEN",
     "ADMIN_ID",
+    "ADMIN_IDS",
+    "is_admin_id",
+    "get_admin_ids",
     "ROUTER_BASE_URL",
     "ROUTER_API_KEY",
     "ROUTER_MODEL",

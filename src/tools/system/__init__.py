@@ -8,7 +8,7 @@ from typing import Optional
 
 from src.tools.registry import register_tool
 from src.core import database
-from src.core.config import ADMIN_ID
+from src.core.config import ADMIN_ID, is_admin_id
 from src.core.security import validate_python_code
 
 # E2B cloud sandbox tools (e2b_run_code / e2b_run_command / e2b_status).
@@ -227,7 +227,7 @@ async def execute_python_code(code: str, caller_id: int = 0, is_private_chat: bo
     category="admin"
 )
 def admin_system_diagnostics(caller_id: int = 0) -> str:
-    if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
+    if not caller_id or int(caller_id or 0) <= 0 or not is_admin_id(caller_id):
         return "❌ استعلام تله‌متری و مشخصات سرور منحصراً مختص فرمانده ارشد سیستم است."
     try:
         import time as _t
@@ -831,8 +831,8 @@ async def purge_chat_messages_tool(
     :param only_bot: فقط پیام‌های خود ربات حذف شوند (True) یا پیام‌های کلی (False)
     :param chat_id: شناسه عددی چت
     """
-    from src.core.config import ADMIN_ID
-    if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
+    from src.core.config import ADMIN_ID, is_admin_id
+    if not caller_id or int(caller_id or 0) <= 0 or not is_admin_id(caller_id):
         return "⛔ حذف دسته‌جمعی پیام‌ها منحصراً در انحصار فرمانده ارشد یا مدیر گروه است."
 
     target_count = max(1, min(100, int(count or 10)))
