@@ -53,6 +53,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PrometheusBot")
 
+# Pre-parsed Admin ID for microsecond-level gatekeeper checks
+try:
+    _ADMIN_ID_INT: int = int(ADMIN_ID or 0)
+except Exception:
+    _ADMIN_ID_INT = 0
+
+
+def is_admin(user_id: Any) -> bool:
+    try:
+        return int(user_id or 0) == _ADMIN_ID_INT
+    except Exception:
+        return False
+
+
 # Rate Limiter Memory
 _USER_RATE_LIMITS: Dict[int, deque] = {}
 _LAST_RATE_LIMIT_CLEANUP: float = 0.0
@@ -63,20 +77,20 @@ def check_rate_limit(user_id: int) -> bool:
     max_req = RATE_LIMIT_ADMIN_MAX_REQUESTS if is_admin(user_id) else RATE_LIMIT_USER_MAX_REQUESTS
     window = RATE_LIMIT_USER_WINDOW_SEC
 
-    # Active memory maintenance: throttled purge of stale user records when map exceeds 2000 users
-    if len(_USER_RATE_LIMITS) > 2000 and (now - _LAST_RATE_LIMIT_CLEANUP) > 60.0:
+    # Active memory maintenance: periodic sweep + hard upper bound via islice
+    if len(_USER_RATE_LIMITS) > 5000 or (len(_USER_RATE_LIMITS) > 2000 and (now - _LAST_RATE_LIMIT_CLEANUP) > 60.0):
         _LAST_RATE_LIMIT_CLEANUP = now
-        stale_threshold = now - (window * 2)
+        stale_threshold = now - window
         stale_users = [uid for uid, dq in _USER_RATE_LIMITS.items() if not dq or dq[-1] < stale_threshold]
         for suid in stale_users:
             _USER_RATE_LIMITS.pop(suid, None)
+        if len(_USER_RATE_LIMITS) > 5000:
+            for suid in list(islice(_USER_RATE_LIMITS.keys(), len(_USER_RATE_LIMITS) - 3000)):
+                _USER_RATE_LIMITS.pop(suid, None)
 
     timestamps = _USER_RATE_LIMITS.get(user_id)
     if timestamps is None:
         timestamps = deque()
-        _USER_RATE_LIMITS[user_id] = timestamps
-    elif isinstance(timestamps, list):
-        timestamps = deque(timestamps)
         _USER_RATE_LIMITS[user_id] = timestamps
 
     cutoff = now - window
@@ -94,13 +108,6 @@ def check_rate_limit(user_id: int) -> bool:
 # briefly holds in-flight task refs so a running LLM turn can be cancelled.
 _STOPPED_CHATS: Dict[int, float] = {}
 _INFLIGHT_TURNS: Dict[int, Any] = {}
-
-
-def is_admin(user_id: Any) -> bool:
-    try:
-        return int(user_id or 0) == int(ADMIN_ID)
-    except Exception:
-        return False
 
 
 def _ulang_of(update) -> tuple:
@@ -133,17 +140,21 @@ async def _maybe_translate(update, text: str) -> str:
 
 
 # Fast-path precompiled regex and lookup sets for deterministic social routing
-_FASTPATH_CLEAN_RE = re.compile(r"^[\s!?,.:;~_\-()]+|[\s!?,.:;~_\-()]+$")
+_FASTPATH_PUNCT_CHARS = " \t\n\r!?,.:;~_\-()؟،؛«»"
+_FASTPATH_CLEAN_RE = re.compile(r"^[\s!?,.:;~_\-()؟،؛«»]+|[\s!?,.:;~_\-()؟،؛«»]+$")
 _GREETING_WORDS = frozenset({"سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood"})
 _STATUS_WORDS = frozenset({"خوبی", "چطوری", "چه خبر", "خسته نباشی", "how are you", "how are u", "whats up", "what's up"})
-_THANKS_WORDS = frozenset({"ممنون", "مرسی", "دمت گرم", "thanks", "thank you", "thx", "ty"})
+_THANKS_WORDS = frozenset({"ممنون", "مرسی", "دمت گرم", "سپاس", "تشکر", "ممنونم", "thanks", "thank you", "thx", "ty"})
 _ACK_WORDS = frozenset({"باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله", "yes", "yeah", "sure", "alright"})
 _NO_WORDS = frozenset({"نه", "no", "nope"})
 
 def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str = "fa") -> str:
     """Instant deterministic reply for pure social chatter (no LLM, no tools)."""
     raw_t = (norm_text or "").strip().lower()
-    t = _FASTPATH_CLEAN_RE.sub("", raw_t)
+    # Nanosecond C-level strip with precompiled regex fallback for Persian & English punctuation
+    t = raw_t.strip(_FASTPATH_PUNCT_CHARS)
+    if not t and raw_t:
+        t = _FASTPATH_CLEAN_RE.sub("", raw_t)
     is_fa = (lang == "fa")
     if t in _GREETING_WORDS or raw_t in _GREETING_WORDS:
         if is_admin(user_id):
@@ -248,7 +259,7 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
     now = time.time()
     u_uname = user.username or ""
 
-    # 1. Banned check with TTL cache
+    # 1. Banned check with TTL cache and anti-stampede LRU eviction
     cached_banned = _BANNED_CACHE.get(user.id)
     if cached_banned and now < cached_banned[1]:
         _banned = cached_banned[0]
@@ -259,13 +270,18 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
             _banned = False
         _BANNED_CACHE[user.id] = (_banned, now + _GATEKEEPER_CACHE_TTL)
         if len(_BANNED_CACHE) > 5000:
-            _BANNED_CACHE.clear()
+            stale_keys = [k for k, v in _BANNED_CACHE.items() if now >= v[1]]
+            for k in stale_keys:
+                _BANNED_CACHE.pop(k, None)
+            if len(_BANNED_CACHE) > 5000:
+                for k in list(islice(_BANNED_CACHE.keys(), 1000)):
+                    _BANNED_CACHE.pop(k, None)
 
     if _banned:
         # Complete radio silence: kill update processing instantly
         raise ApplicationHandlerStop()
 
-    # 2. Muted check with TTL cache
+    # 2. Muted check with TTL cache and anti-stampede LRU eviction
     cached_muted = _MUTED_CACHE.get(user.id)
     if cached_muted and now < cached_muted[1]:
         _muted_left = cached_muted[0]
@@ -277,7 +293,12 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
         mute_ttl = min(_GATEKEEPER_CACHE_TTL, max(1.0, _muted_left)) if _muted_left > 0 else _GATEKEEPER_CACHE_TTL
         _MUTED_CACHE[user.id] = (_muted_left, now + mute_ttl)
         if len(_MUTED_CACHE) > 5000:
-            _MUTED_CACHE.clear()
+            stale_keys = [k for k, v in _MUTED_CACHE.items() if now >= v[1]]
+            for k in stale_keys:
+                _MUTED_CACHE.pop(k, None)
+            if len(_MUTED_CACHE) > 5000:
+                for k in list(islice(_MUTED_CACHE.keys(), 1000)):
+                    _MUTED_CACHE.pop(k, None)
 
     if _muted_left:
         eff_msg = update.effective_message
@@ -319,23 +340,18 @@ async def private_chat_admin_only_gatekeeper(update: Update, context: ContextTyp
     Any non-admin interacting in PV (commands, text, voice, media, inline buttons) is blocked immediately
     with a polite notification and ApplicationHandlerStop terminates the handler chain.
     """
-    chat = update.effective_chat
+    # Fast-path: Exit immediately for Master Admin turns with zero chat inspection overhead
     user = update.effective_user
-    if not chat or not user:
+    if not user or is_admin(user.id):
         return
 
-    # Only inspect private chats (chat.type == PRIVATE or chat.id > 0)
-    try:
-        _ctype = getattr(chat, "type", "")
-        _ctype_s = str(_ctype).lower()
-    except Exception:
-        _ctype_s = ""
-    is_pv = (_ctype_s in ("private", "chatprivate") or _ctype == ChatType.PRIVATE or chat.id > 0)
+    chat = update.effective_chat
+    if not chat:
+        return
+
+    # Direct chat inspection
+    is_pv = (chat.type == ChatType.PRIVATE or chat.type == "private" or (chat.id and chat.id > 0))
     if not is_pv:
-        return
-
-    # Master Admin is fully authorized to use PV
-    if is_admin(user.id):
         return
 
     # Non-admin in PV: Block access immediately
@@ -351,6 +367,14 @@ async def private_chat_admin_only_gatekeeper(update: Update, context: ContextTyp
     message = update.effective_message
     if message:
         now = time.time()
+        # Bound notification memory to avoid leaks
+        if len(_PV_LOCK_NOTIFIED) > 2000:
+            stale_pvs = [uid for uid, ts in _PV_LOCK_NOTIFIED.items() if (now - ts) > 60.0]
+            for suid in stale_pvs:
+                _PV_LOCK_NOTIFIED.pop(suid, None)
+            if len(_PV_LOCK_NOTIFIED) > 2000:
+                for suid in list(islice(_PV_LOCK_NOTIFIED.keys(), 1000)):
+                    _PV_LOCK_NOTIFIED.pop(suid, None)
         last_sent = _PV_LOCK_NOTIFIED.get(user.id, 0.0)
         # Send notification at most once every 5 seconds per user to prevent flood
         if now - last_sent >= 5.0:
