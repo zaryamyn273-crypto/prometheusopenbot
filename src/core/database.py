@@ -59,6 +59,7 @@ _BATCH_WORKER_TASK: Optional[asyncio.Task] = None
 _http_limits = httpx.Limits(max_keepalive_connections=200, max_connections=400, keepalive_expiry=600.0)
 _cf_client: Optional[httpx.AsyncClient] = None
 _cf_client_loop: Optional[asyncio.AbstractEventLoop] = None
+_CF_CLIENT_LOCK = threading.Lock()
 
 def get_cf_client() -> httpx.AsyncClient:
     # No auth header in the pool — token is attached per-request via _cf_headers()
@@ -70,26 +71,34 @@ def get_cf_client() -> httpx.AsyncClient:
         current_loop = None
 
     if (
-        _cf_client is None
-        or _cf_client.is_closed
-        or (_cf_client_loop is not None and current_loop is not None and _cf_client_loop != current_loop)
+        _cf_client is not None
+        and not _cf_client.is_closed
+        and (_cf_client_loop is None or current_loop is None or _cf_client_loop == current_loop)
     ):
-        old_client = _cf_client
-        if old_client is not None and not old_client.is_closed:
-            try:
-                if current_loop and current_loop.is_running():
-                    current_loop.create_task(old_client.aclose())
-            except Exception:
-                pass
-        _cf_client = httpx.AsyncClient(
-            limits=_http_limits,
-            http2=True,
-            timeout=8.0,
-            headers={
-                "Content-Type": "application/json"
-            }
-        )
-        _cf_client_loop = current_loop
+        return _cf_client
+
+    with _CF_CLIENT_LOCK:
+        if (
+            _cf_client is None
+            or _cf_client.is_closed
+            or (_cf_client_loop is not None and current_loop is not None and _cf_client_loop != current_loop)
+        ):
+            old_client = _cf_client
+            if old_client is not None and not old_client.is_closed:
+                try:
+                    if current_loop and current_loop.is_running():
+                        current_loop.create_task(old_client.aclose())
+                except Exception:
+                    pass
+            _cf_client = httpx.AsyncClient(
+                limits=_http_limits,
+                http2=True,
+                timeout=8.0,
+                headers={
+                    "Content-Type": "application/json"
+                }
+            )
+            _cf_client_loop = current_loop
     return _cf_client
 
 
@@ -196,9 +205,11 @@ def l1_get(key: str) -> Optional[str]:
 
 _L1_MAX_SIZE = 800
 _L1_LOW_WATER = 700
+_L1_LAST_CLEANUP: float = 0.0
 
 
 def l1_set(key: str, value: str, ttl_sec: int = 300):
+    global _L1_LAST_CLEANUP
     now = time.time()
     try:
         _ttl = max(30, int(ttl_sec))
@@ -221,17 +232,18 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
             _L1_CACHE.move_to_end(key)
             return
 
-        # New key: bound capacity by purging expired entries across the buffer first
+        # New key: bound capacity without eviction storms; throttle full expired sweeps
         if len(_L1_CACHE) >= _L1_MAX_SIZE:
-            expired_keys = [k for k, v in _L1_CACHE.items() if now > v["expires_at"]]
-            for k in expired_keys:
-                _L1_CACHE.pop(k, None)
-            if len(_L1_CACHE) >= _L1_MAX_SIZE:
-                while len(_L1_CACHE) >= _L1_LOW_WATER:
-                    try:
-                        _L1_CACHE.popitem(last=False)
-                    except KeyError:
-                        break
+            if now - _L1_LAST_CLEANUP > 30.0:
+                _L1_LAST_CLEANUP = now
+                expired_keys = [k for k, v in _L1_CACHE.items() if now > v["expires_at"]]
+                for k in expired_keys:
+                    _L1_CACHE.pop(k, None)
+            while len(_L1_CACHE) >= _L1_MAX_SIZE:
+                try:
+                    _L1_CACHE.popitem(last=False)
+                except KeyError:
+                    break
 
         _L1_CACHE[key] = {
             "value": clean_val,
@@ -271,6 +283,7 @@ _KV_IN_FLIGHT_LOCK = threading.Lock()
 _KV_NEGATIVE_CACHE: OrderedDict[str, float] = OrderedDict()
 _KV_NEGATIVE_MAX_SIZE: int = 1000
 _KV_NEG_LOCK = threading.Lock()
+_KV_NEG_LAST_CLEANUP: float = 0.0
 
 def _clean_in_flight(key: str, fut: Optional[asyncio.Future] = None) -> None:
     with _KV_IN_FLIGHT_LOCK:
@@ -278,18 +291,20 @@ def _clean_in_flight(key: str, fut: Optional[asyncio.Future] = None) -> None:
             _KV_IN_FLIGHT_READS.pop(key, None)
 
 def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
+    global _KV_NEG_LAST_CLEANUP
     now = time.time()
     with _KV_NEG_LOCK:
         if key not in _KV_NEGATIVE_CACHE and len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-            expired = [k for k, exp_t in _KV_NEGATIVE_CACHE.items() if now >= exp_t]
-            for k in expired:
-                _KV_NEGATIVE_CACHE.pop(k, None)
-            if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-                while len(_KV_NEGATIVE_CACHE) >= 800:
-                    try:
-                        _KV_NEGATIVE_CACHE.popitem(last=False)
-                    except KeyError:
-                        break
+            if now - _KV_NEG_LAST_CLEANUP > 30.0:
+                _KV_NEG_LAST_CLEANUP = now
+                expired = [k for k, exp_t in _KV_NEGATIVE_CACHE.items() if now >= exp_t]
+                for k in expired:
+                    _KV_NEGATIVE_CACHE.pop(k, None)
+            while len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
+                try:
+                    _KV_NEGATIVE_CACHE.popitem(last=False)
+                except KeyError:
+                    break
         _KV_NEGATIVE_CACHE[key] = now + ttl_sec
         _KV_NEGATIVE_CACHE.move_to_end(key)
 
@@ -337,7 +352,7 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
 
     if not is_leader:
         try:
-            res = await asyncio.shield(fut)
+            res = await fut
             return res if res is not None else l1_get(key)
         except asyncio.CancelledError:
             raise
@@ -370,7 +385,6 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
             _kv_open_circuit(retry_after, "Rate limited (429)", key)
         if not fut.done():
             fut.set_result(result)
-        _clean_in_flight(key, fut)
         return result
     except Exception as e:
         logger.debug(f"KV get error ({key}): {e}")
