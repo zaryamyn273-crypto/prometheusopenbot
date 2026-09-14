@@ -5,6 +5,7 @@ import time
 import logging
 import asyncio
 import re
+import functools
 from collections import deque
 from itertools import islice
 from typing import Dict, Any, Optional, Tuple, List
@@ -101,7 +102,7 @@ def check_rate_limit(user_id: int) -> bool:
 
     timestamps = _USER_RATE_LIMITS.get(user_id)
     if timestamps is None:
-        timestamps = deque()
+        timestamps = deque(maxlen=max_req)
         _USER_RATE_LIMITS[user_id] = timestamps
 
     cutoff = now - window
@@ -121,15 +122,22 @@ _STOPPED_CHATS: Dict[int, float] = {}
 _INFLIGHT_TURNS: Dict[int, Any] = {}
 
 
+@functools.lru_cache(maxsize=64)
+def _cached_lang_info(code: str) -> Tuple[str, str]:
+    """Microsecond cached language normalization and display name resolution."""
+    return normalize_lang(code), lang_name(code)
+
+
 def _ulang_of(update) -> tuple:
     """(lang, lang_name) for a Telegram update: 'fa' for Persian clients, else 'en' chrome + full LLM language."""
     try:
-        code = getattr(update.effective_user, "language_code", "") or "fa"
+        user = getattr(update, "effective_user", None)
+        code = getattr(user, "language_code", None) or "fa"
     except Exception:
         code = "fa"
     if not isinstance(code, str):
         code = "fa"  # non-string (shouldn't happen live; keeps legacy default)
-    return normalize_lang(code), lang_name(code)
+    return _cached_lang_info(code)
 
 
 async def _maybe_translate(update, text: str) -> str:
@@ -157,9 +165,10 @@ _FASTPATH_CLEAN_RE = re.compile(
     r"^[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0…–—•ـ]+|"
     r"[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0…–—•ـ]+$"
 )
-_GREETING_WORDS = frozenset({"سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood"})
-_STATUS_WORDS = frozenset({"خوبی", "چطوری", "چه خبر", "خسته نباشی", "how are you", "how are u", "whats up", "what's up"})
-_THANKS_WORDS = frozenset({"ممنون", "مرسی", "دمت گرم", "سپاس", "تشکر", "ممنونم", "thanks", "thank you", "thx", "ty"})
+_FASTPATH_INNER_ZW_RE = re.compile(r"[\u200b-\u200f\ufeff]+")
+_GREETING_WORDS = frozenset({"سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood", "سلام علیکم", "سلام علیک"})
+_STATUS_WORDS = frozenset({"خوبی", "چطوری", "چه خبر", "خسته نباشی", "خسته‌نباشی", "how are you", "how are u", "whats up", "what's up"})
+_THANKS_WORDS = frozenset({"ممنون", "مرسی", "دمت گرم", "دمت‌گرم", "سپاس", "تشکر", "ممنونم", "thanks", "thank you", "thx", "ty"})
 _ACK_WORDS = frozenset({"باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله", "yes", "yeah", "sure", "alright"})
 _NO_WORDS = frozenset({"نه", "no", "nope"})
 
@@ -175,10 +184,12 @@ def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str =
     if not t:
         return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
 
-    # Normalize inner tatweels and collapse redundant whitespace for multi-word phrases (e.g. "چه خبر")
+    # Fast normalization for inner tatweels, zero-width characters, and redundant whitespace
     if "ـ" in t:
         t = t.replace("ـ", "")
-    if "  " in t:
+    if "\u200c" in t:
+        t = t.replace("\u200c", " ")
+    if " " in t or "\t" in t or "\n" in t or "\u00a0" in t:
         t = " ".join(t.split())
 
     if t in _GREETING_WORDS:
@@ -296,15 +307,42 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
     now = time.time()
     u_uname = user.username or ""
 
-    # 1. Banned check with TTL cache and non-blocking thread execution for cache misses
+    # 1. Fast-path in-memory cache check: immediate decision without thread dispatch
     cached_banned = _BANNED_CACHE.get(uid)
-    if cached_banned and now < cached_banned[1]:
-        _banned = cached_banned[0]
-    else:
+    banned_miss = not (cached_banned and now < cached_banned[1])
+    if not banned_miss and cached_banned[0]:
+        raise ApplicationHandlerStop()
+
+    cached_muted = _MUTED_CACHE.get(uid)
+    muted_miss = not (cached_muted and now < cached_muted[1])
+
+    # 2. Optimized cache-miss resolution: run DB checks concurrently on double-miss
+    if banned_miss and muted_miss:
+        res_banned, res_muted = await asyncio.gather(
+            asyncio.to_thread(database.is_user_banned, uid, username=u_uname),
+            asyncio.to_thread(database.is_user_muted, uid, username=u_uname),
+            return_exceptions=True
+        )
+        _banned = bool(res_banned) if not isinstance(res_banned, Exception) else False
+        _muted_left = float(res_muted or 0) if not isinstance(res_muted, Exception) else 0.0
+    elif banned_miss:
         try:
             _banned = bool(await asyncio.to_thread(database.is_user_banned, uid, username=u_uname))
         except Exception:
             _banned = False
+        _muted_left = cached_muted[0] if cached_muted else 0.0
+    elif muted_miss:
+        _banned = cached_banned[0] if cached_banned else False
+        try:
+            _muted_left = float(await asyncio.to_thread(database.is_user_muted, uid, username=u_uname) or 0)
+        except Exception:
+            _muted_left = 0.0
+    else:
+        _banned = cached_banned[0]
+        _muted_left = cached_muted[0]
+
+    # Update in-memory gatekeeper caches
+    if banned_miss:
         if uid not in _BANNED_CACHE:
             _prune_gatekeeper_cache(_BANNED_CACHE, now)
         _BANNED_CACHE[uid] = (_banned, now + _GATEKEEPER_CACHE_TTL)
@@ -313,21 +351,13 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
         # Complete radio silence: kill update processing instantly
         raise ApplicationHandlerStop()
 
-    # 2. Muted check with TTL cache and non-blocking thread execution for cache misses
-    cached_muted = _MUTED_CACHE.get(uid)
-    if cached_muted and now < cached_muted[1]:
-        _muted_left = cached_muted[0]
-    else:
-        try:
-            _muted_left = float(await asyncio.to_thread(database.is_user_muted, uid, username=u_uname) or 0)
-        except Exception:
-            _muted_left = 0.0
+    if muted_miss:
         mute_ttl = min(_GATEKEEPER_CACHE_TTL, max(1.0, _muted_left)) if _muted_left > 0 else _GATEKEEPER_CACHE_TTL
         if uid not in _MUTED_CACHE:
             _prune_gatekeeper_cache(_MUTED_CACHE, now)
         _MUTED_CACHE[uid] = (_muted_left, now + mute_ttl)
 
-    if _muted_left:
+    if _muted_left > 0:
         eff_msg = update.effective_message
         if eff_msg:
             try:
