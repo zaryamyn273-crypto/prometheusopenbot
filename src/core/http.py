@@ -31,7 +31,7 @@ _LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=300, keepa
 _PROFILE_LIMITS: Dict[str, httpx.Limits] = {
     "web": httpx.Limits(max_keepalive_connections=100, max_connections=200, keepalive_expiry=30.0),
     "api": httpx.Limits(max_keepalive_connections=100, max_connections=200, keepalive_expiry=30.0),
-    "fast": httpx.Limits(max_keepalive_connections=40, max_connections=100, keepalive_expiry=20.0),
+    "fast": httpx.Limits(max_keepalive_connections=50, max_connections=100, keepalive_expiry=30.0),
     "stream": httpx.Limits(max_keepalive_connections=25, max_connections=60, keepalive_expiry=60.0),
 }
 
@@ -60,6 +60,15 @@ _PROFILE_BACKOFF: Dict[str, float] = {
     "stream": 0.5,
 }
 
+# HTTP/2 profile mapping: disabled for large streams where raw HTTP/1.1 TCP throughput
+# avoids pure-python h2 frame handling and flow-control window stalls.
+_PROFILE_HTTP2: Dict[str, bool] = {
+    "web": _HTTP2_AVAILABLE,
+    "api": _HTTP2_AVAILABLE,
+    "fast": _HTTP2_AVAILABLE,
+    "stream": False,
+}
+
 # Pre-allocated immutable headers avoiding per-call dict allocations
 _WEB_HEADERS = {
     "User-Agent": _BROWSER_UA,
@@ -70,18 +79,22 @@ _API_HEADERS = {
     "User-Agent": _BROWSER_UA,
     "Accept": "application/json,*/*;q=0.8",
 }
+_STREAM_HEADERS = {
+    "User-Agent": _BROWSER_UA,
+    "Accept": "*/*",
+}
 _PROFILE_HEADERS: Dict[str, Dict[str, str]] = {
     "web": _WEB_HEADERS,
     "fast": _WEB_HEADERS,
     "api": _API_HEADERS,
-    "stream": _API_HEADERS,
+    "stream": _STREAM_HEADERS,
 }
 
 # Probe underlying httpx transport capabilities at import time
 _TRANSPORT_PARAMS = inspect.signature(httpx.AsyncHTTPTransport.__init__).parameters
 _SUPPORTS_SOCKET_OPTIONS = "socket_options" in _TRANSPORT_PARAMS
 
-_SOCKET_OPTIONS: Optional[List[Tuple[int, int, int]]] = None
+_SOCKET_OPTIONS: Optional[Tuple[Tuple[int, int, int], ...]] = None
 if _SUPPORTS_SOCKET_OPTIONS:
     try:
         opts: List[Tuple[int, int, int]] = [
@@ -96,7 +109,7 @@ if _SUPPORTS_SOCKET_OPTIONS:
             opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10))
         if hasattr(socket, "TCP_KEEPCNT"):
             opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3))
-        _SOCKET_OPTIONS = opts
+        _SOCKET_OPTIONS = tuple(opts)
     except Exception:
         _SOCKET_OPTIONS = None
 
@@ -155,7 +168,7 @@ def _build(profile: str) -> httpx.AsyncClient:
         "limits": limits,
         "max_retries": retries,
         "backoff_factor": backoff,
-        "http2": _HTTP2_AVAILABLE,
+        "http2": _PROFILE_HTTP2.get(profile, _HTTP2_AVAILABLE),
     }
     if _SOCKET_OPTIONS is not None:
         transport_kwargs["socket_options"] = _SOCKET_OPTIONS
@@ -184,12 +197,9 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
         and not client.is_closed
         and (
             current_loop is None
-            or client_loop is None
             or (client_loop is current_loop and not client_loop.is_closed())
         )
     ):
-        if client_loop is None and current_loop is not None:
-            _CLIENT_LOOPS[profile] = current_loop
         return client
 
     with _BUILD_LOCK:
@@ -217,7 +227,10 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
             if old_client is not None and not old_client.is_closed:
                 try:
                     if old_loop is not None and old_loop.is_running():
-                        old_loop.create_task(old_client.aclose())
+                        if current_loop is not None and old_loop is current_loop:
+                            current_loop.create_task(old_client.aclose())
+                        else:
+                            asyncio.run_coroutine_threadsafe(old_client.aclose(), old_loop)
                     elif current_loop is not None and current_loop.is_running():
                         current_loop.create_task(old_client.aclose())
                 except Exception:
