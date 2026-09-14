@@ -27,12 +27,12 @@ _BROWSER_UA = (
 )
 
 # Fallback and profile-tuned connection limits (tuned keepalive expiry avoids stale Cloudflare/proxy sockets)
-_LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=20.0)
+_LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=15.0)
 
 _PROFILE_LIMITS: Dict[str, httpx.Limits] = {
-    "web": httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=20.0),
-    "api": httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=15.0),
-    "fast": httpx.Limits(max_keepalive_connections=50, max_connections=150, keepalive_expiry=15.0),
+    "web": httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=15.0),
+    "api": httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=12.0),
+    "fast": httpx.Limits(max_keepalive_connections=50, max_connections=150, keepalive_expiry=12.0),
     "stream": httpx.Limits(max_keepalive_connections=30, max_connections=80, keepalive_expiry=45.0),
 }
 
@@ -110,6 +110,8 @@ if _SUPPORTS_SOCKET_OPTIONS:
             opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10))
         if hasattr(socket, "TCP_KEEPCNT"):
             opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3))
+        if hasattr(socket, "TCP_USER_TIMEOUT"):
+            opts.append((socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 30000))
 
         # Probe dummy socket to filter out options unsupported by host OS or container kernel
         test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -119,7 +121,7 @@ if _SUPPORTS_SOCKET_OPTIONS:
                 try:
                     test_sock.setsockopt(*opt)
                     valid_opts.append(opt)
-                except OSError:
+                except (OSError, ValueError):
                     pass
         finally:
             test_sock.close()
@@ -180,6 +182,8 @@ class BackoffAsyncHTTPTransport(httpx.AsyncHTTPTransport):
 
 _CLIENTS: Dict[str, httpx.AsyncClient] = {}
 _CLIENT_LOOPS: Dict[str, asyncio.AbstractEventLoop] = {}
+_PER_LOOP_CLIENTS: Dict[Tuple[str, int], httpx.AsyncClient] = {}
+_LOOP_REFS: Dict[int, asyncio.AbstractEventLoop] = {}
 _BUILD_LOCK = threading.Lock()
 
 
@@ -214,51 +218,44 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
     except RuntimeError:
         current_loop = None
 
-    client = _CLIENTS.get(profile)
-    client_loop = _CLIENT_LOOPS.get(profile)
+    loop_id = id(current_loop) if current_loop is not None else 0
+    key = (profile, loop_id)
 
-    # Fast lock-free path: verify client open status and loop affinity
-    if (
-        client is not None
-        and not client.is_closed
-        and (client_loop is None or not client_loop.is_closed())
-        and (current_loop is None or client_loop is current_loop)
-    ):
+    # Ultra-fast lock-free path: verify loop-specific client validity
+    client = _PER_LOOP_CLIENTS.get(key)
+    if client is not None and not client.is_closed:
         return client
 
     with _BUILD_LOCK:
-        client = _CLIENTS.get(profile)
-        client_loop = _CLIENT_LOOPS.get(profile)
-        if (
-            client is None
-            or client.is_closed
-            or (client_loop is not None and client_loop.is_closed())
-            or (
-                current_loop is not None
-                and client_loop is not None
-                and client_loop is not current_loop
-            )
-        ):
-            old_client = client
-            old_loop = client_loop
-            client = _build(profile)
-            _CLIENTS[profile] = client
-            if current_loop is not None:
-                _CLIENT_LOOPS[profile] = current_loop
-            else:
-                _CLIENT_LOOPS.pop(profile, None)
+        client = _PER_LOOP_CLIENTS.get(key)
+        if client is not None and not client.is_closed:
+            return client
 
-            # Cleanly schedule cleanup of discarded client to prevent socket/descriptor leaks
-            if old_client is not None and not old_client.is_closed:
-                try:
-                    if old_loop is not None and old_loop.is_running() and old_loop is not current_loop:
-                        asyncio.run_coroutine_threadsafe(_safe_aclose(old_client), old_loop)
-                    elif current_loop is not None and current_loop.is_running():
-                        current_loop.create_task(_safe_aclose(old_client))
-                except Exception:
-                    pass
-        elif client_loop is None and current_loop is not None:
+        client = _build(profile)
+        _PER_LOOP_CLIENTS[key] = client
+        _CLIENTS[profile] = client
+        if current_loop is not None:
             _CLIENT_LOOPS[profile] = current_loop
+            _LOOP_REFS[loop_id] = current_loop
+        else:
+            _CLIENT_LOOPS.pop(profile, None)
+
+        # Prune dead or closed clients to avoid memory growth across loop lifecycles
+        dead_keys: List[Tuple[str, int]] = []
+        for k, c in list(_PER_LOOP_CLIENTS.items()):
+            loop_ref = _LOOP_REFS.get(k[1])
+            if c.is_closed or (loop_ref is not None and loop_ref.is_closed()):
+                dead_keys.append(k)
+                if not c.is_closed:
+                    try:
+                        if current_loop is not None and current_loop.is_running():
+                            current_loop.create_task(_safe_aclose(c))
+                    except Exception:
+                        pass
+        for k in dead_keys:
+            _PER_LOOP_CLIENTS.pop(k, None)
+            _LOOP_REFS.pop(k[1], None)
+
         return client
 
 
@@ -280,10 +277,19 @@ _acm = asynccontextmanager
 
 async def aclose_all() -> None:
     with _BUILD_LOCK:
-        items = list(_CLIENTS.items())
+        all_clients = list(_PER_LOOP_CLIENTS.values()) + list(_CLIENTS.values())
+        _PER_LOOP_CLIENTS.clear()
         _CLIENTS.clear()
         _CLIENT_LOOPS.clear()
+        _LOOP_REFS.clear()
 
-    open_clients = [client for _, client in items if not client.is_closed]
+    seen: set = set()
+    open_clients: List[httpx.AsyncClient] = []
+    for client in all_clients:
+        if client is not None and id(client) not in seen:
+            seen.add(id(client))
+            if not client.is_closed:
+                open_clients.append(client)
+
     if open_clients:
         await asyncio.gather(*(_safe_aclose(client) for client in open_clients), return_exceptions=True)
