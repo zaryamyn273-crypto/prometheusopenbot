@@ -17,6 +17,11 @@ from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Tuple
 import httpx
 
 try:
+    from httpx._client import ClientState as _ClientState
+except ImportError:
+    _ClientState = None  # type: ignore
+
+try:
     import h2  # noqa: F401
     _HTTP2_AVAILABLE = True
 except ImportError:
@@ -227,6 +232,16 @@ def _cleanup_loop(lid: int) -> None:
                 _CLIENT_LOOPS.pop(prof, None)
             if _CLIENTS.get(prof) is dead_client:
                 _CLIENTS.pop(prof, None)
+            if dead_client is not None:
+                if _ClientState is not None:
+                    try:
+                        dead_client._state = _ClientState.CLOSED
+                    except Exception:
+                        pass
+                try:
+                    setattr(dead_client, "_is_closed", True)
+                except Exception:
+                    pass
 
 
 def _build(profile: str) -> httpx.AsyncClient:
@@ -289,14 +304,13 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
         _CLIENTS[profile] = client
         if current_loop is not None:
             _CLIENT_LOOPS[profile] = weakref.ref(current_loop)
-            if loop_id not in _LOOP_REFS:
+            existing_ref = _LOOP_REFS.get(loop_id)
+            if existing_ref is None or existing_ref() is not current_loop:
                 _LOOP_REFS[loop_id] = weakref.ref(current_loop)
                 try:
                     weakref.finalize(current_loop, _cleanup_loop, loop_id)
                 except Exception:
                     pass
-            else:
-                _LOOP_REFS[loop_id] = weakref.ref(current_loop)
         else:
             _CLIENT_LOOPS.pop(profile, None)
 
@@ -327,9 +341,19 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
             if _CLIENTS.get(prof) is dead_client:
                 _CLIENTS.pop(prof, None)
             if dead_client is not None and not dead_client.is_closed:
-                if current_loop is not None and current_loop.is_running():
+                if lid == loop_id and current_loop is not None and current_loop.is_running():
                     try:
                         current_loop.create_task(_safe_aclose(dead_client))
+                    except Exception:
+                        pass
+                else:
+                    if _ClientState is not None:
+                        try:
+                            dead_client._state = _ClientState.CLOSED
+                        except Exception:
+                            pass
+                    try:
+                        setattr(dead_client, "_is_closed", True)
                     except Exception:
                         pass
 
@@ -340,10 +364,15 @@ async def _safe_aclose(client: httpx.AsyncClient) -> None:
     """Close an AsyncClient swallowing transport errors from dead or mismatched loops."""
     try:
         if not client.is_closed:
-            await asyncio.wait_for(client.aclose(), timeout=5.0)
+            await asyncio.wait_for(client.aclose(), timeout=3.0)
     except Exception:
         pass
     finally:
+        if _ClientState is not None:
+            try:
+                client._state = _ClientState.CLOSED
+            except Exception:
+                pass
         try:
             setattr(client, "_is_closed", True)
         except Exception:
@@ -357,7 +386,26 @@ async def shared_client_ctx(profile: str = "web") -> AsyncIterator[httpx.AsyncCl
 
 
 async def aclose_all() -> None:
+    """Gracefully close all pooled AsyncClients across all loops and profiles."""
     with _BUILD_LOCK:
+        clients: List[httpx.AsyncClient] = []
+        for c in _PER_LOOP_CLIENTS.values():
+            if c not in clients:
+                clients.append(c)
+        for c in _CLIENTS.values():
+            if c not in clients:
+                clients.append(c)
+        _PER_LOOP_CLIENTS.clear()
+        _CLIENTS.clear()
+        _CLIENT_LOOPS.clear()
+        _LOOP_REFS.clear()
+
+    if not clients:
+        return
+
+    tasks = [_safe_aclose(client) for client in clients if not client.is_closed]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
         all_clients = list(_PER_LOOP_CLIENTS.values()) + list(_CLIENTS.values())
         _PER_LOOP_CLIENTS.clear()
         _CLIENTS.clear()
