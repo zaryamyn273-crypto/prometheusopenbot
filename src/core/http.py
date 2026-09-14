@@ -26,14 +26,14 @@ _BROWSER_UA = (
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
 
-# Fallback and profile-tuned connection limits (tuned keepalive expiry avoids stale Cloudflare/proxy sockets)
-_LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=15.0)
+# Fallback and profile-tuned connection limits (12s keepalive expiry avoids Cloudflare 15s edge socket boundary races)
+_LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=12.0)
 
 _PROFILE_LIMITS: Dict[str, httpx.Limits] = {
-    "web": httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=15.0),
+    "web": httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=12.0),
     "api": httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=12.0),
-    "fast": httpx.Limits(max_keepalive_connections=50, max_connections=150, keepalive_expiry=12.0),
-    "stream": httpx.Limits(max_keepalive_connections=30, max_connections=80, keepalive_expiry=45.0),
+    "fast": httpx.Limits(max_keepalive_connections=50, max_connections=150, keepalive_expiry=10.0),
+    "stream": httpx.Limits(max_keepalive_connections=30, max_connections=100, keepalive_expiry=30.0),
 }
 
 # Granular connect/pool/read timeouts prevent hanging socket handshakes
@@ -84,9 +84,13 @@ _STREAM_HEADERS = {
     "User-Agent": _BROWSER_UA,
     "Accept": "*/*",
 }
+_FAST_HEADERS = {
+    "User-Agent": _BROWSER_UA,
+    "Accept": "*/*",
+}
 _PROFILE_HEADERS: Dict[str, Dict[str, str]] = {
     "web": _WEB_HEADERS,
-    "fast": _WEB_HEADERS,
+    "fast": _FAST_HEADERS,
     "api": _API_HEADERS,
     "stream": _STREAM_HEADERS,
 }
@@ -103,15 +107,15 @@ if _SUPPORTS_SOCKET_OPTIONS:
             (socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),
         ]
         if hasattr(socket, "TCP_KEEPIDLE"):
-            opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30))
+            opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 15))
         elif hasattr(socket, "TCP_KEEPALIVE"):
-            opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 30))
+            opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 15))
         if hasattr(socket, "TCP_KEEPINTVL"):
-            opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10))
+            opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5))
         if hasattr(socket, "TCP_KEEPCNT"):
             opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3))
         if hasattr(socket, "TCP_USER_TIMEOUT"):
-            opts.append((socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 30000))
+            opts.append((socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 20000))
 
         # Probe dummy socket to filter out options unsupported by host OS or container kernel
         test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -246,10 +250,9 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
             loop_ref = _LOOP_REFS.get(k[1])
             if c.is_closed or (loop_ref is not None and loop_ref.is_closed()):
                 dead_keys.append(k)
-                if not c.is_closed:
+                if not c.is_closed and current_loop is not None and current_loop.is_running() and k[1] == loop_id:
                     try:
-                        if current_loop is not None and current_loop.is_running():
-                            current_loop.create_task(_safe_aclose(c))
+                        current_loop.create_task(_safe_aclose(c))
                     except Exception:
                         pass
         for k in dead_keys:
@@ -262,7 +265,7 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
 async def _safe_aclose(client: httpx.AsyncClient) -> None:
     """Close an AsyncClient swallowing transport errors from dead or mismatched loops."""
     try:
-        await client.aclose()
+        await asyncio.wait_for(client.aclose(), timeout=5.0)
     except Exception:
         pass
 
@@ -271,8 +274,6 @@ async def _safe_aclose(client: httpx.AsyncClient) -> None:
 async def shared_client_ctx(profile: str = "web") -> AsyncIterator[httpx.AsyncClient]:
     """`async with`-compatible wrapper around the shared client (never closes it)."""
     yield get_http_client(profile)
-
-_acm = asynccontextmanager
 
 
 async def aclose_all() -> None:
