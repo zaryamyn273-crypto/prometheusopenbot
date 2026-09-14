@@ -74,6 +74,13 @@ def get_cf_client() -> httpx.AsyncClient:
         or _cf_client.is_closed
         or (_cf_client_loop is not None and current_loop is not None and _cf_client_loop != current_loop)
     ):
+        old_client = _cf_client
+        if old_client is not None and not old_client.is_closed:
+            try:
+                if current_loop and current_loop.is_running():
+                    current_loop.create_task(old_client.aclose())
+            except Exception:
+                pass
         _cf_client = httpx.AsyncClient(
             limits=_http_limits,
             http2=True,
@@ -217,9 +224,8 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
 
         # New key: bound capacity without massive low-water mark dump storms
         if len(_L1_CACHE) >= _L1_MAX_SIZE:
-            for old_k in list(islice(_L1_CACHE, 32)):
-                old_v = _L1_CACHE.get(old_k)
-                if old_v is not None and now > old_v.get("expires_at", 0.0):
+            for old_k, old_v in list(islice(_L1_CACHE.items(), 64)):
+                if now > old_v["expires_at"]:
                     _L1_CACHE.pop(old_k, None)
             while len(_L1_CACHE) >= _L1_MAX_SIZE:
                 try:
@@ -267,8 +273,8 @@ def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
     now = time.time()
     with _KV_NEG_LOCK:
         if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-            for old_k in list(islice(_KV_NEGATIVE_CACHE, 64)):
-                if now >= _KV_NEGATIVE_CACHE.get(old_k, 0.0):
+            for old_k, exp_t in list(islice(_KV_NEGATIVE_CACHE.items(), 64)):
+                if now >= exp_t:
                     _KV_NEGATIVE_CACHE.pop(old_k, None)
             while len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
                 try:
@@ -301,6 +307,9 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
                 return None
             _KV_NEGATIVE_CACHE.pop(key, None)
 
+    if kv_cloud_circuit_open():
+        return None
+
     base_url = _get_kv_base_url()
     if not base_url:
         return None
@@ -308,13 +317,17 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     # Anti-stampede: coalesce concurrent reads for the same cold key
     loop = asyncio.get_running_loop()
     fut = _KV_IN_FLIGHT_READS.get(key)
-    if fut is not None and not fut.done() and fut.get_loop() is loop:
-        try:
-            return await asyncio.shield(fut)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return l1_get(key)
+    if fut is not None and fut.get_loop() is loop:
+        if not fut.done():
+            try:
+                return await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return l1_get(key)
+        cached = l1_get(key)
+        if cached is not None:
+            return cached
 
     fut = loop.create_future()
     _KV_IN_FLIGHT_READS[key] = fut
@@ -331,6 +344,13 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
                 _KV_NEGATIVE_CACHE.pop(key, None)
         elif resp.status_code == 404:
             _set_kv_negative_cache(key, ttl_sec=60.0)
+        elif resp.status_code == 429:
+            retry_after = 60.0
+            try:
+                retry_after = float(resp.headers.get("Retry-After", 60.0))
+            except Exception:
+                pass
+            _kv_open_circuit(retry_after, "Rate limited (429)", key)
         if not fut.done():
             fut.set_result(result)
         return result
