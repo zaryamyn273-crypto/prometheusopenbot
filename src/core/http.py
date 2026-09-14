@@ -11,7 +11,8 @@ import inspect
 import random
 import socket
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import httpx
 
 try:
@@ -109,7 +110,20 @@ if _SUPPORTS_SOCKET_OPTIONS:
             opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10))
         if hasattr(socket, "TCP_KEEPCNT"):
             opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3))
-        _SOCKET_OPTIONS = tuple(opts)
+
+        # Probe dummy socket to filter out options unsupported by host OS or container kernel
+        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        valid_opts: List[Tuple[int, int, int]] = []
+        try:
+            for opt in opts:
+                try:
+                    test_sock.setsockopt(*opt)
+                    valid_opts.append(opt)
+                except OSError:
+                    pass
+        finally:
+            test_sock.close()
+        _SOCKET_OPTIONS = tuple(valid_opts) if valid_opts else None
     except Exception:
         _SOCKET_OPTIONS = None
 
@@ -138,17 +152,29 @@ class BackoffAsyncHTTPTransport(httpx.AsyncHTTPTransport):
             try:
                 return await super().handle_async_request(request)
             except (httpx.ConnectError, httpx.ConnectTimeout):
-                attempt += 1
-                if attempt > self._max_retries:
+                if attempt >= self._max_retries:
                     raise
-                delay = min(self._backoff_factor * (2 ** (attempt - 1)) + random.uniform(0.01, 0.05), 2.5)
+                stream = getattr(request, "stream", None)
+                can_replay = getattr(stream, "can_replay", None)
+                if can_replay is not None and not can_replay():
+                    raise
+                delay = min(self._backoff_factor * (2 ** attempt) + random.uniform(0.01, 0.05), 2.5)
+                attempt += 1
                 await asyncio.sleep(delay)
-            except (httpx.RemoteProtocolError, httpx.ReadError):
-                # Stale pooled socket recovery: only safe to retry idempotent requests
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError):
+                # Stale pooled socket recovery: safe for idempotent requests
                 if attempt >= self._max_retries or request.method not in ("GET", "HEAD", "OPTIONS"):
                     raise
+                stream = getattr(request, "stream", None)
+                can_replay = getattr(stream, "can_replay", None)
+                if can_replay is not None and not can_replay():
+                    raise
+                # First idle/stale socket reset: retry immediately with minimal jitter to avoid human-perceptible latency
+                if attempt == 0:
+                    delay = random.uniform(0.02, 0.05)
+                else:
+                    delay = min(self._backoff_factor * (2 ** attempt) + random.uniform(0.01, 0.05), 2.5)
                 attempt += 1
-                delay = min(self._backoff_factor * (2 ** (attempt - 1)) + random.uniform(0.01, 0.05), 2.5)
                 await asyncio.sleep(delay)
 
 
@@ -195,10 +221,8 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
     if (
         client is not None
         and not client.is_closed
-        and (
-            current_loop is None
-            or (client_loop is current_loop and not client_loop.is_closed())
-        )
+        and (client_loop is None or not client_loop.is_closed())
+        and (current_loop is None or client_loop is current_loop)
     ):
         return client
 
@@ -208,10 +232,11 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
         if (
             client is None
             or client.is_closed
+            or (client_loop is not None and client_loop.is_closed())
             or (
                 current_loop is not None
                 and client_loop is not None
-                and (client_loop is not current_loop or client_loop.is_closed())
+                and client_loop is not current_loop
             )
         ):
             old_client = client
@@ -223,19 +248,12 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
             else:
                 _CLIENT_LOOPS.pop(profile, None)
 
-            # Cleanly schedule cleanup of discarded client on its loop to prevent socket leaks
+            # Cleanly schedule cleanup of discarded client to prevent socket/descriptor leaks
             if old_client is not None and not old_client.is_closed:
                 try:
-                    if old_loop is not None and old_loop.is_running():
-                        if current_loop is not None and old_loop is current_loop:
-                            current_loop.create_task(_safe_aclose(old_client))
-                        else:
-                            asyncio.run_coroutine_threadsafe(_safe_aclose(old_client), old_loop)
-                    elif (
-                        (old_loop is None or old_loop is current_loop)
-                        and current_loop is not None
-                        and current_loop.is_running()
-                    ):
+                    if old_loop is not None and old_loop.is_running() and old_loop is not current_loop:
+                        asyncio.run_coroutine_threadsafe(_safe_aclose(old_client), old_loop)
+                    elif current_loop is not None and current_loop.is_running():
                         current_loop.create_task(_safe_aclose(old_client))
                 except Exception:
                     pass
@@ -252,15 +270,12 @@ async def _safe_aclose(client: httpx.AsyncClient) -> None:
         pass
 
 
-try:
-    from contextlib import asynccontextmanager as _acm
+@asynccontextmanager
+async def shared_client_ctx(profile: str = "web") -> AsyncIterator[httpx.AsyncClient]:
+    """`async with`-compatible wrapper around the shared client (never closes it)."""
+    yield get_http_client(profile)
 
-    @_acm
-    async def shared_client_ctx(profile: str = "web"):
-        """`async with`-compatible wrapper around the shared client (never closes it)."""
-        yield get_http_client(profile)
-except Exception:  # pragma: no cover
-    shared_client_ctx = None  # type: ignore
+_acm = asynccontextmanager
 
 
 async def aclose_all() -> None:
