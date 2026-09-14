@@ -70,24 +70,31 @@ def get_cf_client() -> httpx.AsyncClient:
     except RuntimeError:
         current_loop = None
 
+    client = _cf_client
     if (
-        _cf_client is not None
-        and not _cf_client.is_closed
-        and (_cf_client_loop is None or current_loop is None or _cf_client_loop == current_loop)
+        client is not None
+        and not client.is_closed
+        and (
+            (_cf_client_loop is current_loop)
+            or (current_loop is None and _cf_client_loop is None)
+        )
     ):
-        return _cf_client
+        return client
 
     with _CF_CLIENT_LOCK:
+        client = _cf_client
         if (
-            _cf_client is None
-            or _cf_client.is_closed
-            or (_cf_client_loop is not None and current_loop is not None and _cf_client_loop != current_loop)
+            client is None
+            or client.is_closed
+            or (current_loop is not None and _cf_client_loop is not current_loop)
+            or (current_loop is None and _cf_client_loop is not None)
         ):
-            old_client = _cf_client
+            old_client = client
             if old_client is not None and not old_client.is_closed:
                 try:
-                    if current_loop and current_loop.is_running():
-                        current_loop.create_task(old_client.aclose())
+                    target_loop = _cf_client_loop if (_cf_client_loop and _cf_client_loop.is_running()) else current_loop
+                    if target_loop and target_loop.is_running():
+                        target_loop.create_task(old_client.aclose())
                 except Exception:
                     pass
             _cf_client = httpx.AsyncClient(
@@ -239,7 +246,8 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
                 expired_keys = [k for k, v in _L1_CACHE.items() if now > v["expires_at"]]
                 for k in expired_keys:
                     _L1_CACHE.pop(k, None)
-            while len(_L1_CACHE) >= _L1_MAX_SIZE:
+            # Evict LRU items down to low water mark to amortize eviction overhead across subsequent writes
+            while len(_L1_CACHE) > _L1_LOW_WATER:
                 try:
                     _L1_CACHE.popitem(last=False)
                 except KeyError:
@@ -282,6 +290,7 @@ _KV_IN_FLIGHT_READS: Dict[str, asyncio.Future] = {}
 _KV_IN_FLIGHT_LOCK = threading.Lock()
 _KV_NEGATIVE_CACHE: OrderedDict[str, float] = OrderedDict()
 _KV_NEGATIVE_MAX_SIZE: int = 1000
+_KV_NEGATIVE_LOW_WATER: int = 850
 _KV_NEG_LOCK = threading.Lock()
 _KV_NEG_LAST_CLEANUP: float = 0.0
 
@@ -300,7 +309,7 @@ def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
                 expired = [k for k, exp_t in _KV_NEGATIVE_CACHE.items() if now >= exp_t]
                 for k in expired:
                     _KV_NEGATIVE_CACHE.pop(k, None)
-            while len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
+            while len(_KV_NEGATIVE_CACHE) > _KV_NEGATIVE_LOW_WATER:
                 try:
                     _KV_NEGATIVE_CACHE.popitem(last=False)
                 except KeyError:
