@@ -13,7 +13,7 @@ import socket
 import threading
 import weakref
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional, Tuple
 import httpx
 
 try:
@@ -34,7 +34,7 @@ _PROFILE_LIMITS: Dict[str, httpx.Limits] = {
     "web": httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=12.0),
     "api": httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=12.0),
     "fast": httpx.Limits(max_keepalive_connections=50, max_connections=150, keepalive_expiry=10.0),
-    "stream": httpx.Limits(max_keepalive_connections=30, max_connections=100, keepalive_expiry=30.0),
+    "stream": httpx.Limits(max_keepalive_connections=40, max_connections=100, keepalive_expiry=20.0),
 }
 
 # Granular connect/pool/read timeouts prevent hanging socket handshakes
@@ -283,19 +283,28 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
         # Prune dead or closed clients to avoid memory growth across loop lifecycles
         dead_keys: List[Tuple[str, int]] = []
         for k, c in list(_PER_LOOP_CLIENTS.items()):
-            lref = _LOOP_REFS.get(k[1])
-            l_obj = lref() if lref is not None else None
-            if c.is_closed or l_obj is None or l_obj.is_closed():
+            if k == key:
+                continue
+            if c.is_closed:
                 dead_keys.append(k)
+                continue
+            if k[1] != 0:
+                lref = _LOOP_REFS.get(k[1])
+                l_obj = lref() if lref is not None else None
+                if l_obj is None or l_obj.is_closed():
+                    dead_keys.append(k)
 
         for k in dead_keys:
             dead_client = _PER_LOOP_CLIENTS.pop(k, None)
             _LOOP_REFS.pop(k[1], None)
-            loop_in_dict = _CLIENT_LOOPS.get(k[0])
+            prof = k[0]
+            loop_in_dict = _CLIENT_LOOPS.get(prof)
             if loop_in_dict is None or loop_in_dict.is_closed() or id(loop_in_dict) == k[1]:
-                _CLIENT_LOOPS.pop(k[0], None)
+                _CLIENT_LOOPS.pop(prof, None)
+            if _CLIENTS.get(prof) is dead_client:
+                _CLIENTS.pop(prof, None)
             if dead_client is not None and not dead_client.is_closed:
-                if current_loop is not None and current_loop.is_running() and k[1] == loop_id:
+                if current_loop is not None and current_loop.is_running() and (k[1] == loop_id or k[1] == 0):
                     try:
                         current_loop.create_task(_safe_aclose(dead_client))
                     except Exception:
@@ -307,7 +316,8 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
 async def _safe_aclose(client: httpx.AsyncClient) -> None:
     """Close an AsyncClient swallowing transport errors from dead or mismatched loops."""
     try:
-        await asyncio.wait_for(client.aclose(), timeout=5.0)
+        if not client.is_closed:
+            await asyncio.wait_for(client.aclose(), timeout=5.0)
     except Exception:
         pass
     finally:
