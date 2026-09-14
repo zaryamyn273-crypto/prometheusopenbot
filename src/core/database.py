@@ -183,14 +183,13 @@ def l1_get(key: str) -> Optional[str]:
             _L1_CACHE.pop(key, None)
             _L1_MISSES += 1
             return None
-        # Sliding refresh: hot keys live longer (up to +50% of original TTL).
+        # Sliding refresh: hot keys live longer (up to +50% of original TTL from set_at).
         hits = item["hits"] + 1
         item["hits"] = hits
         if hits % 5 == 0:
-            item["expires_at"] = min(item["expires_at"] + 60.0, now + item["ttl"] * 1.5)
-        # True LRU touch: move to most recently used position only if not already there
-        if next(reversed(_L1_CACHE)) != key:
-            _L1_CACHE.move_to_end(key)
+            item["expires_at"] = min(item["expires_at"] + 60.0, item.get("set_at", now) + item["ttl"] * 1.5)
+        # True LRU touch: move to most recently used position (O(1) in CPython)
+        _L1_CACHE.move_to_end(key)
         _L1_HITS += 1
         _L1_LAST_HIT_AT = now
         return item["value"]
@@ -219,8 +218,7 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
             existing["expires_at"] = now + _ttl
             existing["ttl"] = _ttl
             existing["set_at"] = now
-            if next(reversed(_L1_CACHE)) != key:
-                _L1_CACHE.move_to_end(key)
+            _L1_CACHE.move_to_end(key)
             return
 
         # New key: bound capacity by purging expired entries across the buffer first
@@ -229,8 +227,7 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
             for k in expired_keys:
                 _L1_CACHE.pop(k, None)
             if len(_L1_CACHE) >= _L1_MAX_SIZE:
-                target_size = max(_L1_LOW_WATER, _L1_MAX_SIZE - 32)
-                while len(_L1_CACHE) >= target_size:
+                while len(_L1_CACHE) >= _L1_LOW_WATER:
                     try:
                         _L1_CACHE.popitem(last=False)
                     except KeyError:
@@ -275,6 +272,11 @@ _KV_NEGATIVE_CACHE: OrderedDict[str, float] = OrderedDict()
 _KV_NEGATIVE_MAX_SIZE: int = 1000
 _KV_NEG_LOCK = threading.Lock()
 
+def _clean_in_flight(key: str, fut: Optional[asyncio.Future] = None) -> None:
+    with _KV_IN_FLIGHT_LOCK:
+        if fut is None or _KV_IN_FLIGHT_READS.get(key) is fut:
+            _KV_IN_FLIGHT_READS.pop(key, None)
+
 def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
     now = time.time()
     with _KV_NEG_LOCK:
@@ -283,8 +285,7 @@ def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
             for k in expired:
                 _KV_NEGATIVE_CACHE.pop(k, None)
             if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-                target = max(600, _KV_NEGATIVE_MAX_SIZE - 64)
-                while len(_KV_NEGATIVE_CACHE) >= target:
+                while len(_KV_NEGATIVE_CACHE) >= 800:
                     try:
                         _KV_NEGATIVE_CACHE.popitem(last=False)
                     except KeyError:
@@ -326,22 +327,11 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     loop = asyncio.get_running_loop()
     with _KV_IN_FLIGHT_LOCK:
         fut = _KV_IN_FLIGHT_READS.get(key)
-        if fut is not None and fut.get_loop() is loop:
-            if not fut.done():
-                is_leader = False
-            else:
-                try:
-                    return fut.result()
-                except Exception:
-                    pass
-                cached = l1_get(key)
-                if cached is not None:
-                    return cached
-                fut = loop.create_future()
-                _KV_IN_FLIGHT_READS[key] = fut
-                is_leader = True
+        if fut is not None and fut.get_loop() is loop and not fut.done():
+            is_leader = False
         else:
             fut = loop.create_future()
+            fut.add_done_callback(lambda f, k=key: _clean_in_flight(k, f))
             _KV_IN_FLIGHT_READS[key] = fut
             is_leader = True
 
@@ -380,6 +370,7 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
             _kv_open_circuit(retry_after, "Rate limited (429)", key)
         if not fut.done():
             fut.set_result(result)
+        _clean_in_flight(key, fut)
         return result
     except Exception as e:
         logger.debug(f"KV get error ({key}): {e}")
