@@ -7,7 +7,7 @@ import re
 import io
 import base64
 import httpx
-from PIL import Image
+from PIL import Image, ImageOps, ImageEnhance
 from typing import Dict, Any, List, Tuple, Optional
 
 from src.core.config import ROUTER_BASE_URL, ROUTER_MODEL, ADMIN_ID, SYSTEM_PROMPT, MAX_SHORT_TERM_TOKENS
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _http_limits = httpx.Limits(max_keepalive_connections=150, max_connections=300, keepalive_expiry=600.0)
 _shared_client: Optional[httpx.AsyncClient] = None
+_ROUTER_TIMEOUT = httpx.Timeout(connect=5.0, read=45.0, write=15.0, pool=5.0)
 
 def get_shared_client() -> httpx.AsyncClient:
     # NOTE: no Authorization header here on purpose — the key is read fresh
@@ -28,7 +29,7 @@ def get_shared_client() -> httpx.AsyncClient:
         _shared_client = httpx.AsyncClient(
             limits=_http_limits,
             http2=True,
-            timeout=35.0,
+            timeout=_ROUTER_TIMEOUT,
             headers={
                 "Content-Type": "application/json"
             }
@@ -78,7 +79,6 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
     - Returns (base64_encoded_str, mime_type).
     """
     try:
-        from PIL import ImageOps, ImageEnhance
         with Image.open(io.BytesIO(raw_bytes)) as img:
             # 1. Correct EXIF orientation (crucial for phone photos taken vertically/horizontally)
             try:
@@ -120,14 +120,13 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
             except Exception:
                 pass
 
-            buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=94, optimize=True)
-            opt_bytes = buffer.getvalue()
-            b64_str = base64.b64encode(opt_bytes).decode("utf-8")
+            with io.BytesIO() as buffer:
+                img.save(buffer, format="JPEG", quality=94, optimize=True)
+                b64_str = base64.b64encode(buffer.getvalue()).decode("ascii")
             return b64_str, "image/jpeg"
     except Exception as e:
         logger.warning(f"Advanced vision preprocessor fallback: {e}")
-        return base64.b64encode(raw_bytes).decode("utf-8"), "image/jpeg"
+        return base64.b64encode(raw_bytes).decode("ascii"), "image/jpeg"
 
 def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
     """
@@ -152,51 +151,128 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
             pass
 
     # 2. SSE Data Stream Parsing
-    content_chunks = []
+    content_chunks: List[str] = []
+    reasoning_chunks: List[str] = []
     tool_calls_map: Dict[int, Dict[str, Any]] = {}
 
     for line in clean_text.splitlines():
         line = line.strip()
-        if line.startswith("data:") and line[5:].strip() and line[5:].strip() != "[DONE]":
-            try:
-                chunk = json.loads(line[5:].strip())
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-
-                delta = choices[0].get("delta") or choices[0].get("message") or {}
-
-                # Accumulate text content
-                if delta.get("content"):
-                    content_chunks.append(delta["content"])
-                elif delta.get("reasoning_content"):
-                    content_chunks.append(delta["reasoning_content"])
-
-                # Accumulate tool calls
-                if delta.get("tool_calls"):
-                    for tc in delta["tool_calls"]:
-                        idx = tc.get("index", 0)
-                        if idx not in tool_calls_map:
-                            tool_calls_map[idx] = {
-                                "id": tc.get("id") or f"call_{idx}",
-                                "type": "function",
-                                "function": {
-                                    "name": tc.get("function", {}).get("name", ""),
-                                    "arguments": tc.get("function", {}).get("arguments", "")
-                                }
-                            }
-                        else:
-                            fn = tc.get("function", {})
-                            if fn.get("name"):
-                                tool_calls_map[idx]["function"]["name"] = fn["name"]
-                            if fn.get("arguments"):
-                                tool_calls_map[idx]["function"]["arguments"] += fn["arguments"]
-            except Exception:
+        if not line or not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(payload)
+            choices = chunk.get("choices") or []
+            if not choices:
                 continue
 
-    final_content = "".join(content_chunks).strip()
-    final_tool_calls = list(tool_calls_map.values())
+            delta = choices[0].get("delta") or choices[0].get("message") or {}
+
+            # Accumulate text content cleanly separated from reasoning chain
+            c = delta.get("content")
+            if c:
+                content_chunks.append(c)
+            else:
+                rc = delta.get("reasoning_content")
+                if rc:
+                    reasoning_chunks.append(rc)
+
+            # Accumulate tool calls using chunked buffer to avoid quadratic string concatenation
+            tcs = delta.get("tool_calls")
+            if tcs:
+                for tc in tcs:
+                    idx = tc.get("index", 0)
+                    fn = tc.get("function") or {}
+                    fn_name = fn.get("name") or ""
+                    fn_args = fn.get("arguments") or ""
+                    if idx not in tool_calls_map:
+                        tool_calls_map[idx] = {
+                            "id": tc.get("id") or f"call_{idx}",
+                            "type": "function",
+                            "function": {
+                                "name": fn_name,
+                                "_arg_chunks": [fn_args] if fn_args else []
+                            }
+                        }
+                    else:
+                        entry_fn = tool_calls_map[idx]["function"]
+                        if fn_name:
+                            entry_fn["name"] = fn_name
+                        if fn_args:
+                            entry_fn["_arg_chunks"].append(fn_args)
+        except Exception:
+            continue
+
+    if content_chunks:
+        final_content = "".join(content_chunks).strip()
+    elif reasoning_chunks:
+        final_content = "".join(reasoning_chunks).strip()
+    else:
+        final_content = ""
+
+    final_tool_calls: List[Dict[str, Any]] = []
+    for tc in tool_calls_map.values():
+        tc_fn = tc["function"]
+        tc_fn["arguments"] = "".join(tc_fn.pop("_arg_chunks", []))
+        final_tool_calls.append(tc)
+
     return final_content, final_tool_calls
+
+_RE_KHETAB = re.compile(r"\(خطاب:[^)]+\)")
+
+_ANALYSIS_KEYWORDS = (
+    "تحلیل", "چرا", "نظرت", "بخرم", "بفروشم", "پیشنهاد", "پیش بینی",
+    "آینده", "علت", "مقایسه", "توضیح", "کامل بگو", "بررسی کن", "چطور",
+    "analysis", "analyse", "analyze", "why", "should i buy", "should i sell",
+    "predict", "prediction", "compare", "comparison", "explain", "opinion",
+)
+
+_FIAT_TRIGGERS = (
+    "قیمت دلار", "نرخ دلار", "دلار چنده", "دلار چند است", "دلار امروز",
+    "قیمت یورو", "نرخ یورو", "یورو چنده", "قیمت درهم", "نرخ درهم", "درهم چنده",
+    "قیمت پوند", "قیمت لیر", "ارز آزاد", "قیمت ارز", "نرخ ارز", "تابلوی ارز",
+    "قیمت پول ها", "قیمت ارزها", "قیمت پول", "نرخ پول", "قیمت دلار چنده", "پول ها",
+    "dollar price", "price of dollar", "dollar rate", "how much is dollar",
+    "euro price", "price of euro", "exchange rate", "fiat price", "currency price",
+)
+
+_FIAT_EXCLUDES = (
+    "یورو", "درهم", "پوند", "لیر", "یوان", "ارزها", "پول ها", "پول‌ها",
+    "ارزهای", "تابلوی ارز", "eur", "aed", "gbp", "try", "euro", "pound", "lira", "rial"
+)
+
+_FIAT_EXACT = frozenset({
+    "دلار", "یورو", "درهم", "پوند", "لیر", "ارز", "ارزها", "پول ها", "قیمت پول", "dollar", "euro", "usd"
+})
+
+_GOLD_TRIGGERS = (
+    "قیمت طلا", "نرخ طلا", "طلا چنده", "طلا چند است", "طلا ۱۸", "طلا 18",
+    "طلای ۱۸", "طلای 18", "قیمت سکه", "نرخ سکه", "سکه چنده", "سکه امامی",
+    "سکه بهار آزادی", "نیم سکه", "ربع سکه", "مثقال طلا", "آبشده", "انس طلا",
+    "طلای ۱۸ عیار", "طلا 18 عیار", "قیمت سکه امامی",
+    "gold price", "price of gold", "how much is gold", "coin price", "gold rate",
+)
+
+_GOLD_EXACT = frozenset({"طلا", "سکه", "سکه امامی", "طلا ۱۸ عیار", "طلای ۱۸ عیار", "gold", "coin"})
+
+_CRYPTO_MAP = {
+    "BTC": ("بیت کوین", "بیتکوین", "btc", "bitcoin", "بیت‌کوین"),
+    "ETH": ("اتریوم", "eth", "ethereum"),
+    "USDT": ("تتر", "usdt", "tether"),
+    "SOL": ("سولانا", "sol", "solana"),
+    "TON": ("تون کوین", "تون", "ton", "toncoin"),
+    "DOGE": ("دوج کوین", "دوج", "doge", "dogecoin"),
+    "XRP": ("ریپل", "xrp", "ripple"),
+    "TRX": ("ترون", "trx", "tron"),
+    "NOT": ("نات کوین", "ناتکوین", "not", "notcoin"),
+}
+
+_CRYPTO_OVERVIEW_TRIGGERS = (
+    "تابلوی کریپتو", "رمزارزها", "ارز دیجیتال", "ارزهای دیجیتال",
+    "بازار رمزارز", "crypto market", "crypto prices", "cryptocurrency", "crypto board"
+)
 
 async def _try_fast_market_match(prompt: str) -> Optional[str]:
     """
@@ -205,60 +281,28 @@ async def _try_fast_market_match(prompt: str) -> Optional[str]:
     bypasses the slow LLM reasoning loop and serves straight from Hot RAM.
     """
     p = (prompt or "").strip().lower()
-    p = re.sub(r"\(خطاب:[^)]+\)", "", p).strip()
+    p = _RE_KHETAB.sub("", p).strip()
 
-    analysis_keywords = [
-        "تحلیل", "چرا", "نظرت", "بخرم", "بفروشم", "پیشنهاد", "پیش بینی",
-        "آینده", "علت", "مقایسه", "توضیح", "کامل بگو", "بررسی کن", "چطور",
-        "analysis", "analyse", "analyze", "why", "should i buy", "should i sell",
-        "predict", "prediction", "compare", "comparison", "explain", "opinion",
-    ]
-    if any(ak in p for ak in analysis_keywords):
+    if any(ak in p for ak in _ANALYSIS_KEYWORDS):
         return None
 
-    fiat_triggers = [
-        "قیمت دلار", "نرخ دلار", "دلار چنده", "دلار چند است", "دلار امروز",
-        "قیمت یورو", "نرخ یورو", "یورو چنده", "قیمت درهم", "نرخ درهم", "درهم چنده",
-        "قیمت پوند", "قیمت لیر", "ارز آزاد", "قیمت ارز", "نرخ ارز", "تابلوی ارز",
-        "قیمت پول ها", "قیمت ارزها", "قیمت پول", "نرخ پول", "قیمت دلار چنده", "پول ها",
-        "dollar price", "price of dollar", "dollar rate", "how much is dollar",
-        "euro price", "price of euro", "exchange rate", "fiat price", "currency price",
-    ]
     # Single-currency rule: user naming ONLY one currency gets ONLY that one.
     _only_dollar = (
         ("دلار" in p or p == "usd" or "dollar" in p)
-        and not any(o in p for o in ["یورو", "درهم", "پوند", "لیر", "یوان", "ارزها", "پول ها", "پول‌ها", "ارزهای", "تابلوی ارز", "eur", "aed", "gbp", "try", "euro", "pound", "lira", "rial"])
+        and not any(o in p for o in _FIAT_EXCLUDES)
     )
     if _only_dollar:
         from src.tools import financial
         return await financial.get_dollar_price()
-    if p in ["دلار", "یورو", "درهم", "پوند", "لیر", "ارز", "ارزها", "پول ها", "قیمت پول", "dollar", "euro", "usd"] or any(t in p for t in fiat_triggers):
+    if p in _FIAT_EXACT or any(t in p for t in _FIAT_TRIGGERS):
         from src.tools import financial
         return await financial.get_fiat_overview()
 
-    gold_triggers = [
-        "قیمت طلا", "نرخ طلا", "طلا چنده", "طلا چند است", "طلا ۱۸", "طلا 18",
-        "طلای ۱۸", "طلای 18", "قیمت سکه", "نرخ سکه", "سکه چنده", "سکه امامی",
-        "سکه بهار آزادی", "نیم سکه", "ربع سکه", "مثقال طلا", "آبشده", "انس طلا",
-        "طلای ۱۸ عیار", "طلا 18 عیار", "قیمت سکه امامی",
-        "gold price", "price of gold", "how much is gold", "coin price", "gold rate",
-    ]
-    if p in ["طلا", "سکه", "سکه امامی", "طلا ۱۸ عیار", "طلای ۱۸ عیار", "gold", "coin"] or any(t in p for t in gold_triggers):
+    if p in _GOLD_EXACT or any(t in p for t in _GOLD_TRIGGERS):
         from src.tools import financial
         return await financial.get_gold_and_coin_price()
 
-    crypto_map = {
-        "BTC": ["بیت کوین", "بیتکوین", "btc", "bitcoin", "بیت‌کوین"],
-        "ETH": ["اتریوم", "eth", "ethereum"],
-        "USDT": ["تتر", "usdt", "tether"],
-        "SOL": ["سولانا", "sol", "solana"],
-        "TON": ["تون کوین", "تون", "ton", "toncoin"],
-        "DOGE": ["دوج کوین", "دوج", "doge", "dogecoin"],
-        "XRP": ["ریپل", "xrp", "ripple"],
-        "TRX": ["ترون", "trx", "tron"],
-        "NOT": ["نات کوین", "ناتکوین", "not", "notcoin"],
-    }
-    for sym, triggers in crypto_map.items():
+    for sym, triggers in _CRYPTO_MAP.items():
         if any(
             f"قیمت {tr}" in p or f"نرخ {tr}" in p or f"{tr} چنده" in p
             or f"{tr} چند است" in p or p == tr
@@ -268,7 +312,7 @@ async def _try_fast_market_match(prompt: str) -> Optional[str]:
             from src.tools import financial
             return await financial.get_price(sym)
 
-    if any(k in p for k in ["تابلوی کریپتو", "رمزارزها", "ارز دیجیتال", "ارزهای دیجیتال", "بازار رمزارز", "crypto market", "crypto prices", "cryptocurrency", "crypto board"]):
+    if any(k in p for k in _CRYPTO_OVERVIEW_TRIGGERS):
         from src.tools import financial
         return await financial.get_crypto_overview()
 
