@@ -28,14 +28,17 @@ _BROWSER_UA = (
 )
 
 # Fallback and profile-tuned connection limits (12s keepalive expiry avoids Cloudflare 15s edge socket boundary races)
-_LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=12.0)
+_LIMITS = httpx.Limits(max_keepalive_connections=150, max_connections=350, keepalive_expiry=12.0)
 
 _PROFILE_LIMITS: Dict[str, httpx.Limits] = {
-    "web": httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=12.0),
-    "api": httpx.Limits(max_keepalive_connections=100, max_connections=300, keepalive_expiry=12.0),
-    "fast": httpx.Limits(max_keepalive_connections=50, max_connections=150, keepalive_expiry=10.0),
+    "web": httpx.Limits(max_keepalive_connections=150, max_connections=300, keepalive_expiry=12.0),
+    "api": httpx.Limits(max_keepalive_connections=200, max_connections=350, keepalive_expiry=12.0),
+    "fast": httpx.Limits(max_keepalive_connections=75, max_connections=150, keepalive_expiry=10.0),
     "stream": httpx.Limits(max_keepalive_connections=40, max_connections=100, keepalive_expiry=20.0),
 }
+
+# RFC 9110 idempotent methods safe for stale-socket retry
+_IDEMPOTENT_METHODS: FrozenSet[str] = frozenset({"GET", "HEAD", "OPTIONS", "TRACE", "PUT", "DELETE"})
 
 # Granular connect/pool/read timeouts prevent hanging socket handshakes
 _TIMEOUTS: Dict[str, httpx.Timeout] = {
@@ -152,16 +155,18 @@ class BackoffAsyncHTTPTransport(httpx.AsyncHTTPTransport):
 
     @staticmethod
     def _is_replayable(request: httpx.Request) -> bool:
+        if getattr(request, "_content", None) is not None:
+            return True
         stream = getattr(request, "stream", None)
         if stream is None:
+            return True
+        if isinstance(stream, httpx.ByteStream):
             return True
         can_replay = getattr(stream, "can_replay", None)
         if callable(can_replay):
             return bool(can_replay())
         if getattr(stream, "is_stream_consumed", False) or getattr(stream, "_is_stream_consumed", False):
             return False
-        if isinstance(stream, httpx.ByteStream):
-            return True
         return False
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -170,28 +175,33 @@ class BackoffAsyncHTTPTransport(httpx.AsyncHTTPTransport):
 
         attempt = 0
         while True:
+            if attempt > 0 and getattr(request, "_content", None) is not None:
+                if not isinstance(getattr(request, "stream", None), httpx.ByteStream):
+                    request.stream = httpx.ByteStream(request._content)
             try:
                 return await super().handle_async_request(request)
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
                 if attempt >= self._max_retries or not self._is_replayable(request):
                     raise
-                delay = min(self._backoff_factor * (2 ** attempt) + random.uniform(0.01, 0.05), 2.5)
+                base_delay = min(self._backoff_factor * (2 ** attempt), 2.5)
+                delay = base_delay * random.uniform(0.8, 1.2) + random.uniform(0.01, 0.05)
                 attempt += 1
                 await asyncio.sleep(delay)
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError):
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.WriteTimeout):
                 # Stale pooled socket recovery: safe for idempotent requests
                 method = request.method.upper() if isinstance(request.method, str) else ""
                 if (
                     attempt >= self._max_retries
-                    or method not in ("GET", "HEAD", "OPTIONS", "TRACE")
+                    or method not in _IDEMPOTENT_METHODS
                     or not self._is_replayable(request)
                 ):
                     raise
                 # First idle/stale socket reset: retry immediately with minimal jitter to avoid human-perceptible latency
                 if attempt == 0:
-                    delay = random.uniform(0.02, 0.05)
+                    delay = random.uniform(0.015, 0.04)
                 else:
-                    delay = min(self._backoff_factor * (2 ** (attempt - 1)) + random.uniform(0.01, 0.05), 2.5)
+                    base_delay = min(self._backoff_factor * (2 ** (attempt - 1)), 2.5)
+                    delay = base_delay * random.uniform(0.8, 1.2) + random.uniform(0.01, 0.05)
                 attempt += 1
                 await asyncio.sleep(delay)
 
@@ -209,7 +219,14 @@ def _cleanup_loop(lid: int) -> None:
         _LOOP_REFS.pop(lid, None)
         dead = [k for k in _PER_LOOP_CLIENTS if k[1] == lid]
         for k in dead:
-            _PER_LOOP_CLIENTS.pop(k, None)
+            dead_client = _PER_LOOP_CLIENTS.pop(k, None)
+            prof = k[0]
+            l_ref = _CLIENT_LOOPS.get(prof)
+            loop_in_dict = l_ref() if (l_ref is not None and callable(l_ref)) else l_ref
+            if loop_in_dict is None or id(loop_in_dict) == lid:
+                _CLIENT_LOOPS.pop(prof, None)
+            if _CLIENTS.get(prof) is dead_client:
+                _CLIENTS.pop(prof, None)
 
 
 def _build(profile: str) -> httpx.AsyncClient:
@@ -263,12 +280,15 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
             lref = _LOOP_REFS.get(loop_id)
             if lref is not None and lref() is current_loop and not current_loop.is_closed():
                 return client
+            elif lref is None and not current_loop.is_closed():
+                _LOOP_REFS[loop_id] = weakref.ref(current_loop)
+                return client
 
         client = _build(profile)
         _PER_LOOP_CLIENTS[key] = client
         _CLIENTS[profile] = client
         if current_loop is not None:
-            _CLIENT_LOOPS[profile] = current_loop
+            _CLIENT_LOOPS[profile] = weakref.ref(current_loop)
             if loop_id not in _LOOP_REFS:
                 _LOOP_REFS[loop_id] = weakref.ref(current_loop)
                 try:
@@ -296,15 +316,18 @@ def get_http_client(profile: str = "web") -> httpx.AsyncClient:
 
         for k in dead_keys:
             dead_client = _PER_LOOP_CLIENTS.pop(k, None)
-            _LOOP_REFS.pop(k[1], None)
+            lid = k[1]
+            if lid != 0 and not any(other_k[1] == lid for other_k in _PER_LOOP_CLIENTS):
+                _LOOP_REFS.pop(lid, None)
             prof = k[0]
-            loop_in_dict = _CLIENT_LOOPS.get(prof)
-            if loop_in_dict is None or loop_in_dict.is_closed() or id(loop_in_dict) == k[1]:
+            l_ref = _CLIENT_LOOPS.get(prof)
+            loop_in_dict = l_ref() if (l_ref is not None and callable(l_ref)) else l_ref
+            if loop_in_dict is None or loop_in_dict.is_closed() or id(loop_in_dict) == lid:
                 _CLIENT_LOOPS.pop(prof, None)
             if _CLIENTS.get(prof) is dead_client:
                 _CLIENTS.pop(prof, None)
             if dead_client is not None and not dead_client.is_closed:
-                if current_loop is not None and current_loop.is_running() and (k[1] == loop_id or k[1] == 0):
+                if current_loop is not None and current_loop.is_running():
                     try:
                         current_loop.create_task(_safe_aclose(dead_client))
                     except Exception:
