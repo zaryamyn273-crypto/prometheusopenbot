@@ -114,9 +114,8 @@ def _get_kv_base_url() -> str:
     global _CACHED_KV_KEY, _CACHED_KV_BASE_URL
     acc = os.getenv("CLOUDFLARE_ACCOUNT_ID") or CLOUDFLARE_ACCOUNT_ID or ""
     kv = os.getenv("CLOUDFLARE_KV_ID") or CLOUDFLARE_KV_ID or ""
-    pair = (acc, kv)
-    if pair != _CACHED_KV_KEY:
-        _CACHED_KV_KEY = pair
+    if not _CACHED_KV_KEY or acc != _CACHED_KV_KEY[0] or kv != _CACHED_KV_KEY[1]:
+        _CACHED_KV_KEY = (acc, kv)
         _CACHED_KV_BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{acc}/storage/kv/namespaces/{kv}/values" if (acc and kv) else ""
     return _CACHED_KV_BASE_URL
 
@@ -189,8 +188,9 @@ def l1_get(key: str) -> Optional[str]:
         item["hits"] = hits
         if hits % 5 == 0:
             item["expires_at"] = min(item["expires_at"] + 60.0, now + item["ttl"] * 1.5)
-        # True LRU touch: move to most recently used position
-        _L1_CACHE.move_to_end(key)
+        # True LRU touch: move to most recently used position only if not already there
+        if next(reversed(_L1_CACHE)) != key:
+            _L1_CACHE.move_to_end(key)
         _L1_HITS += 1
         _L1_LAST_HIT_AT = now
         return item["value"]
@@ -219,12 +219,13 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
             existing["expires_at"] = now + _ttl
             existing["ttl"] = _ttl
             existing["set_at"] = now
-            _L1_CACHE.move_to_end(key)
+            if next(reversed(_L1_CACHE)) != key:
+                _L1_CACHE.move_to_end(key)
             return
 
-        # New key: bound capacity without massive low-water mark dump storms
+        # New key: bound capacity by purging expired entries across the buffer first
         if len(_L1_CACHE) >= _L1_MAX_SIZE:
-            expired_keys = [k for k, v in islice(_L1_CACHE.items(), 64) if now > v["expires_at"]]
+            expired_keys = [k for k, v in _L1_CACHE.items() if now > v["expires_at"]]
             for k in expired_keys:
                 _L1_CACHE.pop(k, None)
             if len(_L1_CACHE) >= _L1_MAX_SIZE:
@@ -277,12 +278,12 @@ _KV_NEG_LOCK = threading.Lock()
 def _set_kv_negative_cache(key: str, ttl_sec: float = 60.0):
     now = time.time()
     with _KV_NEG_LOCK:
-        if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-            expired = [k for k, exp_t in islice(_KV_NEGATIVE_CACHE.items(), 64) if now >= exp_t]
+        if key not in _KV_NEGATIVE_CACHE and len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
+            expired = [k for k, exp_t in _KV_NEGATIVE_CACHE.items() if now >= exp_t]
             for k in expired:
                 _KV_NEGATIVE_CACHE.pop(k, None)
             if len(_KV_NEGATIVE_CACHE) >= _KV_NEGATIVE_MAX_SIZE:
-                target = _KV_NEGATIVE_MAX_SIZE - 32
+                target = max(600, _KV_NEGATIVE_MAX_SIZE - 64)
                 while len(_KV_NEGATIVE_CACHE) >= target:
                     try:
                         _KV_NEGATIVE_CACHE.popitem(last=False)
@@ -298,7 +299,7 @@ def _kv_open_circuit(retry_after_sec: float, reason: str, key: str):
     global _KV_CIRCUIT_OPEN_UNTIL, _KV_LAST_CLOUD_ERROR
     _KV_CIRCUIT_OPEN_UNTIL = time.time() + max(60.0, float(retry_after_sec))
     _KV_LAST_CLOUD_ERROR = reason
-    logger.warning(f"Cloudflare KV write throttled ({reason}) on key '{key}'; cloud PUTs paused, L1 RAM keeps serving reads.")
+    logger.warning(f"Cloudflare KV throttled ({reason}) on key '{key}'; cloud operations paused, L1 RAM keeps serving reads.")
 
 async def kv_get_cache_async(key: str) -> Optional[str]:
     val = l1_get(key)
@@ -346,7 +347,8 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
 
     if not is_leader:
         try:
-            return await asyncio.shield(fut)
+            res = await asyncio.shield(fut)
+            return res if res is not None else l1_get(key)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -365,6 +367,8 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
                 l1_set(key, result, ttl_sec=120)
                 with _KV_NEG_LOCK:
                     _KV_NEGATIVE_CACHE.pop(key, None)
+            else:
+                result = None
         elif resp.status_code == 404:
             _set_kv_negative_cache(key, ttl_sec=60.0)
         elif resp.status_code == 429:
