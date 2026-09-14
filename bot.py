@@ -61,9 +61,14 @@ except Exception:
 
 
 def is_admin(user_id: Any) -> bool:
+    """Fast-path admin validation with strict non-zero guard against privilege escalation."""
+    if not user_id or _ADMIN_ID_INT <= 0:
+        return False
+    if isinstance(user_id, int):
+        return user_id == _ADMIN_ID_INT
     try:
-        return int(user_id or 0) == _ADMIN_ID_INT
-    except Exception:
+        return int(user_id) == _ADMIN_ID_INT
+    except (ValueError, TypeError):
         return False
 
 
@@ -77,15 +82,18 @@ def check_rate_limit(user_id: int) -> bool:
     max_req = RATE_LIMIT_ADMIN_MAX_REQUESTS if is_admin(user_id) else RATE_LIMIT_USER_MAX_REQUESTS
     window = RATE_LIMIT_USER_WINDOW_SEC
 
-    # Active memory maintenance: periodic sweep + hard upper bound via islice
-    if len(_USER_RATE_LIMITS) > 5000 or (len(_USER_RATE_LIMITS) > 2000 and (now - _LAST_RATE_LIMIT_CLEANUP) > 60.0):
+    # Active memory maintenance: sweep every 60s (or every 10s if capacity exceeds 5000)
+    # Prevents memory leak below 2000 users and stops per-message sweep thrashing under high load
+    time_since_cleanup = now - _LAST_RATE_LIMIT_CLEANUP
+    if (time_since_cleanup > 60.0 and _USER_RATE_LIMITS) or (len(_USER_RATE_LIMITS) > 5000 and time_since_cleanup > 10.0):
         _LAST_RATE_LIMIT_CLEANUP = now
         stale_threshold = now - window
         stale_users = [uid for uid, dq in _USER_RATE_LIMITS.items() if not dq or dq[-1] < stale_threshold]
         for suid in stale_users:
             _USER_RATE_LIMITS.pop(suid, None)
         if len(_USER_RATE_LIMITS) > 5000:
-            for suid in list(islice(_USER_RATE_LIMITS.keys(), len(_USER_RATE_LIMITS) - 3000)):
+            excess = len(_USER_RATE_LIMITS) - 3000
+            for suid in list(islice(_USER_RATE_LIMITS.keys(), excess)):
                 _USER_RATE_LIMITS.pop(suid, None)
 
     timestamps = _USER_RATE_LIMITS.get(user_id)
@@ -140,8 +148,12 @@ async def _maybe_translate(update, text: str) -> str:
 
 
 # Fast-path precompiled regex and lookup sets for deterministic social routing
-_FASTPATH_PUNCT_CHARS = " \t\n\r!?,.:;~_\-()؟،؛«»"
-_FASTPATH_CLEAN_RE = re.compile(r"^[\s!?,.:;~_\-()؟،؛«»]+|[\s!?,.:;~_\-()؟،؛«»]+$")
+# Comprehensive unicode punctuation including zero-width, bidirectional, and smart quotes
+_FASTPATH_PUNCT_CHARS = " \t\n\r\f\v!?,.:;~_-()[]{}<>\"'«»“”؟،؛\u200b\u200c\u200d\u200e\u200f\ufeff\u00a0"
+_FASTPATH_CLEAN_RE = re.compile(
+    r"^[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0]+|"
+    r"[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0]+$"
+)
 _GREETING_WORDS = frozenset({"سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood"})
 _STATUS_WORDS = frozenset({"خوبی", "چطوری", "چه خبر", "خسته نباشی", "how are you", "how are u", "whats up", "what's up"})
 _THANKS_WORDS = frozenset({"ممنون", "مرسی", "دمت گرم", "سپاس", "تشکر", "ممنونم", "thanks", "thank you", "thx", "ty"})
@@ -156,17 +168,17 @@ def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str =
     if not t and raw_t:
         t = _FASTPATH_CLEAN_RE.sub("", raw_t)
     is_fa = (lang == "fa")
-    if t in _GREETING_WORDS or raw_t in _GREETING_WORDS:
+    if t in _GREETING_WORDS:
         if is_admin(user_id):
             return "👑 درود فرمانده! بفرمایید، در خدمتم." if is_fa else "👑 Hello commander! At your command."
         return "سلام. بفرمایید، کارتان را خلاصه و دقیق مطرح کنید." if is_fa else "Hello. State your request clearly and concisely."
-    if t in _STATUS_WORDS or raw_t in _STATUS_WORDS:
+    elif t in _STATUS_WORDS:
         return "سیستم‌ها کاملاً عملیاتی‌اند. اگر کار فنی دارید بفرمایید، اگر نه منابع پردازشی را بیهوده اشغال نکنید." if is_fa else "Fully operational. If you have an actual task, state it."
-    if t in _THANKS_WORDS or raw_t in _THANKS_WORDS:
+    elif t in _THANKS_WORDS:
         return "خواهش می‌کنم. مورد دیگری هم هست یا برگردم سر کارهای اصلی؟" if is_fa else "You're welcome. Any other task, or can I get back to work?"
-    if t in _ACK_WORDS or raw_t in _ACK_WORDS:
+    elif t in _ACK_WORDS:
         return "حله، هرچه کمتر حاشیه برویم سریع‌تر پیش می‌رویم." if is_fa else "Noted. Less talk, faster execution."
-    if t in _NO_WORDS or raw_t in _NO_WORDS:
+    elif t in _NO_WORDS:
         return "بسیار عالی، حداقل یک پیام اضافه ذخیره نشد." if is_fa else "Fine. Less bandwidth wasted."
     return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
 
@@ -240,6 +252,17 @@ _BANNED_CACHE: Dict[int, Tuple[bool, float]] = {}
 _MUTED_CACHE: Dict[int, Tuple[float, float]] = {}
 _GATEKEEPER_CACHE_TTL = 30.0
 
+def _prune_gatekeeper_cache(cache: Dict[int, Tuple[Any, float]], now: float, max_size: int = 5000) -> None:
+    """Anti-thrashing TTL sweep and bounded capacity reduction."""
+    if len(cache) > max_size:
+        stale_keys = [k for k, v in cache.items() if now >= v[1]]
+        for k in stale_keys:
+            cache.pop(k, None)
+        if len(cache) > max_size:
+            excess = len(cache) - int(max_size * 0.8)
+            for k in list(islice(cache.keys(), excess)):
+                cache.pop(k, None)
+
 async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     ABSOLUTE ZERO-RESPONSE GATEKEEPER:
@@ -259,7 +282,7 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
     now = time.time()
     u_uname = user.username or ""
 
-    # 1. Banned check with TTL cache and anti-stampede LRU eviction
+    # 1. Banned check with TTL cache and anti-stampede bounded eviction
     cached_banned = _BANNED_CACHE.get(user.id)
     if cached_banned and now < cached_banned[1]:
         _banned = cached_banned[0]
@@ -269,19 +292,13 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
         except Exception:
             _banned = False
         _BANNED_CACHE[user.id] = (_banned, now + _GATEKEEPER_CACHE_TTL)
-        if len(_BANNED_CACHE) > 5000:
-            stale_keys = [k for k, v in _BANNED_CACHE.items() if now >= v[1]]
-            for k in stale_keys:
-                _BANNED_CACHE.pop(k, None)
-            if len(_BANNED_CACHE) > 5000:
-                for k in list(islice(_BANNED_CACHE.keys(), 1000)):
-                    _BANNED_CACHE.pop(k, None)
+        _prune_gatekeeper_cache(_BANNED_CACHE, now)
 
     if _banned:
         # Complete radio silence: kill update processing instantly
         raise ApplicationHandlerStop()
 
-    # 2. Muted check with TTL cache and anti-stampede LRU eviction
+    # 2. Muted check with TTL cache and anti-stampede bounded eviction
     cached_muted = _MUTED_CACHE.get(user.id)
     if cached_muted and now < cached_muted[1]:
         _muted_left = cached_muted[0]
@@ -292,13 +309,7 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
             _muted_left = 0.0
         mute_ttl = min(_GATEKEEPER_CACHE_TTL, max(1.0, _muted_left)) if _muted_left > 0 else _GATEKEEPER_CACHE_TTL
         _MUTED_CACHE[user.id] = (_muted_left, now + mute_ttl)
-        if len(_MUTED_CACHE) > 5000:
-            stale_keys = [k for k, v in _MUTED_CACHE.items() if now >= v[1]]
-            for k in stale_keys:
-                _MUTED_CACHE.pop(k, None)
-            if len(_MUTED_CACHE) > 5000:
-                for k in list(islice(_MUTED_CACHE.keys(), 1000)):
-                    _MUTED_CACHE.pop(k, None)
+        _prune_gatekeeper_cache(_MUTED_CACHE, now)
 
     if _muted_left:
         eff_msg = update.effective_message
