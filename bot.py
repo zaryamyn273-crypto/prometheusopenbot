@@ -83,7 +83,8 @@ _LAST_RATE_LIMIT_CLEANUP: float = time.monotonic()
 def check_rate_limit(user_id: int) -> bool:
     global _LAST_RATE_LIMIT_CLEANUP
     now = time.monotonic()
-    max_req = RATE_LIMIT_ADMIN_MAX_REQUESTS if is_admin(user_id) else RATE_LIMIT_USER_MAX_REQUESTS
+    is_adm = (user_id == _ADMIN_ID_INT and _ADMIN_ID_INT > 0) if type(user_id) is int else is_admin(user_id)
+    max_req = RATE_LIMIT_ADMIN_MAX_REQUESTS if is_adm else RATE_LIMIT_USER_MAX_REQUESTS
     if max_req <= 0:
         return True
     window = RATE_LIMIT_USER_WINDOW_SEC
@@ -138,6 +139,9 @@ def _cached_lang_info(code: str) -> Tuple[str, str]:
     return normalize_lang(code), lang_name(code)
 
 
+_FA_LANG_INFO: Tuple[str, str] = ("fa", lang_name("fa"))
+
+
 def _ulang_of(update) -> tuple:
     """(lang, lang_name) for a Telegram update: 'fa' for Persian clients, else 'en' chrome + full LLM language."""
     try:
@@ -145,8 +149,8 @@ def _ulang_of(update) -> tuple:
         code = getattr(user, "language_code", None) or "fa"
     except Exception:
         code = "fa"
-    if not isinstance(code, str):
-        code = "fa"  # non-string (shouldn't happen live; keeps legacy default)
+    if not isinstance(code, str) or code == "fa":
+        return _FA_LANG_INFO
     return _cached_lang_info(code)
 
 
@@ -157,7 +161,7 @@ async def _maybe_translate(update, text: str) -> str:
     fast direct-command path stays zero-cost for the home audience.
     """
     try:
-        if not isinstance(text, str) or not text.strip():
+        if not isinstance(text, str) or not text or text.isspace():
             return text
         ulang, ulang_name = _ulang_of(update)
         if ulang == "fa":
@@ -176,11 +180,43 @@ _FASTPATH_CLEAN_RE = re.compile(
     r"[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0…–—•ـ]+$"
 )
 _FASTPATH_INNER_ZW_RE = re.compile(r"[\u200b-\u200f\ufeff]+")
+_FASTPATH_TRANS = str.maketrans({
+    "ـ": None,
+    "\u200c": " ",
+    "\u200b": None,
+    "\u200d": None,
+    "\u200e": None,
+    "\u200f": None,
+    "\ufeff": None,
+})
+
 _GREETING_WORDS = frozenset({"سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood", "سلام علیکم", "سلام علیک"})
 _STATUS_WORDS = frozenset({"خوبی", "چطوری", "چه خبر", "خسته نباشی", "خسته‌نباشی", "how are you", "how are u", "whats up", "what's up"})
 _THANKS_WORDS = frozenset({"ممنون", "مرسی", "دمت گرم", "دمت‌گرم", "سپاس", "تشکر", "ممنونم", "thanks", "thank you", "thx", "ty"})
 _ACK_WORDS = frozenset({"باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله", "yes", "yeah", "sure", "alright"})
 _NO_WORDS = frozenset({"نه", "no", "nope"})
+
+_SOCIAL_DISPATCH: Dict[str, Tuple[str, str]] = {}
+for _w in _STATUS_WORDS:
+    _SOCIAL_DISPATCH[_w] = (
+        "سیستم‌ها کاملاً عملیاتی‌اند. اگر کار فنی دارید بفرمایید، اگر نه منابع پردازشی را بیهوده اشغال نکنید.",
+        "Fully operational. If you have an actual task, state it."
+    )
+for _w in _THANKS_WORDS:
+    _SOCIAL_DISPATCH[_w] = (
+        "خواهش می‌کنم. مورد دیگری هم هست یا برگردم سر کارهای اصلی؟",
+        "You're welcome. Any other task, or can I get back to work?"
+    )
+for _w in _ACK_WORDS:
+    _SOCIAL_DISPATCH[_w] = (
+        "حله، هرچه کمتر حاشیه برویم سریع‌تر پیش می‌رویم.",
+        "Noted. Less talk, faster execution."
+    )
+for _w in _NO_WORDS:
+    _SOCIAL_DISPATCH[_w] = (
+        "بسیار عالی، حداقل یک پیام اضافه ذخیره نشد.",
+        "Fine. Less bandwidth wasted."
+    )
 
 def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str = "fa") -> str:
     """Instant deterministic reply for pure social chatter (no LLM, no tools)."""
@@ -193,34 +229,27 @@ def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str =
     if not t:
         return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
 
-    # Fast normalization for inner tatweels, zero-width characters, and redundant whitespace
-    if "ـ" in t:
-        t = t.replace("ـ", "")
-    if "\u200c" in t:
-        t = t.replace("\u200c", " ")
-    t = _FASTPATH_INNER_ZW_RE.sub("", t)
+    # Single-pass C-level normalization for tatweels, zero-width chars, and ZWNJ
+    t = t.translate(_FASTPATH_TRANS)
     if " " in t or "\t" in t or "\n" in t or "\u00a0" in t:
         t = " ".join(t.split())
 
     if t in _GREETING_WORDS:
-        if is_admin(user_id):
+        if (user_id == _ADMIN_ID_INT and _ADMIN_ID_INT > 0) if type(user_id) is int else is_admin(user_id):
             return "👑 درود فرمانده! بفرمایید، در خدمتم." if is_fa else "👑 Hello commander! At your command."
         return "سلام. بفرمایید، کارتان را خلاصه و دقیق مطرح کنید." if is_fa else "Hello. State your request clearly and concisely."
-    elif t in _STATUS_WORDS:
-        return "سیستم‌ها کاملاً عملیاتی‌اند. اگر کار فنی دارید بفرمایید، اگر نه منابع پردازشی را بیهوده اشغال نکنید." if is_fa else "Fully operational. If you have an actual task, state it."
-    elif t in _THANKS_WORDS:
-        return "خواهش می‌کنم. مورد دیگری هم هست یا برگردم سر کارهای اصلی؟" if is_fa else "You're welcome. Any other task, or can I get back to work?"
-    elif t in _ACK_WORDS:
-        return "حله، هرچه کمتر حاشیه برویم سریع‌تر پیش می‌رویم." if is_fa else "Noted. Less talk, faster execution."
-    elif t in _NO_WORDS:
-        return "بسیار عالی، حداقل یک پیام اضافه ذخیره نشد." if is_fa else "Fine. Less bandwidth wasted."
+
+    dispatch_res = _SOCIAL_DISPATCH.get(t)
+    if dispatch_res is not None:
+        return dispatch_res[0] if is_fa else dispatch_res[1]
+
     return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
 
 _DEDUP_FUNC: Any = None
 
 async def reply_safely(message, text: str, reply_markup=None):
     """Safely formats markdown to HTML and sends message with fallback + 4096-char chunking."""
-    if not text or not (text.strip() if isinstance(text, str) else str(text).strip()):
+    if not text or (text.isspace() if isinstance(text, str) else not str(text).strip()):
         return None
     global _DEDUP_FUNC
     if _DEDUP_FUNC is None:
@@ -311,7 +340,7 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
 
     uid = user.id
     # Master Admin is never banned or muted; bypass DB checks instantly
-    if is_admin(uid):
+    if (uid == _ADMIN_ID_INT and _ADMIN_ID_INT > 0) if type(uid) is int else is_admin(uid):
         return
 
     now = time.time()
@@ -327,11 +356,17 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
 
     cached_muted = _MUTED_CACHE.get(uid)
     if cached_muted is not None and now < cached_muted[1]:
-        if not banned_miss and cached_muted[0] <= 0:
+        if not banned_miss:
             return
         muted_miss = False
     else:
         muted_miss = True
+
+    # Memory maintenance for gatekeeper caches to prevent leaks under flood volume
+    if len(_BANNED_CACHE) > 5000:
+        _prune_gatekeeper_cache(_BANNED_CACHE, now)
+    if len(_MUTED_CACHE) > 5000:
+        _prune_gatekeeper_cache(_MUTED_CACHE, now)
 
     u_uname = user.username or ""
 
