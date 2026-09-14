@@ -4,6 +4,7 @@ import json
 import time
 import logging
 import asyncio
+import threading
 from itertools import islice
 import httpx
 from datetime import datetime
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 _L1_CACHE: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+_L1_LOCK = threading.RLock()
 _MEMORY_DIRECTIVES: List[str] = []
 _BANNED_USERS: set = set()
 _BANNED_USERNAMES: set = set()
@@ -105,19 +107,34 @@ try:
 except Exception:
     _TEHRAN_TZ = None
 
+_TS_LOCK = threading.Lock()
+_LAST_TS_SEC: int = 0
+_CACHED_TIMESTAMPS: Tuple[str, str, str] = ("", "", "")
+
 def get_tehran_timestamps() -> Tuple[str, str, str]:
-    """Returns (created_at_iso, time_str, jalali_date_str)."""
-    try:
-        tz = _TEHRAN_TZ or pytz.timezone("Asia/Tehran")
-        now = datetime.now(tz)
-        j_now = jdatetime.datetime.fromgregorian(datetime=now)
-        time_str = f"{now.hour:02d}:{now.minute:02d}:{now.second:02d}"
-        iso_str = f"{now.year:04d}-{now.month:02d}-{now.day:02d} {time_str}"
-        j_date_str = f"{j_now.year:04d}/{j_now.month:02d}/{j_now.day:02d}"
-        return iso_str, time_str, j_date_str
-    except Exception:
-        iso_fallback = time.strftime("%Y-%m-%d %H:%M:%S")
-        return iso_fallback, iso_fallback, iso_fallback
+    """Returns (created_at_iso, time_str, jalali_date_str) with high-speed 1-second memoization."""
+    global _LAST_TS_SEC, _CACHED_TIMESTAMPS
+    current_sec = int(time.time())
+    if current_sec == _LAST_TS_SEC:
+        return _CACHED_TIMESTAMPS
+
+    with _TS_LOCK:
+        if current_sec == _LAST_TS_SEC:
+            return _CACHED_TIMESTAMPS
+        try:
+            tz = _TEHRAN_TZ or pytz.timezone("Asia/Tehran")
+            now = datetime.now(tz)
+            j_now = jdatetime.datetime.fromgregorian(datetime=now)
+            time_str = f"{now.hour:02d}:{now.minute:02d}:{now.second:02d}"
+            iso_str = f"{now.year:04d}-{now.month:02d}-{now.day:02d} {time_str}"
+            j_date_str = f"{j_now.year:04d}/{j_now.month:02d}/{j_now.day:02d}"
+            res = (iso_str, time_str, j_date_str)
+            _LAST_TS_SEC = current_sec
+            _CACHED_TIMESTAMPS = res
+            return res
+        except Exception:
+            iso_fallback = time.strftime("%Y-%m-%d %H:%M:%S")
+            return iso_fallback, iso_fallback, iso_fallback
 
 # --- Tier 1: L1 Fast Sub-Millisecond Memory Buffer ---
 
@@ -128,28 +145,29 @@ _L1_LAST_HIT_AT: float = 0.0
 
 def l1_get(key: str) -> Optional[str]:
     global _L1_HITS, _L1_MISSES, _L1_LAST_HIT_AT
-    item = _L1_CACHE.get(key)
-    if not item:
-        _L1_MISSES += 1
-        return None
-    now = time.time()
-    if now > item["expires_at"]:
-        _L1_CACHE.pop(key, None)
-        _L1_MISSES += 1
-        return None
-    # Sliding refresh: hot keys live longer (up to +50% of original TTL).
-    try:
-        hits = item.get("hits", 0) + 1
-        item["hits"] = hits
-        if hits % 5 == 0:
-            item["expires_at"] = min(item["expires_at"] + 60.0, now + item.get("ttl", 300) * 1.5)
-        # True LRU touch: move to most recently used position
-        _L1_CACHE.move_to_end(key)
-    except Exception:
-        pass
-    _L1_HITS += 1
-    _L1_LAST_HIT_AT = now
-    return item["value"]
+    with _L1_LOCK:
+        item = _L1_CACHE.get(key)
+        if not item:
+            _L1_MISSES += 1
+            return None
+        now = time.time()
+        if now > item["expires_at"]:
+            _L1_CACHE.pop(key, None)
+            _L1_MISSES += 1
+            return None
+        # Sliding refresh: hot keys live longer (up to +50% of original TTL).
+        try:
+            hits = item["hits"] + 1
+            item["hits"] = hits
+            if hits % 5 == 0:
+                item["expires_at"] = min(item["expires_at"] + 60.0, now + item["ttl"] * 1.5)
+            # True LRU touch: move to most recently used position
+            _L1_CACHE.move_to_end(key)
+        except Exception:
+            pass
+        _L1_HITS += 1
+        _L1_LAST_HIT_AT = now
+        return item["value"]
 
 _L1_MAX_SIZE = 800
 _L1_LOW_WATER = 700
@@ -167,31 +185,51 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
     if len(clean_val) > 65536:
         clean_val = clean_val[:65536]
 
-    # Memory optimization: high-water/low-water eviction eliminates per-insert pruning
-    if key not in _L1_CACHE and len(_L1_CACHE) >= _L1_MAX_SIZE:
-        expired = [k for k, v in _L1_CACHE.items() if now > v.get("expires_at", 0)]
-        for k in expired:
-            _L1_CACHE.pop(k, None)
-        while len(_L1_CACHE) >= _L1_LOW_WATER:
-            try:
-                _L1_CACHE.popitem(last=False)
-            except KeyError:
+    with _L1_LOCK:
+        # Opportunistic O(1) eviction of expired entries from the head (LRU oldest)
+        for _ in range(5):
+            if not _L1_CACHE:
+                break
+            oldest_k = next(iter(_L1_CACHE))
+            oldest_v = _L1_CACHE[oldest_k]
+            if now > oldest_v.get("expires_at", 0):
+                _L1_CACHE.pop(oldest_k, None)
+            else:
                 break
 
-    _L1_CACHE[key] = {
-        "value": clean_val,
-        "expires_at": now + _ttl,
-        "ttl": _ttl,
-        "hits": 0,
-        "set_at": now,
-    }
-    try:
-        _L1_CACHE.move_to_end(key)
-    except Exception:
-        pass
+        # High-water mark eviction
+        if key not in _L1_CACHE and len(_L1_CACHE) >= _L1_MAX_SIZE:
+            expired = [k for k, v in _L1_CACHE.items() if now > v.get("expires_at", 0)]
+            for k in expired:
+                _L1_CACHE.pop(k, None)
+            while len(_L1_CACHE) >= _L1_LOW_WATER:
+                try:
+                    _L1_CACHE.popitem(last=False)
+                except KeyError:
+                    break
+
+        existing = _L1_CACHE.get(key)
+        if existing is not None:
+            existing["value"] = clean_val
+            existing["expires_at"] = now + _ttl
+            existing["ttl"] = _ttl
+            existing["set_at"] = now
+            try:
+                _L1_CACHE.move_to_end(key)
+            except Exception:
+                pass
+        else:
+            _L1_CACHE[key] = {
+                "value": clean_val,
+                "expires_at": now + _ttl,
+                "ttl": _ttl,
+                "hits": 0,
+                "set_at": now,
+            }
 
 def l1_delete(key: str):
-    _L1_CACHE.pop(key, None)
+    with _L1_LOCK:
+        _L1_CACHE.pop(key, None)
 
 # --- Tier 2: High-Speed Cloudflare Workers KV Operations ---
 # Cloudflare free plan allows ~1000 KV writes/day. The 5-minute bulk market
@@ -288,7 +326,11 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
                 err_code = (body.get("errors") or [{}])[0].get("code")
             except Exception:
                 err_code = None
-            retry_after = float(resp.headers.get("Retry-After", 300))
+            try:
+                raw_ra = resp.headers.get("Retry-After", 300)
+                retry_after = float(raw_ra) if raw_ra else 300.0
+            except (ValueError, TypeError):
+                retry_after = 300.0
             if err_code == 10048:
                 _kv_open_circuit(12 * 3600, "free daily write quota exhausted (10048)", key)
             else:
