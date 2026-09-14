@@ -5,6 +5,8 @@ import time
 import logging
 import asyncio
 import re
+from collections import deque
+from itertools import islice
 from typing import Dict, Any, Optional, Tuple, List
 
 from telegram import (
@@ -52,28 +54,39 @@ logging.basicConfig(
 logger = logging.getLogger("PrometheusBot")
 
 # Rate Limiter Memory
-_USER_RATE_LIMITS: Dict[int, list] = {}
+_USER_RATE_LIMITS: Dict[int, deque] = {}
+_LAST_RATE_LIMIT_CLEANUP: float = 0.0
 
 def check_rate_limit(user_id: int) -> bool:
+    global _LAST_RATE_LIMIT_CLEANUP
     now = time.time()
-    max_req = RATE_LIMIT_ADMIN_MAX_REQUESTS if user_id == ADMIN_ID else RATE_LIMIT_USER_MAX_REQUESTS
+    max_req = RATE_LIMIT_ADMIN_MAX_REQUESTS if is_admin(user_id) else RATE_LIMIT_USER_MAX_REQUESTS
     window = RATE_LIMIT_USER_WINDOW_SEC
 
-    # Active memory maintenance: purge stale user records when map exceeds 2000 users
-    if len(_USER_RATE_LIMITS) > 2000:
-        stale_users = [uid for uid, ts_list in _USER_RATE_LIMITS.items() if not ts_list or (now - ts_list[-1] > window * 2)]
+    # Active memory maintenance: throttled purge of stale user records when map exceeds 2000 users
+    if len(_USER_RATE_LIMITS) > 2000 and (now - _LAST_RATE_LIMIT_CLEANUP) > 60.0:
+        _LAST_RATE_LIMIT_CLEANUP = now
+        stale_threshold = now - (window * 2)
+        stale_users = [uid for uid, dq in _USER_RATE_LIMITS.items() if not dq or dq[-1] < stale_threshold]
         for suid in stale_users:
-            del _USER_RATE_LIMITS[suid]
+            _USER_RATE_LIMITS.pop(suid, None)
 
-    if user_id not in _USER_RATE_LIMITS:
-        _USER_RATE_LIMITS[user_id] = []
+    timestamps = _USER_RATE_LIMITS.get(user_id)
+    if timestamps is None:
+        timestamps = deque()
+        _USER_RATE_LIMITS[user_id] = timestamps
+    elif isinstance(timestamps, list):
+        timestamps = deque(timestamps)
+        _USER_RATE_LIMITS[user_id] = timestamps
 
-    _USER_RATE_LIMITS[user_id] = [t for t in _USER_RATE_LIMITS[user_id] if now - t < window]
+    cutoff = now - window
+    while timestamps and timestamps[0] <= cutoff:
+        timestamps.popleft()
 
-    if len(_USER_RATE_LIMITS[user_id]) >= max_req:
+    if len(timestamps) >= max_req:
         return False
 
-    _USER_RATE_LIMITS[user_id].append(now)
+    timestamps.append(now)
     return True
 
 # Per-chat stop/quiet flag: when the Master Admin says stop in a group, the
@@ -108,8 +121,10 @@ async def _maybe_translate(update, text: str) -> str:
     fast direct-command path stays zero-cost for the home audience.
     """
     try:
+        if not isinstance(text, str) or not text.strip():
+            return text
         ulang, ulang_name = _ulang_of(update)
-        if ulang == "fa" or not isinstance(text, str) or not text.strip():
+        if ulang == "fa":
             return text
         from src.core import ai_service
         return await ai_service.translate_text(text, ulang_name)
@@ -117,33 +132,51 @@ async def _maybe_translate(update, text: str) -> str:
         return text
 
 
+# Fast-path precompiled regex and lookup sets for deterministic social routing
+_FASTPATH_CLEAN_RE = re.compile(r"^[\s!?,.:;~_\-()]+|[\s!?,.:;~_\-()]+$")
+_GREETING_WORDS = frozenset({"سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood"})
+_STATUS_WORDS = frozenset({"خوبی", "چطوری", "چه خبر", "خسته نباشی", "how are you", "how are u", "whats up", "what's up"})
+_THANKS_WORDS = frozenset({"ممنون", "مرسی", "دمت گرم", "thanks", "thank you", "thx", "ty"})
+_ACK_WORDS = frozenset({"باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله", "yes", "yeah", "sure", "alright"})
+_NO_WORDS = frozenset({"نه", "no", "nope"})
+
 def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str = "fa") -> str:
     """Instant deterministic reply for pure social chatter (no LLM, no tools)."""
-    t = (norm_text or "").strip().lower()
+    raw_t = (norm_text or "").strip().lower()
+    t = _FASTPATH_CLEAN_RE.sub("", raw_t)
     is_fa = (lang == "fa")
-    if t in ("سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood"):
-        if int(user_id or 0) == int(ADMIN_ID):
+    if t in _GREETING_WORDS or raw_t in _GREETING_WORDS:
+        if is_admin(user_id):
             return "👑 درود فرمانده! بفرمایید، در خدمتم." if is_fa else "👑 Hello commander! At your command."
         return "سلام. بفرمایید، کارتان را خلاصه و دقیق مطرح کنید." if is_fa else "Hello. State your request clearly and concisely."
-    if t in ("خوبی", "چطوری", "چه خبر", "خسته نباشی", "how are you", "how are u", "whats up", "what's up"):
+    if t in _STATUS_WORDS or raw_t in _STATUS_WORDS:
         return "سیستم‌ها کاملاً عملیاتی‌اند. اگر کار فنی دارید بفرمایید، اگر نه منابع پردازشی را بیهوده اشغال نکنید." if is_fa else "Fully operational. If you have an actual task, state it."
-    if t in ("ممنون", "مرسی", "دمت گرم", "thanks", "thank you", "thx", "ty"):
+    if t in _THANKS_WORDS or raw_t in _THANKS_WORDS:
         return "خواهش می‌کنم. مورد دیگری هم هست یا برگردم سر کارهای اصلی؟" if is_fa else "You're welcome. Any other task, or can I get back to work?"
-    if t in ("باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله", "yes", "yeah", "sure", "alright"):
+    if t in _ACK_WORDS or raw_t in _ACK_WORDS:
         return "حله، هرچه کمتر حاشیه برویم سریع‌تر پیش می‌رویم." if is_fa else "Noted. Less talk, faster execution."
-    if t in ("نه", "no", "nope"):
+    if t in _NO_WORDS or raw_t in _NO_WORDS:
         return "بسیار عالی، حداقل یک پیام اضافه ذخیره نشد." if is_fa else "Fine. Less bandwidth wasted."
     return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
+
+_DEDUP_FUNC: Any = None
 
 async def reply_safely(message, text: str, reply_markup=None):
     """Safely formats markdown to HTML and sends message with fallback + 4096-char chunking."""
     if not text or not str(text).strip():
         return None
-    try:
-        from src.core.security import deduplicate_repeated_text
-        text = deduplicate_repeated_text(text)
-    except Exception:
-        pass
+    global _DEDUP_FUNC
+    if _DEDUP_FUNC is None:
+        try:
+            from src.core.security import deduplicate_repeated_text as _ddrt
+            _DEDUP_FUNC = _ddrt
+        except Exception:
+            _DEDUP_FUNC = False
+    if callable(_DEDUP_FUNC):
+        try:
+            text = _DEDUP_FUNC(text)
+        except Exception:
+            pass
     formatted = telegram_formatter.markdown_to_telegram_html(text)
 
     async def _send_one(chunk: str, markup=None):
@@ -191,6 +224,11 @@ async def reply_safely(message, text: str, reply_markup=None):
     return sent
 
 
+# Gatekeeper in-memory caches to prevent blocking DB queries on every incoming update
+_BANNED_CACHE: Dict[int, Tuple[bool, float]] = {}
+_MUTED_CACHE: Dict[int, Tuple[float, float]] = {}
+_GATEKEEPER_CACHE_TTL = 30.0
+
 async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     ABSOLUTE ZERO-RESPONSE GATEKEEPER:
@@ -200,30 +238,64 @@ async def global_banned_user_gatekeeper(update: Update, context: ContextTypes.DE
     in microseconds with ZERO response, complete radio silence, and zero processing.
     """
     user = update.effective_user
-    if user:
-        u_uname = user.username or ""
+    if not user:
+        return
+
+    # Master Admin is never banned or muted; bypass DB checks instantly
+    if is_admin(user.id):
+        return
+
+    now = time.time()
+    u_uname = user.username or ""
+
+    # 1. Banned check with TTL cache
+    cached_banned = _BANNED_CACHE.get(user.id)
+    if cached_banned and now < cached_banned[1]:
+        _banned = cached_banned[0]
+    else:
         try:
-            _banned = database.is_user_banned(user.id, username=u_uname)
+            _banned = bool(database.is_user_banned(user.id, username=u_uname))
         except Exception:
             _banned = False
-        if _banned:
-            # Complete radio silence: kill update processing instantly
-            raise ApplicationHandlerStop()
+        _BANNED_CACHE[user.id] = (_banned, now + _GATEKEEPER_CACHE_TTL)
+        if len(_BANNED_CACHE) > 5000:
+            _BANNED_CACHE.clear()
+
+    if _banned:
+        # Complete radio silence: kill update processing instantly
+        raise ApplicationHandlerStop()
+
+    # 2. Muted check with TTL cache
+    cached_muted = _MUTED_CACHE.get(user.id)
+    if cached_muted and now < cached_muted[1]:
+        _muted_left = cached_muted[0]
+    else:
         try:
-            _muted_left = database.is_user_muted(user.id, username=u_uname)
+            _muted_left = float(database.is_user_muted(user.id, username=u_uname) or 0)
         except Exception:
-            _muted_left = 0
-        if _muted_left:
+            _muted_left = 0.0
+        mute_ttl = min(_GATEKEEPER_CACHE_TTL, max(1.0, _muted_left)) if _muted_left > 0 else _GATEKEEPER_CACHE_TTL
+        _MUTED_CACHE[user.id] = (_muted_left, now + mute_ttl)
+        if len(_MUTED_CACHE) > 5000:
+            _MUTED_CACHE.clear()
+
+    if _muted_left:
+        eff_msg = update.effective_message
+        if eff_msg:
             try:
-                _mid = update.effective_message.message_id if update.effective_message else 0
+                _mid = eff_msg.message_id or 0
                 _cid = update.effective_chat.id if update.effective_chat else 0
                 _ct = update.effective_chat.title if update.effective_chat and getattr(update.effective_chat, "title", None) else ""
-                _mt = update.effective_message.text or update.effective_message.caption or "" if update.effective_message else ""
+                _mt = eff_msg.text or eff_msg.caption or ""
                 if _mt:
-                    await database.save_message_async(_cid, user.id, "user", f"[MUTED-ARCHIVE] {_mt}", user_name=user.first_name or "x", username=u_uname, chat_title=_ct, message_id=_mid or 0)
+                    asyncio.create_task(database.save_message_async(
+                        _cid, user.id, "user", f"[MUTED-ARCHIVE] {_mt}",
+                        user_name=user.first_name or "x", username=u_uname,
+                        chat_title=_ct, message_id=_mid
+                    ))
             except Exception:
                 pass
-            raise ApplicationHandlerStop()
+        raise ApplicationHandlerStop()
 
 async def global_application_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -284,7 +356,7 @@ async def private_chat_admin_only_gatekeeper(update: Update, context: ContextTyp
         if now - last_sent >= 5.0:
             _PV_LOCK_NOTIFIED[user.id] = now
             if len(_PV_LOCK_NOTIFIED) > 2000:
-                for k in list(_PV_LOCK_NOTIFIED.keys())[:500]:
+                for k in list(islice(_PV_LOCK_NOTIFIED, 500)):
                     _PV_LOCK_NOTIFIED.pop(k, None)
             ulang, _ = _ulang_of(update)
             lock_msg = t(ulang, "pv_locked")
