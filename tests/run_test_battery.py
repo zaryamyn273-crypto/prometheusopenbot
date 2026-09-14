@@ -20,8 +20,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.core import database
-from src.core.config import ADMIN_ID
+from src.core import config, database
+if not config.ADMIN_ID:
+    config.ADMIN_ID = 99999
+ADMIN_ID = config.ADMIN_ID
+
+import src.tools.system as sys_tools
+import src.tools.admin.group_manager as grp_tools
+import src.tools.database as db_tools
+import bot
+sys_tools.ADMIN_ID = ADMIN_ID
+grp_tools.ADMIN_ID = ADMIN_ID
+db_tools.ADMIN_ID = ADMIN_ID
+bot.ADMIN_ID = ADMIN_ID
+database.ADMIN_ID = ADMIN_ID
 from src.tools.database import (
     cloudflare_d1_store_record,
     cloudflare_d1_retrieve_record,
@@ -72,7 +84,7 @@ async def test_cloudflare_d1():
     # 1. Store record
     t0 = time.time()
     try:
-        res_store = await cloudflare_d1_store_record(key=test_key, value=test_val, category=category)
+        res_store = await cloudflare_d1_store_record(key=test_key, value=test_val, category=category, caller_id=ADMIN_ID)
         lat = (time.time() - t0) * 1000
         ok = "با موفقیت" in res_store and test_key in res_store
         record("cloudflare_d1_store_record", ok, res_store, lat)
@@ -132,7 +144,7 @@ async def test_cloudflare_kv():
     # 1. KV Store
     t0 = time.time()
     try:
-        res_store = await cloudflare_kv_store(key=test_key, value=test_val, ttl_seconds=300)
+        res_store = await cloudflare_kv_store(key=test_key, value=test_val, ttl_seconds=300, caller_id=ADMIN_ID)
         lat = (time.time() - t0) * 1000
         ok = "با موفقیت" in res_store and test_key in res_store
         record("cloudflare_kv_store", ok, res_store, lat)
@@ -142,7 +154,7 @@ async def test_cloudflare_kv():
     # 2. KV Retrieve
     t0 = time.time()
     try:
-        res_ret = await cloudflare_kv_retrieve(key=test_key)
+        res_ret = await cloudflare_kv_retrieve(key=test_key, caller_id=ADMIN_ID)
         lat = (time.time() - t0) * 1000
         ok = test_val in res_ret and "بازیابی‌شده" in res_ret
         record("cloudflare_kv_retrieve", ok, res_ret, lat)
@@ -423,6 +435,7 @@ async def test_bot_handlers_and_stop_switch():
     context.args = []
     context.bot = MagicMock()
     context.bot.send_chat_action = AsyncMock()
+    context.bot.send_message = AsyncMock()
 
     # 1. /start command
     up_start = make_mock_update(text="/start")
@@ -475,6 +488,7 @@ async def test_bot_handlers_and_stop_switch():
 
     # 8. Master-Admin STOP switch in Group
     test_group_id = -100987654321
+    database._ACTIVE_GROUPS[test_group_id] = {"title": "Test Group", "status": "active"}
     up_stop = make_mock_update(user_id=ADMIN_ID, chat_id=test_group_id, chat_type=ChatType.SUPERGROUP, text="پرومته ساکت")
     await bot.main_message_handler(up_stop, context)
     is_stopped = test_group_id in bot._STOPPED_CHATS
@@ -621,8 +635,8 @@ async def main():
     # Format report
     report_lines = []
     report_lines.append("=" * 80)
-    report_lines.append("PROMETHEUS AUTOMATED VERIFICATION & MONITORING REPORT")
-    report_lines.append(f"Generated at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    from datetime import timezone
+    report_lines.append(f"Generated at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     report_lines.append(f"Total Execution Time: {t_total:.2f}s")
     report_lines.append(f"Success Rate: {passed_count}/{total_count} ({passed_count/total_count*100:.1f}%)")
     report_lines.append("=" * 80)
@@ -694,9 +708,11 @@ async def main():
 
     report_content = "\n".join(report_lines) + "\n"
     
-    with open("/tmp/report_db_admin.txt", "w", encoding="utf-8") as f:
+    import tempfile
+    rep_file = os.path.join(tempfile.gettempdir(), "report_db_admin.txt")
+    with open(rep_file, "w", encoding="utf-8") as f:
         f.write(report_content)
-    print("\nReport successfully written to /tmp/report_db_admin.txt")
+    print(f"\nReport successfully written to {rep_file}")
 
 if __name__ == "__main__":
     asyncio.run(main())

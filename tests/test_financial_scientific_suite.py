@@ -406,7 +406,8 @@ async def main():
     fin_results, sci_results = await execute_all_tests()
     report = generate_report(fin_results, sci_results)
     
-    report_path = "/tmp/report_financial_scientific.txt"
+    import tempfile
+    report_path = os.path.join(tempfile.gettempdir(), "report_financial_scientific.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"Successfully wrote full findings and report to {report_path}")

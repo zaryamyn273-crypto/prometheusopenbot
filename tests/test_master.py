@@ -85,14 +85,20 @@ async def run_master_audit():
 
     # 7. System Sandbox & Admin Tools (E2B-only: local exec is DISABLED by design)
     print('\n7. Sandbox & System Diagnostics:')
-    py_exec = await system.execute_python_code('print(list(range(5)))', caller_id=config.ADMIN_ID)
-    if config.has_e2b():
-        assert '[0, 1, 2, 3, 4]' in py_exec
-    else:
-        assert 'خاموش' in py_exec or 'DISABLED' in py_exec or 'E2B_API_KEY' in py_exec
-    diag = system.admin_system_diagnostics()
-    assert 'CPU' in diag and 'RAM' in diag
-    print('   ✅ Python Sandbox & Server Diagnostics: OK')
+    _test_admin = config.ADMIN_ID if config.ADMIN_ID > 0 else 99999
+    _orig_admin = system.ADMIN_ID
+    system.ADMIN_ID = _test_admin
+    try:
+        py_exec = await system.execute_python_code('print(list(range(5)))', caller_id=_test_admin)
+        if config.has_e2b():
+            assert '[0, 1, 2, 3, 4]' in py_exec
+        else:
+            assert 'خاموش' in py_exec or 'DISABLED' in py_exec or 'E2B_API_KEY' in py_exec
+        diag = system.admin_system_diagnostics(caller_id=_test_admin)
+        assert 'CPU' in diag and 'RAM' in diag
+        print('   ✅ Python Sandbox & Server Diagnostics: OK')
+    finally:
+        system.ADMIN_ID = _orig_admin
 
     # 8. GitHub Tools (12 GitHub tools)
     print('\n8. GitHub Tools:')
@@ -135,7 +141,10 @@ async def run_master_audit():
     t_ai = time.time() - t0
     print(f'   AI Response Latency: {t_ai:.2f}s')
     print('   AI Response Content:\n', ai_res)
-    assert 'بیت' in ai_res or 'BTC' in ai_res or '$' in ai_res
+    if config.ROUTER_API_KEY:
+        assert 'بیت' in ai_res or 'BTC' in ai_res or '$' in ai_res
+    else:
+        assert 'ROUTER_API_KEY' in ai_res or 'مغز AI' in ai_res
     print('   ✅ Autonomous Agent Loop & Multi-Tool Execution: OK')
 
     print('\n========================================================')

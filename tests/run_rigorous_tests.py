@@ -208,9 +208,11 @@ async def main():
     print("==================================================")
 
     # Save structured JSON
-    with open("/tmp/search_network_test_results.json", "w", encoding="utf-8") as f:
+    import tempfile
+    res_file = os.path.join(tempfile.gettempdir(), "search_network_test_results.json")
+    with open(res_file, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
-    print("Saved test results to /tmp/search_network_test_results.json")
+    print(f"Saved test results to {res_file}")
 
 if __name__ == "__main__":
     asyncio.run(main())

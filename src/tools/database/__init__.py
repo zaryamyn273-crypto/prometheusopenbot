@@ -34,7 +34,7 @@ async def cloudflare_kv_store(
     :param ttl_seconds: مدت زمان ماندگاری به ثانیه (پیش‌فرض: ۸۶۴۰۰ ثانیه معادل ۲۴ ساعت)
     """
     try:
-        if int(caller_id or 0) != int(ADMIN_ID):
+        if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
             return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
     except Exception:
         return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
@@ -66,7 +66,7 @@ async def cloudflare_kv_retrieve(
     :param key: کلید یا شناسه داده‌ای که قبلاً ذخیره شده است
     """
     try:
-        if int(caller_id or 0) != int(ADMIN_ID):
+        if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
             return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
     except Exception:
         return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
@@ -97,7 +97,7 @@ async def cloudflare_d1_store_record(
     :param category: دسته‌بندی اختیاری (مثال: configs, notes, rules)
     """
     try:
-        if int(caller_id or 0) != int(ADMIN_ID):
+        if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
             return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
     except Exception:
         return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."

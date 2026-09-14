@@ -4,12 +4,9 @@ Enables Master Admin to monitor service health, view deployments, inspect enviro
 fetch build/deploy logs, and trigger instant redeploys directly via Railway GraphQL API.
 """
 
-import asyncio
-import html
 import logging
 import os
-import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from src.core import config, database
 from src.core.http import shared_client_ctx
@@ -139,10 +136,10 @@ async def railway_status_tool(caller_id: int = 0) -> str:
     """استعلام وضعیت سرورها، وضعیت دیپلوی و سرویس‌های در حال اجرای ریلوی."""
     try:
         from src.core.config import ADMIN_ID
-        if int(caller_id or 0) != int(ADMIN_ID):
+        if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
             return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
     except Exception:
-        pass
+        return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
 
     try:
         proj_id, env_id, svcs = await _resolve_project_and_services()
@@ -175,16 +172,16 @@ async def railway_status_tool(caller_id: int = 0) -> str:
         pname = p.get("name") or "پروژه ریلوی"
 
         lines = [
-            f"🚂 *داشبورد ابری ریلوی (Railway Infrastructure)*",
+            "🚂 *داشبورد ابری ریلوی (Railway Infrastructure)*",
             f"• *پروژه*: `{pname}` (`{proj_id}`)",
             f"• *محیط عملیاتی*: `production` (`{env_id}`)\n",
-            f"📦 *وضعیت سرویس‌های فعال:*"
+            "📦 *وضعیت سرویس‌های فعال:*"
         ]
 
         for s_edge in (p.get("services") or {}).get("edges") or []:
             snode = s_edge.get("node") or {}
             sname = snode.get("name") or "سرویس"
-            sid = snode.get("id")
+            sid = snode.get("id") or ""
             dep_edges = (snode.get("deployments") or {}).get("edges") or []
             if dep_edges:
                 last_dep = dep_edges[0].get("node") or {}
@@ -197,7 +194,8 @@ async def railway_status_tool(caller_id: int = 0) -> str:
                     badge = "🟡 در حال بیلد / دیپلوی (BUILDING)"
                 else:
                     badge = f"🔴 {status}"
-                lines.append(f"• *{sname}*: {badge}\n  - دیپلوی: `{dep_id}` ({created} UTC)")
+                sid_str = f" (`{sid[:8]}`)" if sid else ""
+                lines.append(f"• *{sname}*{sid_str}: {badge}\n  - دیپلوی: `{dep_id}` ({created} UTC)")
             else:
                 lines.append(f"• *{sname}*: وضعیت اولیه")
 
@@ -217,10 +215,10 @@ async def railway_redeploy_tool(service_name: str = "prometheusopenbot", caller_
     """
     try:
         from src.core.config import ADMIN_ID
-        if int(caller_id or 0) != int(ADMIN_ID):
+        if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
             return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
     except Exception:
-        pass
+        return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
 
     try:
         proj_id, env_id, svcs = await _resolve_project_and_services()
@@ -264,10 +262,10 @@ async def railway_redeploy_tool(service_name: str = "prometheusopenbot", caller_
 async def railway_variables_tool(service_name: str = "prometheusopenbot", caller_id: int = 0) -> str:
     try:
         from src.core.config import ADMIN_ID
-        if int(caller_id or 0) != int(ADMIN_ID):
+        if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
             return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
     except Exception:
-        pass
+        return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
 
     try:
         proj_id, env_id, svcs = await _resolve_project_and_services()

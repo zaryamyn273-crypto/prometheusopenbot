@@ -154,7 +154,7 @@ async def execute_python_code(code: str, caller_id: int = 0, is_private_chat: bo
     """
     :param code: متن کد پایتون جهت اجرا
     """
-    if int(caller_id or 0) != int(ADMIN_ID):
+    if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
         return "⛔ دسترسی غیرمجاز! اجرای شل و کدهای سیستمی روی سرور ربات منحصراً در انحصار شخص فرمانده ارشد سیستم است."
 
     clean_code = code.strip()
@@ -227,29 +227,44 @@ async def execute_python_code(code: str, caller_id: int = 0, is_private_chat: bo
     category="admin"
 )
 def admin_system_diagnostics(caller_id: int = 0) -> str:
-    if caller_id != ADMIN_ID:
+    if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
         return "❌ استعلام تله‌متری و مشخصات سرور منحصراً مختص فرمانده ارشد سیستم است."
     try:
         import time as _t
-        cpu_usage = psutil.cpu_percent(interval=0.1)
-        mem = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
+        try:
+            cpu_val = psutil.cpu_percent(interval=0.1)
+            cpu_txt = f"*{cpu_val}%*"
+        except Exception:
+            cpu_txt = "*نامشخص (محدودیت دسترسی)*"
+
+        try:
+            mem = psutil.virtual_memory()
+            mem_used_gb = mem.used / (1024 ** 3)
+            mem_total_gb = mem.total / (1024 ** 3)
+            mem_txt = f"*{mem_used_gb:.2f} GB* از *{mem_total_gb:.2f} GB* ({mem.percent}%)"
+        except Exception:
+            mem_txt = "*نامشخص*"
+
+        try:
+            disk = psutil.disk_usage('/')
+            disk_free_gb = disk.free / (1024 ** 3)
+            disk_total_gb = disk.total / (1024 ** 3)
+            disk_txt = f"*{disk_free_gb:.2f} GB آزاد* از *{disk_total_gb:.2f} GB*"
+        except Exception:
+            disk_txt = "*نامشخص*"
+
         try:
             load1, load5, load15 = psutil.getloadavg()
             load_txt = f"`{load1:.2f} / {load5:.2f} / {load15:.2f}`"
         except Exception:
             load_txt = "نامشخص"
+
         try:
             boot_ts = psutil.boot_time()
             up_sec = int(_t.time() - boot_ts)
             up_txt = f"`{up_sec // 3600}h {(up_sec % 3600) // 60}m`"
         except Exception:
             up_txt = "نامشخص"
-
-        mem_used_gb = mem.used / (1024 ** 3)
-        mem_total_gb = mem.total / (1024 ** 3)
-        disk_free_gb = disk.free / (1024 ** 3)
-        disk_total_gb = disk.total / (1024 ** 3)
 
         try:
             from src.core.pipeline.telemetry import PerformanceTelemetry
@@ -268,9 +283,9 @@ def admin_system_diagnostics(caller_id: int = 0) -> str:
         return (
             f"🖥 *وضعیت و تله‌متری سرور پرومته*:\n\n"
             f"• *سیستم‌عامل*: `{platform.system()} {platform.release()}`\n"
-            f"• *پردازنده (CPU)*: *{cpu_usage}%* (load: {load_txt})\n"
-            f"• *حافظه رم (RAM)*: *{mem_used_gb:.2f} GB* از *{mem_total_gb:.2f} GB* ({mem.percent}%)\n"
-            f"• *فضای دیسک*: *{disk_free_gb:.2f} GB آزاد* از *{disk_total_gb:.2f} GB*\n"
+            f"• *پردازنده (CPU)*: {cpu_txt} (load: {load_txt})\n"
+            f"• *حافظه رم (RAM)*: {mem_txt}\n"
+            f"• *فضای دیسک*: {disk_txt}\n"
             f"• *آپ‌تایم سرور*: {up_txt}\n"
             f"• *نسخه پایتون*: `{platform.python_version()}`\n"
             f"• *وضعیت کلی*: 🟢 *عملیاتی و ۱۰۰٪ پایدار*"
@@ -300,7 +315,7 @@ async def extract_user_id_tool(
     except Exception:
         _ADMIN = 0
     try:
-        if int(caller_id or 0) != int(_ADMIN):
+        if not caller_id or int(caller_id or 0) <= 0 or int(_ADMIN or 0) <= 0 or int(caller_id) != int(_ADMIN):
             return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
     except Exception:
         return "❌ این ابزار منحصراً در اختیار فرمانده ارشد است."
@@ -365,7 +380,7 @@ async def extract_user_id_tool(
             f"• <b>تعداد پیام‌های ثبت‌شده:</b> <code>{msg_cnt} پیام</code>",
             f"• <b>وضعیت دسترسی:</b> {status_badge}",
             "",
-            f"<i>💡 دستورات مدیریتی سریع:</i>",
+            "<i>💡 دستورات مدیریتی سریع:</i>",
             f"<code>/ban {uid}</code>  |  <code>/mute {uid} 30m</code>  |  <code>/unban {uid}</code>"
         ]
         return "\n".join([line for line in lines if line])
@@ -817,7 +832,7 @@ async def purge_chat_messages_tool(
     :param chat_id: شناسه عددی چت
     """
     from src.core.config import ADMIN_ID
-    if caller_id and int(caller_id) != int(ADMIN_ID):
+    if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
         return "⛔ حذف دسته‌جمعی پیام‌ها منحصراً در انحصار فرمانده ارشد یا مدیر گروه است."
 
     target_count = max(1, min(100, int(count or 10)))

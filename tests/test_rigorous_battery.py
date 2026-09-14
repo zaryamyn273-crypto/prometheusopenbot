@@ -361,7 +361,9 @@ async def main():
         "failures": failed
     }
     
-    with open("/tmp/test_battery_results.json", "w", encoding="utf-8") as fp:
+    import tempfile
+    result_path = os.path.join(tempfile.gettempdir(), "test_battery_results.json")
+    with open(result_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, ensure_ascii=False, indent=2)
         
     print(f"=== Battery Finished: {len(passed)} PASS / {len(failed)} FAIL out of {len(results)} tests ===")

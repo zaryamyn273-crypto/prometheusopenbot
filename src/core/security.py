@@ -36,6 +36,10 @@ def _build_secrets_list() -> List[str]:
         getattr(_config, "E2B_API_KEY", ""),
         os.getenv("RAILWAY_TOKEN", ""),
         os.getenv("RAILWAY_API_TOKEN", ""),
+        getattr(_config, "RAILWAY_TOKEN", ""),
+        getattr(_config, "get_railway_token", lambda: "")(),
+        getattr(_config, "get_github_token", lambda: "")(),
+        getattr(_config, "get_e2b_api_key", lambda: "")(),
         os.getenv("API_KEY_SECRET", ""),
     ]
     out = []

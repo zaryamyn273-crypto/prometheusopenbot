@@ -40,7 +40,9 @@ _DANGER_TOKENS = (
 
 def _is_admin(caller_id: int) -> bool:
     try:
-        return int(caller_id or 0) == int(ADMIN_ID)
+        cid = int(caller_id or 0)
+        aid = int(ADMIN_ID or 0)
+        return cid > 0 and aid > 0 and cid == aid
     except Exception:
         return False
 

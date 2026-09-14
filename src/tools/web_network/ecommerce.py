@@ -126,7 +126,9 @@ async def amazon_search(query: str, max_results: int = 5) -> str:
     if not products:
         try:
             from src.tools.web_network import web_search
-            fallback_res = await web_search(f"site:amazon.com/dp {clean_q}", max_results=max_results)
+            fallback_res = await web_search(f"site:amazon.com {clean_q}", max_results=max_results)
+            if not fallback_res or "یافت نشد" in fallback_res:
+                fallback_res = await web_search(f"amazon {clean_q} price", max_results=max_results)
             if fallback_res and "یافت نشد" not in fallback_res:
                 out_text = f"📦 *نتایج جستجوی آمازون (Amazon) برای «{clean_q}»:*\n\n{fallback_res}"
                 _L1_ECOMMERCE_CACHE[cache_key] = (now, out_text)
@@ -244,7 +246,9 @@ async def ebay_search(query: str, condition: str = "all", max_results: int = 5) 
     if not items:
         try:
             from src.tools.web_network import web_search
-            fallback_res = await web_search(f"site:ebay.com/itm {clean_q}", max_results=max_results)
+            fallback_res = await web_search(f"site:ebay.com {clean_q}", max_results=max_results)
+            if not fallback_res or "یافت نشد" in fallback_res:
+                fallback_res = await web_search(f"ebay {clean_q} price", max_results=max_results)
             if fallback_res and "یافت نشد" not in fallback_res:
                 out_text = f"🛒 *نتایج استعلام از eBay برای «{clean_q}»:*\n\n{fallback_res}"
                 _L1_ECOMMERCE_CACHE[cache_key] = (now, out_text)

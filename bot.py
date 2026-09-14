@@ -1,4 +1,6 @@
 import io
+import os
+import datetime
 import html
 import json
 import time
@@ -8,7 +10,7 @@ import re
 import functools
 from collections import deque
 from itertools import islice
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple
 
 from telegram import (
     Update,
@@ -890,13 +892,13 @@ async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ulang, _ = _ulang_of(update)
     prompt = " ".join(context.args).strip() if context.args else ""
     if not prompt:
-        await reply_safely(
-            message,
+        help_txt = (
             "🎨 <b>دستور تولید تصویر با هوش مصنوعی:</b>\n"
             "<code>/image &lt;توصیف تصویر مورد نظر&gt;</code>\n\n"
             "<i>مثال:</i>\n"
             "<code>/image یک گربه فضانورد با کلاه شیشه‌ای روی سطح مریخ با کیفیت 4k سینمایی</code>"
         )
+        await reply_safely(message, await _maybe_translate(update, help_txt))
         return
 
     # Keep-alive uploading photo indicator
@@ -938,10 +940,10 @@ async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
         err_msg = res.get("error", "متأسفانه در تولید تصویر خطایی رخ داد.")
-        await reply_safely(message, f"❌ {err_msg}")
+        await reply_safely(message, await _maybe_translate(update, f"❌ {err_msg}"))
     except Exception as e:
         logger.error(f"Error in image_command: {e}")
-        await reply_safely(message, "❌ خطا در پردازش تصویر با هوش مصنوعی.")
+        await reply_safely(message, await _maybe_translate(update, "❌ خطا در پردازش تصویر با هوش مصنوعی."))
     finally:
         upload_active = False
         upload_task.cancel()
@@ -992,8 +994,7 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if chat.type == ChatType.PRIVATE:
-        await reply_safely(
-            message,
+        summary_help = (
             "📋 <b>دستور خلاصه‌سازی تاریخچه گروه:</b>\n"
             "این دستور برای استخراج و خلاصه‌سازی مباحث مطرح‌شده در گروه‌ها طراحی شده است.\n\n"
             "<i>فرمت استفاده در گروه:</i>\n"
@@ -1001,6 +1002,7 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• <code>/summary 100</code> (خلاصه ۱۰۰ پیام اخیر)\n"
             "• یا به صورت طبیعی در گروه بفرمایید: <i>«۵۰ پیام آخر رو خلاصه کن»</i>"
         )
+        await reply_safely(message, await _maybe_translate(update, summary_help))
         return
 
     args = list(context.args or [])
@@ -1032,10 +1034,10 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if not ai_response or not ai_response.strip():
             ai_response = "⚠️ خلاصه‌ای برای پیام‌های اخیر یافت نشد."
-        await reply_safely(message, ai_response)
+        await reply_safely(message, await _maybe_translate(update, ai_response))
     except Exception as e:
         logger.error(f"Error in summary_command: {e}")
-        await reply_safely(message, "❌ خطا در خلاصه‌سازی پیام‌های گروه.")
+        await reply_safely(message, await _maybe_translate(update, "❌ خطا در خلاصه‌سازی پیام‌های گروه."))
     finally:
         typing_active = False
         typing_task.cancel()
@@ -1071,7 +1073,7 @@ async def digikala_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     q = " ".join(context.args).strip() if context.args else ""
     if not q:
-        await reply_safely(message, "🛍 لطفاً نام محصول مورد نظر برای استعلام در دیجی‌کالا را وارد کنید.\nمثال: `/digikala گوشی سامسونگ s24`")
+        await reply_safely(message, await _maybe_translate(update, "🛍 لطفاً نام محصول مورد نظر برای استعلام در دیجی‌کالا را وارد کنید.\nمثال: `/digikala گوشی سامسونگ s24`"))
         return
     try:
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
@@ -1079,13 +1081,13 @@ async def digikala_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     from src.tools.web_network import digikala_search
     res = await digikala_search(q)
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def amazon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     q = " ".join(context.args).strip() if context.args else ""
     if not q:
-        await reply_safely(message, "📦 لطفاً نام کالا برای استعلام دلاری در آمازون را وارد کنید.\nمثال: `/amazon macbook air m3`")
+        await reply_safely(message, await _maybe_translate(update, "📦 لطفاً نام کالا برای استعلام دلاری در آمازون را وارد کنید.\nمثال: `/amazon macbook air m3`"))
         return
     try:
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
@@ -1093,13 +1095,13 @@ async def amazon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     from src.tools.web_network.ecommerce import amazon_search
     res = await amazon_search(q)
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def ebay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     q = " ".join(context.args).strip() if context.args else ""
     if not q:
-        await reply_safely(message, "🛒 لطفاً نام کالا برای استعلام در eBay را وارد کنید.\nمثال: `/ebay thinkpad x1 carbon`")
+        await reply_safely(message, await _maybe_translate(update, "🛒 لطفاً نام کالا برای استعلام در eBay را وارد کنید.\nمثال: `/ebay thinkpad x1 carbon`"))
         return
     try:
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
@@ -1107,13 +1109,13 @@ async def ebay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     from src.tools.web_network.ecommerce import ebay_search
     res = await ebay_search(q)
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def reddit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     q = " ".join(context.args).strip() if context.args else ""
     if not q:
-        await reply_safely(message, "👽 لطفاً عبارت مورد نظر برای کاوش در ردیت را وارد کنید.\nمثال: `/reddit python asyncio`")
+        await reply_safely(message, await _maybe_translate(update, "👽 لطفاً عبارت مورد نظر برای کاوش در ردیت را وارد کنید.\nمثال: `/reddit python asyncio`"))
         return
     try:
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
@@ -1121,7 +1123,7 @@ async def reddit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     from src.tools.dev import reddit_search
     res = await reddit_search(q)
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from src.tools.admin import group_manager
@@ -1919,8 +1921,7 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args or []
     if len(args) < 2:
-        await reply_safely(
-            message,
+        remind_help = (
             "⏰ <b>فرمت دستور زمان‌بندی و یادآوری:</b>\n"
             "<code>/remind &lt;زمان&gt; &lt;متن یادآوری&gt;</code>\n\n"
             "<i>مثال‌ها:</i>\n"
@@ -1929,6 +1930,7 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• <code>/remind 14:00 چک کردن بازار</code>\n"
             "• <code>/remind هر_روز_12 قیمت طلا رو بفرست</code>"
         )
+        await reply_safely(message, await _maybe_translate(update, remind_help))
         return
 
     time_part = args[0].replace("_", " ")
@@ -1945,14 +1947,13 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_lang=ulang_code,
     )
     if not res.get("success"):
-        await reply_safely(message, f"❌ {res.get('error', 'خطا در ثبت یادآوری.')}")
+        await reply_safely(message, await _maybe_translate(update, f"❌ {res.get('error', 'خطا در ثبت یادآوری.')}"))
         return
 
     jid = res.get("job_id")
     recur_txt = "🔁 <b>تکرارشونده</b>" if res.get("is_recurring") else "⏱ <b>یک‌باره</b>"
     tip_txt = f"\n\n<i>{res.get('tip')}</i>" if res.get("tip") else ""
-    await reply_safely(
-        message,
+    success_txt = (
         f"✅ <b>یادآوری با موفقیت در سیستم زمان‌بندی پرومته ثبت شد:</b>\n\n"
         f"• <b>شناسه تسک:</b> <code>#{jid}</code>\n"
         f"• <b>متن:</b> {html.escape(title_part)}\n"
@@ -1962,6 +1963,7 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• <b>موعد اجرا:</b> <code>{res.get('next_run_formatted')}</code>\n\n"
         f"<i>💡 برای لغو:</i> <code>/cancel_schedule {jid}</code>{tip_txt}"
     )
+    await reply_safely(message, await _maybe_translate(update, success_txt))
 
 async def schedules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lists active schedules for current chat or user."""
@@ -1973,7 +1975,7 @@ async def schedules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     from src.tools.system import list_scheduled_tasks_tool
     res = await list_scheduled_tasks_tool(chat_id=chat.id, caller_id=user.id)
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def cancel_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancels a schedule by ID: /cancel_schedule <id>"""
@@ -1984,13 +1986,14 @@ async def cancel_schedule_command(update: Update, context: ContextTypes.DEFAULT_
 
     args = context.args or []
     if not args or not args[0].lstrip("#").isdigit():
-        await reply_safely(message, "⚠️ فرمت دستور:\n<code>/cancel_schedule &lt;شناسه عددی تسک&gt;</code>\nمثال: <code>/cancel_schedule 3</code>")
+        cs_help = "⚠️ فرمت دستور:\n<code>/cancel_schedule &lt;شناسه عددی تسک&gt;</code>\nمثال: <code>/cancel_schedule 3</code>"
+        await reply_safely(message, await _maybe_translate(update, cs_help))
         return
 
     task_id = int(args[0].lstrip("#"))
     from src.tools.system import cancel_scheduled_task_tool
     res = await cancel_scheduled_task_tool(task_id=task_id, caller_id=user.id)
-    await reply_safely(message, res)
+    await reply_safely(message, await _maybe_translate(update, res))
 
 async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sets or views user timezone: /timezone or /timezone <city/zone>"""
@@ -2005,14 +2008,14 @@ async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_tz = await database.get_user_timezone_async(user.id)
         tz_obj, canon_tz = scheduler.resolve_user_timezone(current_tz)
         now_in_tz = datetime.datetime.now(tz_obj).strftime("%H:%M")
-        await reply_safely(
-            message,
+        tz_info_txt = (
             f"🌍 <b>منطقه زمانی فعلی شما:</b> <code>{canon_tz}</code>\n"
             f"🕒 <b>ساعت محلی شما:</b> <code>{now_in_tz}</code>\n\n"
             f"<i>💡 برای تغییر منطقه زمانی:</i>\n"
             f"<code>/timezone &lt;نام شهر یا منطقه&gt;</code>\n"
             f"<i>مثال‌ها:</i> <code>/timezone London</code> یا <code>/timezone Berlin</code> یا <code>/timezone Tehran</code> یا <code>/timezone New York</code>"
         )
+        await reply_safely(message, await _maybe_translate(update, tz_info_txt))
         return
 
     tz_query = " ".join(args).strip()
@@ -2020,14 +2023,14 @@ async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ok = await database.set_user_timezone_async(user.id, canon_tz)
     now_in_tz = datetime.datetime.now(tz_obj).strftime("%H:%M")
     if ok:
-        await reply_safely(
-            message,
+        tz_ok_txt = (
             f"✅ <b>منطقه زمانی شما با موفقیت تنظیم شد:</b> <code>{canon_tz}</code>\n"
             f"🕒 <b>ساعت کنونی در این منطقه:</b> <code>{now_in_tz}</code>\n\n"
             f"📌 از این پس تمامی یادآوری‌ها، کرون‌جاب‌ها و زمان‌بندی‌های شما بر اساس ساعت این منطقه محاسبه و اجرا خواهند شد."
         )
+        await reply_safely(message, await _maybe_translate(update, tz_ok_txt))
     else:
-        await reply_safely(message, "❌ خطا در ذخیره منطقه زمانی.")
+        await reply_safely(message, await _maybe_translate(update, "❌ خطا در ذخیره منطقه زمانی."))
 
 # ==========================================
 # 2. Group Membership Guardian (Auto-Leave)

@@ -3,7 +3,7 @@ import logging
 import asyncio
 import json
 import time
-from bs4 import BeautifulSoup
+import re
 from typing import Dict, Any, Optional, Tuple
 
 from src.tools.registry import register_tool
@@ -23,7 +23,7 @@ def _now_tehran_str() -> str:
             from zoneinfo import ZoneInfo
             return datetime.datetime.now(ZoneInfo("Asia/Tehran")).strftime("%H:%M")
         except Exception:
-            return (datetime.datetime.utcnow() + datetime.timedelta(hours=3, minutes=30)).strftime("%H:%M")
+            return (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3, minutes=30)).strftime("%H:%M")
     except Exception:
         return ""
 
@@ -53,11 +53,10 @@ async def _refresh_tgju_task():
             keys = [
                 "price_dollar_rl", "price_eur", "price_aed", "price_gbp",
                 "price_try", "price_cny", "geram18", "sekee", "ons",
-                "mesghal", "nim", "rob", "sekeb"
+                "mesghal", "nim", "rob", "sekeb", "silver", "silver_999", "oil_brent"
             ]
             extracted = {}
             for k in keys:
-                import re
                 m = re.search(rf'data-market-row="{k}"[\s\S]{{1,2000}}?data-price="([^"]+)"', html)
                 if m:
                     extracted[k] = m.group(1).replace(",", "").strip()
@@ -73,7 +72,6 @@ async def _get_fresh_tgju_rates(force_refresh: bool = False) -> Dict[str, str]:
     Returns immediately from Hot RAM in 0.0001ms. If cache is older than 90s,
     serves existing data immediately and fires background refresh without blocking user!
     """
-    global _TGJU_PARSED_CACHE, _TGJU_PARSED_TS
     now = time.time()
     if _TGJU_PARSED_CACHE:
         if not force_refresh and (now - _TGJU_PARSED_TS < 90.0):
@@ -287,7 +285,6 @@ async def _sync_all_crypto_prices():
 
 async def _fetch_and_cache_live_dashboard():
     """Consolidates key market indicators into a unified fast dashboard."""
-    client = get_async_client()
     dashboard = {
         "timestamp": time.time(),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
@@ -583,7 +580,6 @@ async def _refresh_nobitex_stats() -> Dict[str, Any]:
     return _NOBITEX_STATS_CACHE
 
 async def _get_nobitex_price(symbol: str, global_usd: float = 0.0) -> Optional[Dict[str, Any]]:
-    global _NOBITEX_STATS_CACHE, _NOBITEX_STATS_TS
     sym_low = symbol.lower()
     pair_key = f"{sym_low}-rls"
 
@@ -802,7 +798,7 @@ async def get_gold_and_coin_price(force_refresh: bool = False) -> str:
 
         # Coin Breakdown
         if p_sekkeh:
-            lines.append(f"\n🪙 *نرخ مسکوکات طلا*:")
+            lines.append("\n🪙 *نرخ مسکوکات طلا*:")
             lines.append(f"• *سکه تمام بهار آزادی (امامی)*: *{p_sekkeh:,} تومان* (معادل *{p_sekkeh*10:,} ریال*)")
         if p_bahar:
             lines.append(f"• *سکه بهار آزادی (طرح قدیم)*: *{p_bahar:,} تومان*")
@@ -863,11 +859,13 @@ async def get_commodities_price(force_refresh: bool = False) -> str:
     rates = await _get_fresh_tgju_rates(force_refresh=force_refresh)
     silver_ons = _safe_float(rates.get("silver"))
     silver_999 = _safe_toman(rates.get("silver_999"))
-    silver_925 = _safe_toman(rates.get("silver_925"))
+    silver_925 = _safe_toman(rates.get("silver_925")) or (int(silver_999 * 0.925) if silver_999 else 0)
     oil_brent = _safe_float(rates.get("oil_brent"))
     oil_wti = _safe_float(rates.get("oil"))
     oil_opec = _safe_float(rates.get("oil_opec"))
     ratio_silver = _safe_float(rates.get("ratio_silver"))
+    if not ratio_silver and silver_ons > 0 and _safe_float(rates.get("ons")) > 0:
+        ratio_silver = _safe_float(rates.get("ons")) / silver_ons
 
     lines = ["🛢 *تابلوی زنده فلزات گرانبها، انرژی و نفت جهانی*:\n"]
     if silver_ons > 0:

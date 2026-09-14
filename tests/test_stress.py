@@ -10,8 +10,15 @@ import asyncio
 import sys
 import time
 
-from src.core.config import ADMIN_ID
-ADMIN = ADMIN_ID or 123456789
+import src.core.config as cfg
+if not cfg.ADMIN_ID:
+    cfg.ADMIN_ID = 123456789
+ADMIN = cfg.ADMIN_ID
+
+import src.tools.system as sys_mod
+import src.tools.admin as adm_mod
+sys_mod.ADMIN_ID = ADMIN
+adm_mod.ADMIN_ID = ADMIN
 
 from src.tools.registry import REGISTRY, execute_registered_tool
 
@@ -121,6 +128,32 @@ CASES = {
     "bot_file_fallback_publish": ({"title": "t", "content": "متن تست"}, 60),
     "bot_qr_fallback": ({"text_or_url": "https://t.me"}, 30),
     "bot_history_recall": ({"query": "سلام", "chat_id": 0}, 40),
+    # --- ecommerce / osint / scheduler / railway / new tools ---
+    "amazon_search": ({"query": "laptop"}, 40),
+    "ebay_search": ({"query": "watch"}, 40),
+    "cancel_scheduled_task_tool": ({"task_id": 999999, "caller_id": ADMIN}, 30),
+    "schedule_task_tool": ({"title": "test", "when": "10m", "caller_id": ADMIN, "chat_id": 0}, 30),
+    "list_scheduled_tasks_tool": ({"caller_id": ADMIN}, 30),
+    "set_user_timezone_tool": ({"timezone_or_city": "Tehran", "caller_id": ADMIN}, 30),
+    "generate_ai_image": ({"prompt": "sunset"}, 40),
+    "generate_barcode_tool": ({"data": "123456789012"}, 30),
+    "reconstruct_damaged_barcode_tool": ({"damaged_data": "123456789012"}, 30),
+    "osint_domain_dns": ({"domain": "google.com"}, 40),
+    "osint_ip_intelligence": ({"ip": "8.8.8.8"}, 40),
+    "osint_person_dossier": ({"target": "test"}, 40),
+    "osint_phone_intelligence": ({"phone": "+989123456789"}, 40),
+    "railway_status_tool": ({"caller_id": ADMIN}, 40),
+    "railway_redeploy_tool": ({"caller_id": ADMIN}, 40),
+    "railway_variables_tool": ({"caller_id": ADMIN}, 40),
+    "mute_bot_self_tool": ({"chat_id": 0, "caller_id": ADMIN}, 30),
+    "unmute_bot_self_tool": ({"chat_id": 0, "caller_id": ADMIN}, 30),
+    "purge_chat_messages_tool": ({"chat_id": 0, "caller_id": ADMIN, "count": 1}, 30),
+    "summarize_group_history_tool": ({"chat_id": 0, "caller_id": ADMIN}, 30),
+    "github_create_repository": ({"name": "test-dry", "caller_id": ADMIN}, 30),
+    "github_create_or_update_file": ({"repo": "test/test", "path": "test.txt", "content": "hello", "message": "init", "caller_id": ADMIN}, 30),
+    "github_generate_cmake": ({"project_name": "TestProj"}, 30),
+    "github_generate_pkgbuild": ({"pkgname": "test-pkg"}, 30),
+    "get_commodities_price": ({}, 40),
 }
 
 FAILURE_HINTS = ("اختلال", "در دسترس نیست", "موجود نیست", "موفق نشد", "خطا در اجرا", "Traceback")
@@ -129,7 +162,7 @@ FAILURE_HINTS = ("اختلال", "در دسترس نیست", "موجود نیس�
 SOFT_OK_MARKERS = ("اما اطلاعات مرتبط", "بازیابی خودکار")
 
 
-EXPECTED_FAIL = {"ban_group_by_name_or_id_tool", "leave_group_by_admin_tool"}  # dry-run guards: PASS = correct refusal
+EXPECTED_FAIL = {"ban_group_by_name_or_id_tool", "leave_group_by_admin_tool", "github_create_repository", "github_create_or_update_file"}  # dry-run guards: PASS = correct refusal
 
 
 def _verdict(name, out):

@@ -116,7 +116,8 @@ async def tavily_search_raw(query: str, max_results: int = 5, search_depth: str 
                 continue
             except Exception as e:
                 last_err = str(e)[:100]
-                continue
+        if last_err:
+            logger.debug(f"Tavily search attempts finished without success: {last_err}")
         return {}
     except Exception as e:
         logger.debug(f"Tavily search failed: {e}")
@@ -600,17 +601,9 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
             return await _format_and_cache(combined_secondary)
     except Exception:
         pass
-    except Exception:
-        r_bing, r_brave, r_mojeek, r_instant, r_wiki = [], [], [], [], []
 
-    engine_order = (r_tavily, r_ddg, r_bing, r_brave, r_mojeek, r_wiki, r_instant)
-    combined_results = []
-    for engine_res in engine_order:
-        if isinstance(engine_res, list) and engine_res:
-            combined_results.extend(engine_res)
-
-    if combined_results:
-        deduped = _filter_and_dedup(combined_results, clean_q, max_results + 2)
+    if collected_results:
+        deduped = _filter_and_dedup(collected_results, clean_q, max_results + 2)
         if deduped:
             return await _format_and_cache(deduped)
 

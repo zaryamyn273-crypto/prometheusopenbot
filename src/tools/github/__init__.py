@@ -4,9 +4,8 @@ import base64
 import re
 import urllib.parse
 from bs4 import BeautifulSoup
-from typing import Dict
+from typing import Dict, Any
 from src.tools.registry import register_tool
-from src.core.config import GITHUB_TOKEN
 from src.core import database
 
 logger = logging.getLogger(__name__)
@@ -858,7 +857,7 @@ def github_generate_pkgbuild(
 
     dep_list = " ".join(f"'{x}'" for x in (depends or "glibc").split() if x)
     make_list = " ".join(f"'{x}'" for x in (makedepends or "cmake git").split() if x)
-    src_val = source_url.strip() or f"\"$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz\""
+    src_val = source_url.strip() or r'"$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz"'
 
     b_type = (build_type or "cmake").lower()
     if b_type == "cmake":
