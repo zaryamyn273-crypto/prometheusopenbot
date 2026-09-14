@@ -135,8 +135,8 @@ async def _resolve_project_and_services() -> Tuple[str, str, Dict[str, str]]:
 async def railway_status_tool(caller_id: int = 0) -> str:
     """استعلام وضعیت سرورها، وضعیت دیپلوی و سرویس‌های در حال اجرای ریلوی."""
     try:
-        from src.core.config import ADMIN_ID
-        if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
+        from src.core.config import ADMIN_ID, is_admin_id
+        if not caller_id or int(caller_id or 0) <= 0 or not is_admin_id(caller_id):
             return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
     except Exception:
         return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
@@ -214,8 +214,8 @@ async def railway_redeploy_tool(service_name: str = "prometheusopenbot", caller_
     :param service_name: نام سرویس مورد نظر ('prometheusopenbot', '9router', یا خالی برای ربات فعلی)
     """
     try:
-        from src.core.config import ADMIN_ID
-        if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
+        from src.core.config import ADMIN_ID, is_admin_id
+        if not caller_id or int(caller_id or 0) <= 0 or not is_admin_id(caller_id):
             return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
     except Exception:
         return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
@@ -261,8 +261,8 @@ async def railway_redeploy_tool(service_name: str = "prometheusopenbot", caller_
 )
 async def railway_variables_tool(service_name: str = "prometheusopenbot", caller_id: int = 0) -> str:
     try:
-        from src.core.config import ADMIN_ID
-        if not caller_id or int(caller_id or 0) <= 0 or int(ADMIN_ID or 0) <= 0 or int(caller_id) != int(ADMIN_ID):
+        from src.core.config import ADMIN_ID, is_admin_id
+        if not caller_id or int(caller_id or 0) <= 0 or not is_admin_id(caller_id):
             return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
     except Exception:
         return "⛔ این ابزار منحصراً در انحصار فرمانده ارشد سیستم است."
