@@ -27,7 +27,35 @@ _IDEMPOTENT_TOOL_TTLS: Dict[str, float] = {
     "resolve_dns": 180.0,
     "check_ssl_certificate": 300.0,
 }
+_IDEMPOTENT_CACHE_MAX_SIZE = 2048
 _IDEMPOTENT_CACHE: Dict[str, Tuple[float, Any]] = {}
+_IDEMPOTENT_LOCK = threading.Lock()
+
+def _get_cached_tool_result(cache_key: str) -> Optional[Any]:
+    with _IDEMPOTENT_LOCK:
+        entry = _IDEMPOTENT_CACHE.get(cache_key)
+        if entry is None:
+            return None
+        exp_time, val = entry
+        if time.time() < exp_time:
+            return val
+        _IDEMPOTENT_CACHE.pop(cache_key, None)
+        return None
+
+def _set_cached_tool_result(cache_key: str, val: Any, ttl: float) -> None:
+    now = time.time()
+    with _IDEMPOTENT_LOCK:
+        if len(_IDEMPOTENT_CACHE) >= _IDEMPOTENT_CACHE_MAX_SIZE:
+            # Prune expired entries first
+            expired = [k for k, (exp, _) in _IDEMPOTENT_CACHE.items() if now >= exp]
+            for k in expired:
+                _IDEMPOTENT_CACHE.pop(k, None)
+            # If still at capacity, evict oldest 20%
+            if len(_IDEMPOTENT_CACHE) >= _IDEMPOTENT_CACHE_MAX_SIZE:
+                evict_count = _IDEMPOTENT_CACHE_MAX_SIZE // 5
+                for k in list(_IDEMPOTENT_CACHE.keys())[:evict_count]:
+                    _IDEMPOTENT_CACHE.pop(k, None)
+        _IDEMPOTENT_CACHE[cache_key] = (now + ttl, val)
 
 # =========================================================================
 # Lazy tool loading: tool modules are imported ONLY when actually needed.
@@ -100,10 +128,11 @@ def ensure_tool(name: str) -> bool:
     """Ensure the module owning tool `name` is loaded (bounded scan, cached)."""
     if name in REGISTRY:
         return True
-    for path in _MODULE_PATHS:
-        with _LOAD_LOCK:
-            if path in _LOADED_MODULES:
-                continue
+    with _LOAD_LOCK:
+        unloaded = [p for p in _MODULE_PATHS if p not in _LOADED_MODULES]
+    if not unloaded:
+        return name in REGISTRY or _find_tool_fuzzy(name) is not None
+    for path in unloaded:
         ensure_module(path)
         if name in REGISTRY or _find_tool_fuzzy(name) is not None:
             return True
@@ -214,6 +243,22 @@ def get_all_tool_definitions(include_internal: bool = False) -> List[Dict[str, A
 # Intelligent Tool Selector (Pre-filter tools based on query intent)
 # Reduces payload tokens from ~4000 to <1200, boosting AI generation speed 3x
 # =========================================================================
+
+# Precompiled Category Keyword Regex Index for high-throughput zero-latency tool matching
+_CATEGORY_PATTERNS: Dict[str, re.Pattern] = {}
+
+def _build_category_index():
+    global _CATEGORY_PATTERNS
+    patterns = {}
+    for cat, kws in CATEGORY_KEYWORDS.items():
+        if not kws:
+            continue
+        # Sort longest keywords first to prevent short prefixes shadowing longer phrases
+        sorted_kws = sorted(kws, key=len, reverse=True)
+        escaped = [re.escape(k) for k in sorted_kws]
+        pattern = re.compile(r"(?:" + "|".join(escaped) + r")", re.IGNORECASE)
+        patterns[cat] = pattern
+    _CATEGORY_PATTERNS = patterns
 
 CATEGORY_KEYWORDS = {
     "financial": [
