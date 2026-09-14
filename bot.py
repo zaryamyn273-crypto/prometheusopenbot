@@ -2692,32 +2692,24 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # PENDING & UNAPPROVED GROUPS: the bot stays 100% silent until the Master Admin approves.
     # NEVER auto-approves and NEVER auto-leaves: stays pending indefinitely until explicit admin action.
     if not is_pv:
-        if not database.is_group_approved(chat.id):
-            if chat.id not in database._ACTIVE_GROUPS and is_admin(user.id):
-                await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="active")
+        if database.is_group_banned(chat.id):
+            return
+        if is_admin(user.id):
+            if not database.is_group_approved(chat.id):
+                await database.set_group_status_async(chat.id, "active")
+        elif not database.is_group_approved(chat.id):
+            _msg_raw = (message.text or message.caption or "").lower()
+            _bot_u = (getattr(context.bot, "username", "") or "").lower()
+            _is_calling_bot = (
+                any(_k in _msg_raw for _k in ["پرومته", "prometheus", "پرومتئوس", "پرومتیوس", "پرومتيوس", "پرومتـه"]) or
+                (_bot_u and f"@{_bot_u}" in _msg_raw) or
+                bool(message.reply_to_message and getattr(message.reply_to_message.from_user, "id", None) == context.bot.id)
+            )
+            if _is_calling_bot:
+                await database.set_group_status_async(chat.id, "active")
             else:
                 if chat.id not in database._ACTIVE_GROUPS:
-                    await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="pending")
-                    try:
-                        await context.bot.send_message(
-                            chat_id=chat.id,
-                            text=telegram_formatter.markdown_to_telegram_html(t("fa", "group_pending")),
-                            parse_mode=ParseMode.HTML
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        await context.bot.send_message(
-                            chat_id=ADMIN_ID,
-                            text=telegram_formatter.markdown_to_telegram_html(
-                                t("fa", "pv_group_request", title=chat.title or "گروه", cid=chat.id, inviter=user.first_name or user.id)
-                            ),
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=admin_panel.get_group_approval_keyboard(chat.id)
-                        )
-                    except Exception as e:
-                        logger.warning(f"Could not notify admin of pending group {chat.id}: {e}")
-                return
+                    await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="active")
 
     ulang, ulang_name = _ulang_of(update)
     user_text = message.text or message.caption or ""
@@ -2982,6 +2974,9 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         elif "@prometheusbaibot" in user_text.lower():
             is_mentioned = True
             user_text = re.sub(r'@prometheusbaibot', '', user_text, flags=re.IGNORECASE).strip()
+        elif "@amzprometheusopenbot" in user_text.lower():
+            is_mentioned = True
+            user_text = re.sub(r'@amzprometheusopenbot', '', user_text, flags=re.IGNORECASE).strip()
 
         # Strict Trigger Policy: Bot ONLY triggers in groups if directly replied to,
         # mentioned via @username, or explicitly called by the name "پرومته" / "prometheus"
@@ -3196,7 +3191,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         # Strip bot trigger name if at the beginning as a whole word/token
         stripped_text = user_text
         for k in ["پرومته", "prometheus", "پرومتئوس", "پرومتیوس", "پرومتيوس", "پرومتـه"]:
-            _m = re.match(rf"^{re.escape(k)}([\s:,!؟?\-–—]+|$)", stripped_text, flags=re.IGNORECASE)
+            _m = re.match(rf"^{re.escape(k)}([\s\u200c،,:؛!؟?\-–—]+|$)", stripped_text, flags=re.IGNORECASE)
             if _m:
                 stripped_text = stripped_text[_m.end():].strip()
                 break
