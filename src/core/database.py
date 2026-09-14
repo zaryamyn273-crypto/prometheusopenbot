@@ -1,8 +1,10 @@
+import os
 import re
 import json
 import time
 import logging
 import asyncio
+from itertools import islice
 import httpx
 from datetime import datetime
 import pytz
@@ -71,15 +73,32 @@ def get_cf_client() -> httpx.AsyncClient:
     return _cf_client
 
 
+_CACHED_BEARER: str = ""
+_CACHED_HEADERS: Dict[str, str] = {}
+
 def _cf_headers() -> Dict[str, str]:
-    try:
-        from src.core.config import CLOUDFLARE_API_TOKEN as _tok
-    except Exception:
-        _tok = CLOUDFLARE_API_TOKEN
-    return {
-        "Authorization": f"Bearer {_tok}",
-        "Content-Type": "application/json",
-    }
+    global _CACHED_BEARER, _CACHED_HEADERS
+    tok = os.getenv("CLOUDFLARE_API_TOKEN") or CLOUDFLARE_API_TOKEN
+    if tok != _CACHED_BEARER:
+        _CACHED_BEARER = tok
+        _CACHED_HEADERS = {
+            "Authorization": f"Bearer {tok}",
+            "Content-Type": "application/json",
+        }
+    return _CACHED_HEADERS
+
+_CACHED_KV_KEY: Tuple[str, str] = ("", "")
+_CACHED_KV_BASE_URL: str = ""
+
+def _get_kv_base_url() -> str:
+    global _CACHED_KV_KEY, _CACHED_KV_BASE_URL
+    acc = os.getenv("CLOUDFLARE_ACCOUNT_ID") or CLOUDFLARE_ACCOUNT_ID or ""
+    kv = os.getenv("CLOUDFLARE_KV_ID") or CLOUDFLARE_KV_ID or ""
+    pair = (acc, kv)
+    if pair != _CACHED_KV_KEY:
+        _CACHED_KV_KEY = pair
+        _CACHED_KV_BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{acc}/storage/kv/namespaces/{kv}/values" if (acc and kv) else ""
+    return _CACHED_KV_BASE_URL
 
 try:
     _TEHRAN_TZ = pytz.timezone("Asia/Tehran")
@@ -92,9 +111,9 @@ def get_tehran_timestamps() -> Tuple[str, str, str]:
         tz = _TEHRAN_TZ or pytz.timezone("Asia/Tehran")
         now = datetime.now(tz)
         j_now = jdatetime.datetime.fromgregorian(datetime=now)
-        time_str = now.strftime("%H:%M:%S")
-        j_date_str = j_now.strftime("%Y/%m/%d")
-        iso_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        time_str = f"{now.hour:02d}:{now.minute:02d}:{now.second:02d}"
+        iso_str = f"{now.year:04d}-{now.month:02d}-{now.day:02d} {time_str}"
+        j_date_str = f"{j_now.year:04d}/{j_now.month:02d}/{j_now.day:02d}"
         return iso_str, time_str, j_date_str
     except Exception:
         iso_fallback = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -132,35 +151,32 @@ def l1_get(key: str) -> Optional[str]:
     _L1_LAST_HIT_AT = now
     return item["value"]
 
-_L1_PRUNE_COUNTER = 0
+_L1_MAX_SIZE = 800
+_L1_LOW_WATER = 700
 
 
 def l1_set(key: str, value: str, ttl_sec: int = 300):
-    global _L1_PRUNE_COUNTER
     now = time.time()
-    # Memory optimization: prune expired keys and keep bounded size
-    if key not in _L1_CACHE and len(_L1_CACHE) >= 800:
-        _L1_PRUNE_COUNTER += 1
-        if _L1_PRUNE_COUNTER % 8 == 0:
-            expired = [k for k, v in _L1_CACHE.items() if now > v.get("expires_at", 0)]
-            for k in expired:
-                _L1_CACHE.pop(k, None)
-        # True O(1) LRU eviction of oldest touched keys down to safe bound
-        while len(_L1_CACHE) >= 800:
-            try:
-                _L1_CACHE.popitem(last=False)
-            except KeyError:
-                break
-
     try:
         _ttl = max(30, int(ttl_sec))
     except Exception:
         _ttl = 300
 
-    # Cap value size to 64KB to prevent unbounded RAM usage on large web dumps
-    clean_val = str(value or "")
+    # Fast type check avoiding unnecessary str() allocations
+    clean_val = value if isinstance(value, str) else str(value or "")
     if len(clean_val) > 65536:
         clean_val = clean_val[:65536]
+
+    # Memory optimization: high-water/low-water eviction eliminates per-insert pruning
+    if key not in _L1_CACHE and len(_L1_CACHE) >= _L1_MAX_SIZE:
+        expired = [k for k, v in _L1_CACHE.items() if now > v.get("expires_at", 0)]
+        for k in expired:
+            _L1_CACHE.pop(k, None)
+        while len(_L1_CACHE) >= _L1_LOW_WATER:
+            try:
+                _L1_CACHE.popitem(last=False)
+            except KeyError:
+                break
 
     _L1_CACHE[key] = {
         "value": clean_val,
@@ -208,12 +224,13 @@ async def kv_get_cache_async(key: str) -> Optional[str]:
     if val is not None:
         return val
 
-    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_KV_ID:
+    base_url = _get_kv_base_url()
+    if not base_url:
         return None
 
     try:
         client = get_cf_client()
-        url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_KV_ID}/values/{key}"
+        url = f"{base_url}/{key}"
         resp = await client.get(url, headers=_cf_headers(), timeout=3.5)
         if resp.status_code == 200:
             val_str = resp.text
@@ -229,12 +246,13 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     Cloud PUTs are skipped when: value unchanged since last cloud write,
     per-key throttle interval not elapsed, or the 429 circuit breaker is open.
     Returns True when the value is safely cached (L1), even if the cloud sync
-    was deferred \u2014 use get_cache_health_async() to inspect cloud state.
+    was deferred — use get_cache_health_async() to inspect cloud state.
     """
     clean_ttl = max(60, int(expiration_ttl))
     l1_set(key, value, ttl_sec=clean_ttl)
 
-    if not cloud_write or not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_KV_ID:
+    base_url = _get_kv_base_url()
+    if not cloud_write or not base_url:
         return True
     if kv_cloud_circuit_open():
         return True
@@ -250,15 +268,15 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     if key in _KV_LAST_CLOUD_WRITE and _KV_LAST_CLOUD_HASH.get(key) == val_hash:
         return True
 
-    # Memory optimization: bound tracking structures to prevent unbounded leak
+    # Memory optimization: bound tracking structures with islice to avoid full list allocation
     if len(_KV_LAST_CLOUD_WRITE) >= 2000:
-        for old_k in list(_KV_LAST_CLOUD_WRITE.keys())[:400]:
+        for old_k in list(islice(_KV_LAST_CLOUD_WRITE.keys(), 400)):
             _KV_LAST_CLOUD_WRITE.pop(old_k, None)
             _KV_LAST_CLOUD_HASH.pop(old_k, None)
 
     try:
         client = get_cf_client()
-        url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_KV_ID}/values/{key}?expiration_ttl={clean_ttl}"
+        url = f"{base_url}/{key}?expiration_ttl={clean_ttl}"
         resp = await client.put(url, headers=_cf_headers(), content=value.encode("utf-8"), timeout=3.5)
         if resp.status_code == 200:
             _KV_LAST_CLOUD_WRITE[key] = now
@@ -284,11 +302,12 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
 
 async def kv_get_cloud_async(key: str) -> Optional[str]:
     """Direct Cloudflare KV read that bypasses L1 (used for startup warmup)."""
-    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_KV_ID:
+    base_url = _get_kv_base_url()
+    if not base_url:
         return None
     try:
         client = get_cf_client()
-        url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_KV_ID}/values/{key}"
+        url = f"{base_url}/{key}"
         resp = await client.get(url, headers=_cf_headers(), timeout=4.0)
         if resp.status_code == 200:
             return resp.text
@@ -311,20 +330,25 @@ async def warm_l1_from_cloud_async() -> int:
     Startup warmer: pulls the last persisted bulk-market keys from cloud KV
     straight into L1 RAM. Reads are cheap (100k/day free), so a fresh deploy
     serves instant answers instead of starting with a cold cache.
-    Keys are fetched concurrently (10x faster cold start).
+    Keys are fetched concurrently with bounded concurrency.
     """
-    warmed = 0
+    if not _get_kv_base_url():
+        return 0
+
+    sem = asyncio.Semaphore(8)
 
     async def _warm_one(k: str) -> bool:
-        try:
-            val = await kv_get_cloud_async(k)
-            if val:
-                l1_set(k, val, ttl_sec=600)
-                return True
-        except Exception:
-            pass
-        return False
+        async with sem:
+            try:
+                val = await kv_get_cloud_async(k)
+                if val:
+                    l1_set(k, val, ttl_sec=600)
+                    return True
+            except Exception:
+                pass
+            return False
 
+    warmed = 0
     try:
         results = await asyncio.gather(*[_warm_one(k) for k in _WARMUP_KEYS], return_exceptions=True)
         warmed = sum(1 for r in results if r is True)
@@ -335,22 +359,28 @@ async def warm_l1_from_cloud_async() -> int:
 
 async def get_cache_health_async() -> Dict[str, Any]:
     """Reports L1 size, KV circuit state, D1 reachability and D1 queue depth."""
-    # NOTE: _KV_LAST_CLOUD_ERROR is only read here (no global decl needed).
-    # Memoize the D1 probe for 30s so health daemons don't hammer D1
-    try:
-        if _HEALTH_MEMO.get("data") and (time.time() - float(_HEALTH_MEMO.get("at", 0))) < 30.0:
-            snap = dict(_HEALTH_MEMO["data"])
-            snap["l1_keys"] = len(_L1_CACHE)
-            snap["d1_queue_depth"] = _D1_WRITE_QUEUE.qsize() if _D1_WRITE_QUEUE is not None else -1
-            return snap
-    except Exception:
-        pass
+    now = time.time()
     try:
         _tot = _L1_HITS + _L1_MISSES
         _hit_rate = round(100.0 * _L1_HITS / _tot, 1) if _tot else 0.0
     except Exception:
         _hit_rate = 0.0
-    health: Dict[str, Any] = {
+
+    # Memoize only the D1 reachability network probe for 30s so health daemons don't hammer D1
+    d1_reachable = False
+    memo_data = _HEALTH_MEMO.get("data")
+    if memo_data is not None and (now - float(_HEALTH_MEMO.get("at", 0.0))) < 30.0:
+        d1_reachable = bool(memo_data.get("d1_reachable", False))
+    else:
+        try:
+            res = await execute_d1_query("SELECT 1 AS ok", [])
+            d1_reachable = bool(res.get("success"))
+        except Exception:
+            d1_reachable = False
+        _HEALTH_MEMO["at"] = now
+        _HEALTH_MEMO["data"] = {"d1_reachable": d1_reachable}
+
+    return {
         "l1_keys": len(_L1_CACHE),
         "l1_hit_rate_pct": _hit_rate,
         "l1_hits": _L1_HITS,
@@ -360,19 +390,8 @@ async def get_cache_health_async() -> Dict[str, Any]:
         "kv_cloud_writes_tracked": len(_KV_LAST_CLOUD_WRITE),
         "d1_queue_depth": _D1_WRITE_QUEUE.qsize() if _D1_WRITE_QUEUE is not None else -1,
         "d1_batch_worker_alive": bool(_BATCH_WORKER_TASK and not _BATCH_WORKER_TASK.done()),
-        "d1_reachable": False,
+        "d1_reachable": d1_reachable,
     }
-    try:
-        res = await execute_d1_query("SELECT 1 AS ok", [])
-        health["d1_reachable"] = bool(res.get("success"))
-    except Exception:
-        pass
-    try:
-        _HEALTH_MEMO["at"] = time.time()
-        _HEALTH_MEMO["data"] = dict(health)
-    except Exception:
-        pass
-    return health
 
 # --- Tier 3: High-Power Cloudflare D1 SQL Operations ---
 
