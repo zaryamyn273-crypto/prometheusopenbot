@@ -7,6 +7,7 @@ import httpx
 from datetime import datetime
 import pytz
 import jdatetime
+from collections import OrderedDict
 from typing import List, Dict, Any, Optional, Tuple, Union
 
 from src.core.config import (
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Tier 3: Cloudflare D1 Serverless SQL with Bulletproof Write-Behind Queue
 # ============================================================================
 
-_L1_CACHE: Dict[str, Dict[str, Any]] = {}
+_L1_CACHE: OrderedDict[str, Dict[str, Any]] = OrderedDict()
 _MEMORY_DIRECTIVES: List[str] = []
 _BANNED_USERS: set = set()
 _BANNED_USERNAMES: set = set()
@@ -80,10 +81,15 @@ def _cf_headers() -> Dict[str, str]:
         "Content-Type": "application/json",
     }
 
+try:
+    _TEHRAN_TZ = pytz.timezone("Asia/Tehran")
+except Exception:
+    _TEHRAN_TZ = None
+
 def get_tehran_timestamps() -> Tuple[str, str, str]:
     """Returns (created_at_iso, time_str, jalali_date_str)."""
     try:
-        tz = pytz.timezone("Asia/Tehran")
+        tz = _TEHRAN_TZ or pytz.timezone("Asia/Tehran")
         now = datetime.now(tz)
         j_now = jdatetime.datetime.fromgregorian(datetime=now)
         time_str = now.strftime("%H:%M:%S")
@@ -107,24 +113,23 @@ def l1_get(key: str) -> Optional[str]:
     if not item:
         _L1_MISSES += 1
         return None
-    if time.time() > item["expires_at"]:
-        try:
-            del _L1_CACHE[key]
-        except KeyError:
-            pass
+    now = time.time()
+    if now > item["expires_at"]:
+        _L1_CACHE.pop(key, None)
         _L1_MISSES += 1
         return None
     # Sliding refresh: hot keys live longer (up to +50% of original TTL).
     try:
-        item["hits"] = item.get("hits", 0) + 1
-        if item["hits"] % 5 == 0:
-            item["expires_at"] = min(item["expires_at"] + 60.0, time.time() + item.get("ttl", 300) * 1.5)
-        # LRU touch: re-insert to mark as recently used
-        _L1_CACHE[key] = item
+        hits = item.get("hits", 0) + 1
+        item["hits"] = hits
+        if hits % 5 == 0:
+            item["expires_at"] = min(item["expires_at"] + 60.0, now + item.get("ttl", 300) * 1.5)
+        # True LRU touch: move to most recently used position
+        _L1_CACHE.move_to_end(key)
     except Exception:
         pass
     _L1_HITS += 1
-    _L1_LAST_HIT_AT = time.time()
+    _L1_LAST_HIT_AT = now
     return item["value"]
 
 _L1_PRUNE_COUNTER = 0
@@ -134,16 +139,18 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
     global _L1_PRUNE_COUNTER
     now = time.time()
     # Memory optimization: prune expired keys and keep bounded size
-    if len(_L1_CACHE) >= 800:
+    if key not in _L1_CACHE and len(_L1_CACHE) >= 800:
         _L1_PRUNE_COUNTER += 1
-        if _L1_PRUNE_COUNTER % 16 == 0:
+        if _L1_PRUNE_COUNTER % 8 == 0:
             expired = [k for k, v in _L1_CACHE.items() if now > v.get("expires_at", 0)]
             for k in expired:
-                del _L1_CACHE[k]
-        if len(_L1_CACHE) >= 800:
-            # True LRU eviction of oldest inserted/touched keys
-            for k in list(_L1_CACHE.keys())[:200]:
-                del _L1_CACHE[k]
+                _L1_CACHE.pop(k, None)
+        # True O(1) LRU eviction of oldest touched keys down to safe bound
+        while len(_L1_CACHE) >= 800:
+            try:
+                _L1_CACHE.popitem(last=False)
+            except KeyError:
+                break
 
     try:
         _ttl = max(30, int(ttl_sec))
@@ -162,10 +169,13 @@ def l1_set(key: str, value: str, ttl_sec: int = 300):
         "hits": 0,
         "set_at": now,
     }
+    try:
+        _L1_CACHE.move_to_end(key)
+    except Exception:
+        pass
 
 def l1_delete(key: str):
-    if key in _L1_CACHE:
-        del _L1_CACHE[key]
+    _L1_CACHE.pop(key, None)
 
 # --- Tier 2: High-Speed Cloudflare Workers KV Operations ---
 # Cloudflare free plan allows ~1000 KV writes/day. The 5-minute bulk market
@@ -240,6 +250,12 @@ async def kv_set_cache_async(key: str, value: str, expiration_ttl: int = 300, cl
     if key in _KV_LAST_CLOUD_WRITE and _KV_LAST_CLOUD_HASH.get(key) == val_hash:
         return True
 
+    # Memory optimization: bound tracking structures to prevent unbounded leak
+    if len(_KV_LAST_CLOUD_WRITE) >= 2000:
+        for old_k in list(_KV_LAST_CLOUD_WRITE.keys())[:400]:
+            _KV_LAST_CLOUD_WRITE.pop(old_k, None)
+            _KV_LAST_CLOUD_HASH.pop(old_k, None)
+
     try:
         client = get_cf_client()
         url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/{CLOUDFLARE_KV_ID}/values/{key}?expiration_ttl={clean_ttl}"
@@ -297,7 +313,6 @@ async def warm_l1_from_cloud_async() -> int:
     serves instant answers instead of starting with a cold cache.
     Keys are fetched concurrently (10x faster cold start).
     """
-    import asyncio as _aio
     warmed = 0
 
     async def _warm_one(k: str) -> bool:
@@ -311,7 +326,7 @@ async def warm_l1_from_cloud_async() -> int:
         return False
 
     try:
-        results = await _aio.gather(*[_warm_one(k) for k in _WARMUP_KEYS], return_exceptions=True)
+        results = await asyncio.gather(*[_warm_one(k) for k in _WARMUP_KEYS], return_exceptions=True)
         warmed = sum(1 for r in results if r is True)
     except Exception:
         pass
@@ -365,13 +380,10 @@ async def execute_d1_query(sql: str, params: Optional[List[Any]] = None) -> Dict
     if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_D1_ID:
         return {"success": False, "results": []}
 
-    clean_params = []
-    if params:
-        for p in params:
-            if isinstance(p, (int, float, str, bool)) or p is None:
-                clean_params.append(p)
-            else:
-                clean_params.append(str(p))
+    clean_params = [
+        p if isinstance(p, (int, float, str, bool)) or p is None else str(p)
+        for p in params
+    ] if params else []
 
     try:
         client = get_cf_client()
