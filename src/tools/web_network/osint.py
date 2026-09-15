@@ -34,7 +34,7 @@ async def _check_github(username: str, client: Any) -> Optional[Dict[str, Any]]:
         token = getattr(_cfg, "GITHUB_TOKEN", "")
         if token and len(token) > 10:
             headers["Authorization"] = f"Bearer {token}"
-        r = await client.get(url, headers=headers, timeout=5.0)
+        r = await client.get(url, headers=headers, timeout=3.0)
         if r.status_code == 200:
             d = r.json()
             return {
@@ -59,7 +59,7 @@ async def _check_github(username: str, client: Any) -> Optional[Dict[str, Any]]:
 async def _check_gitlab(username: str, client: Any) -> Optional[Dict[str, Any]]:
     try:
         url = f"https://gitlab.com/api/v4/users?username={username}"
-        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=3.0)
         if r.status_code == 200:
             users = r.json()
             if users and isinstance(users, list) and len(users) > 0:
@@ -72,15 +72,15 @@ async def _check_gitlab(username: str, client: Any) -> Optional[Dict[str, Any]]:
                     "bio": u.get("bio") or "",
                     "location": u.get("location") or ""
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"GitLab OSINT check error: {e}")
     return None
 
 
 async def _check_keybase(username: str, client: Any) -> Optional[Dict[str, Any]]:
     try:
         url = f"https://keybase.io/_/api/1.0/user/lookup.json?usernames={username}"
-        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=3.0)
         if r.status_code == 200:
             d = r.json()
             them = (d.get("them") or [])
@@ -111,7 +111,7 @@ async def _check_keybase(username: str, client: Any) -> Optional[Dict[str, Any]]
 async def _check_dockerhub(username: str, client: Any) -> Optional[Dict[str, Any]]:
     try:
         url = f"https://hub.docker.com/v2/users/{username}/"
-        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=3.0)
         if r.status_code == 200:
             d = r.json()
             if d.get("id") or d.get("username"):
@@ -123,15 +123,15 @@ async def _check_dockerhub(username: str, client: Any) -> Optional[Dict[str, Any
                     "location": d.get("location") or "",
                     "company": d.get("company") or ""
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"DockerHub OSINT check error: {e}")
     return None
 
 
 async def _check_devto(username: str, client: Any) -> Optional[Dict[str, Any]]:
     try:
         url = f"https://dev.to/api/users/by_username?url={username}"
-        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=3.0)
         if r.status_code == 200:
             d = r.json()
             if d.get("name") or d.get("username"):
@@ -143,15 +143,15 @@ async def _check_devto(username: str, client: Any) -> Optional[Dict[str, Any]]:
                     "bio": d.get("summary") or "",
                     "location": d.get("location") or ""
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"DEV Community OSINT check error: {e}")
     return None
 
 
 async def _check_hackernews(username: str, client: Any) -> Optional[Dict[str, Any]]:
     try:
         url = f"https://hacker-news.firebaseio.com/v0/user/{username}.json"
-        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=3.0)
         if r.status_code == 200:
             d = r.json()
             if d and isinstance(d, dict) and d.get("id"):
@@ -162,8 +162,8 @@ async def _check_hackernews(username: str, client: Any) -> Optional[Dict[str, An
                     "karma": d.get("karma", 0),
                     "about": re.sub(r"<[^>]+>", " ", d.get("about") or "")[:150].strip()
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"HackerNews OSINT check error: {e}")
     return None
 
 
@@ -171,7 +171,7 @@ async def _check_telegram(username: str, client: Any) -> Optional[Dict[str, Any]
     try:
         clean = username.lstrip("@")
         url = f"https://t.me/{clean}"
-        r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5.0)
+        r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3.0)
         if r.status_code == 200 and "tgme_page" in r.text:
             soup = BeautifulSoup(r.text, "html.parser")
             title_tag = soup.find("div", class_="tgme_page_title")
@@ -186,16 +186,16 @@ async def _check_telegram(username: str, client: Any) -> Optional[Dict[str, Any]
                     "title": title,
                     "description": desc[:200]
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Telegram OSINT check error: {e}")
     return None
 
 
 async def _check_reddit(username: str, client: Any) -> Optional[Dict[str, Any]]:
     try:
         url = f"https://www.reddit.com/user/{username}/about.json"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        r = await client.get(url, headers=headers, timeout=5.0)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PrometheusOSINT/3.0"}
+        r = await client.get(url, headers=headers, timeout=3.0)
         if r.status_code == 200:
             data = r.json().get("data", {})
             if data and data.get("name"):
@@ -207,8 +207,36 @@ async def _check_reddit(username: str, client: Any) -> Optional[Dict[str, Any]]:
                     "link_karma": data.get("link_karma", 0),
                     "comment_karma": data.get("comment_karma", 0)
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Reddit OSINT check error: {e}")
+    return None
+
+
+async def _check_twitter(username: str, client: Any) -> Optional[Dict[str, Any]]:
+    try:
+        clean = username.lstrip("@").strip()
+        url = f"https://x.com/{clean}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        r = await client.get(url, headers=headers, timeout=3.0, follow_redirects=True)
+        if r.status_code == 200:
+            m_title = re.search(r'<meta [^>]*property=[\"\']og:title[\"\'] [^>]*content=[\"\']([^\"\']+)[\"\']', r.text)
+            if m_title and clean.lower() in m_title.group(1).lower():
+                raw_title = html.unescape(m_title.group(1))
+                name_match = re.search(r'^(.*?)\s*\(@' + re.escape(clean) + r'\)', raw_title, re.IGNORECASE)
+                display_name = name_match.group(1).strip() if name_match else clean
+                m_desc = re.search(r'<meta [^>]*property=[\"\']og:description[\"\'] [^>]*content=[\"\']([^\"\']+)[\"\']', r.text)
+                bio = html.unescape(m_desc.group(1)).strip() if m_desc else ""
+                return {
+                    "platform": "Twitter / X",
+                    "exists": True,
+                    "url": f"https://x.com/{clean}",
+                    "name": display_name,
+                    "bio": bio[:150]
+                }
+    except Exception as e:
+        logger.debug(f"Twitter OSINT check error: {e}")
     return None
 
 
@@ -217,7 +245,7 @@ async def _check_gravatar(email_or_username: str, client: Any) -> Optional[Dict[
         email_clean = email_or_username.lower().strip()
         h = hashlib.md5(email_clean.encode("utf-8")).hexdigest()
         url = f"https://en.gravatar.com/{h}.json"
-        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=5.0)
+        r = await client.get(url, headers={"User-Agent": "PrometheusOSINT/3.0"}, timeout=3.0)
         if r.status_code == 200:
             entries = r.json().get("entry", [])
             if entries:
@@ -230,8 +258,8 @@ async def _check_gravatar(email_or_username: str, client: Any) -> Optional[Dict[
                     "location": e.get("currentLocation") or "",
                     "about": e.get("aboutMe") or ""
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Gravatar OSINT check error: {e}")
     return None
 
 
@@ -549,18 +577,16 @@ async def osint_person_dossier(
         async with shared_client_ctx("api") as client:
             tasks = [
                 _check_github(clean_uname, client),
+                _check_reddit(clean_uname, client),
+                _check_twitter(clean_uname, client),
+                _check_hackernews(clean_uname, client),
+                _check_gravatar(raw_target if ttype == "email" else clean_uname, client),
                 _check_gitlab(clean_uname, client),
                 _check_keybase(clean_uname, client),
                 _check_dockerhub(clean_uname, client),
                 _check_devto(clean_uname, client),
                 _check_telegram(clean_uname, client),
-                _check_reddit(clean_uname, client),
-                _check_hackernews(clean_uname, client),
             ]
-            if ttype == "email":
-                tasks.append(_check_gravatar(raw_target, client))
-            else:
-                tasks.append(_check_gravatar(clean_uname, client))
 
             done = await asyncio.gather(*tasks, return_exceptions=True)
             for res in done:

@@ -51,6 +51,8 @@ _USER_TIMEZONES: Dict[int, str] = {}
 # Bot Self-Mute State (Admin-directed quiet/silence mode per-chat or global)
 _BOT_SELF_MUTED_CHATS: Dict[int, float] = {}
 _BOT_SELF_MUTED_GLOBAL_UNTIL: float = 0.0
+# Virtual Admin Whitelist per group: chat_id -> Set of whitelisted user_ids
+_GROUP_WHITELIST: Dict[int, set] = {}
 
 # Asynchronous Write-Behind Batch Message Queue & Worker Guard
 _D1_WRITE_QUEUE: Optional[asyncio.Queue] = None
@@ -929,6 +931,15 @@ def init_db():
         username TEXT DEFAULT '',
         invite_link TEXT DEFAULT '',
         status TEXT DEFAULT 'active'
+    );
+    CREATE TABLE IF NOT EXISTS group_whitelisted_admins (
+        chat_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        username TEXT DEFAULT '',
+        first_name TEXT DEFAULT '',
+        added_by INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (chat_id, user_id)
     );
     CREATE TABLE IF NOT EXISTS daily_usage (
         user_id INTEGER NOT NULL,
@@ -3042,3 +3053,105 @@ async def get_banned_users_detailed_async() -> List[Dict[str, Any]]:
 
 def get_banned_users() -> List[int]:
     return list(_BANNED_USERS)
+
+
+# =========================================================================
+# Group Virtual Admin Whitelist System
+# Only Group Owner (Telegram Chat Creator) has authority to whitelist/unwhitelist!
+# =========================================================================
+
+_GROUP_WHITELIST_DETAILS: Dict[int, Dict[int, Dict[str, Any]]] = {}
+
+def is_user_group_whitelisted(chat_id: int, user_id: int) -> bool:
+    """Returns True if user_id is a whitelisted virtual admin in chat_id."""
+    try:
+        cid = int(chat_id)
+        uid = int(user_id)
+        return uid in _GROUP_WHITELIST.get(cid, set())
+    except Exception:
+        return False
+
+async def add_group_whitelisted_admin_async(
+    chat_id: int,
+    user_id: int,
+    added_by: int,
+    username: str = "",
+    first_name: str = ""
+) -> bool:
+    """Adds a user to the group's virtual admin whitelist (RAM and Cloudflare D1)."""
+    try:
+        cid = int(chat_id)
+        uid = int(user_id)
+        aby = int(added_by)
+        if cid not in _GROUP_WHITELIST:
+            _GROUP_WHITELIST[cid] = set()
+        _GROUP_WHITELIST[cid].add(uid)
+
+        if cid not in _GROUP_WHITELIST_DETAILS:
+            _GROUP_WHITELIST_DETAILS[cid] = {}
+        _GROUP_WHITELIST_DETAILS[cid][uid] = {
+            "user_id": uid,
+            "username": username or "",
+            "first_name": first_name or "",
+            "added_by": aby,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        # Best effort write to Cloudflare D1
+        try:
+            query = "INSERT OR REPLACE INTO group_whitelisted_admins (chat_id, user_id, username, first_name, added_by) VALUES (?, ?, ?, ?, ?)"
+            await execute_d1_query(query, [cid, uid, username or "", first_name or "", aby])
+        except Exception as e:
+            logger.debug(f"D1 write group_whitelisted_admins skipped: {e}")
+        return True
+    except Exception as e:
+        logger.error(f"Error adding whitelisted admin: {e}")
+        return False
+
+async def remove_group_whitelisted_admin_async(chat_id: int, user_id: int) -> bool:
+    """Removes a user from the group's virtual admin whitelist (RAM and Cloudflare D1)."""
+    try:
+        cid = int(chat_id)
+        uid = int(user_id)
+        if cid in _GROUP_WHITELIST:
+            _GROUP_WHITELIST[cid].discard(uid)
+        if cid in _GROUP_WHITELIST_DETAILS:
+            _GROUP_WHITELIST_DETAILS[cid].pop(uid, None)
+
+        try:
+            await execute_d1_query(
+                "DELETE FROM group_whitelisted_admins WHERE chat_id = ? AND user_id = ?",
+                [cid, uid]
+            )
+        except Exception as e:
+            logger.debug(f"D1 delete group_whitelisted_admins skipped: {e}")
+        return True
+    except Exception as e:
+        logger.error(f"Error removing whitelisted admin: {e}")
+        return False
+
+async def get_group_whitelisted_admins_async(chat_id: int) -> List[Dict[str, Any]]:
+    """Returns all whitelisted virtual admins for a group."""
+    try:
+        cid = int(chat_id)
+        # Check Cloudflare D1 first
+        try:
+            res = await execute_d1_query(
+                "SELECT user_id, username, first_name, added_by, created_at FROM group_whitelisted_admins WHERE chat_id = ?",
+                [cid]
+            )
+            if res.get("success") and res.get("results"):
+                return res["results"]
+        except Exception:
+            pass
+
+        # In-memory detail cache fallback
+        details = _GROUP_WHITELIST_DETAILS.get(cid, {})
+        if details:
+            return list(details.values())
+        uids = _GROUP_WHITELIST.get(cid, set())
+        return [{"user_id": u, "username": "", "first_name": "", "added_by": 0, "created_at": ""} for u in uids]
+    except Exception as e:
+        logger.error(f"Error retrieving whitelisted admins: {e}")
+        return []
+

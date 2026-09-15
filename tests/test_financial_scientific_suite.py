@@ -4,6 +4,7 @@ import time
 import traceback
 import sys
 import os
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import src.tools.financial as fin
@@ -401,6 +402,12 @@ B. Scientific Tools (src/tools/scientific/):
 
     report_text = "\n".join(lines)
     return report_text
+
+@pytest.mark.asyncio
+async def test_financial_scientific_suite():
+    fin_results, sci_results = await execute_all_tests()
+    crashes = [r for r in fin_results + sci_results if r["unhandled_exception"]]
+    assert len(crashes) == 0, f"Unhandled crashes: {[c['test_name'] for c in crashes]}"
 
 async def main():
     fin_results, sci_results = await execute_all_tests()

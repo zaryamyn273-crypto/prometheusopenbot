@@ -377,6 +377,7 @@ def test_smart_tools_conceptual_zero_overhead():
 
 @pytest.mark.asyncio
 async def test_adaptive_model_routing_and_reasoning_effort(monkeypatch):
+    """Verify dynamic model switching is completely removed and locked to 3.8-low."""
     from unittest.mock import AsyncMock
     from src.core import ai_service
 
@@ -389,10 +390,9 @@ async def test_adaptive_model_routing_and_reasoning_effort(monkeypatch):
     monkeypatch.setattr(ai_service, "get_shared_client", lambda: mock_client)
     monkeypatch.setattr(config, "ROUTER_API_KEY", "test-key")
     monkeypatch.setenv("ROUTER_API_KEY", "test-key")
-    monkeypatch.setenv("ROUTER_MODEL", "High")
-    monkeypatch.setenv("ROUTER_FAST_MODEL", "ag/gemini-3.8-flash-low")
+    monkeypatch.setenv("ROUTER_MODEL", "3.8-low")
 
-    # 1. Standard question -> should use fast model with reasoning_effort="low"
+    # 1. Standard question -> should use 3.8-low directly with reasoning_effort="low"
     await ai_service.generate_response(
         chat_id=123,
         user_prompt="پایتون چیه؟",
@@ -402,12 +402,12 @@ async def test_adaptive_model_routing_and_reasoning_effort(monkeypatch):
         is_private_chat=True
     )
     payload_std = mock_client.post.call_args[1]["json"]
-    assert payload_std["model"] == "ag/gemini-3.8-flash-low"
+    assert payload_std["model"] == "3.8-low"
     assert payload_std.get("reasoning_effort") == "low"
     # Empty tools should not have tools key
     assert "tools" not in payload_std
 
-    # 2. Deep coding task (contains code block) -> should escalate to High model
+    # 2. Deep coding task (contains code block) -> strictly locked to 3.8-low (NO dynamic switching/escalation)
     await ai_service.generate_response(
         chat_id=123,
         user_prompt="```python\ndef buggy():\n    pass\n```\nاین کد رو دیباگ کن",
@@ -417,6 +417,21 @@ async def test_adaptive_model_routing_and_reasoning_effort(monkeypatch):
         is_private_chat=True
     )
     payload_deep = mock_client.post.call_args[1]["json"]
-    assert payload_deep["model"] == "High"
+    assert payload_deep["model"] == "3.8-low"
+    assert payload_deep.get("reasoning_effort") == "low"
+
+    # 3. Vision / Image turn -> strictly locked to 3.8-low (NO switching to 'Good')
+    await ai_service.generate_response(
+        chat_id=123,
+        user_prompt="این عکس چیه؟",
+        caller_user_id=12345,
+        caller_name="User",
+        caller_username="user1",
+        is_private_chat=True,
+        image_bytes=b"fake_image_content"
+    )
+    payload_vision = mock_client.post.call_args[1]["json"]
+    assert payload_vision["model"] == "3.8-low"
+    assert payload_vision.get("reasoning_effort") == "low"
 
 

@@ -35,6 +35,57 @@ def _l1_web_put(key: str, value: str) -> None:
         pass
 
 
+# Ultra-Fast L1 RAM Cache for Webpages (Sub-millisecond latency for repeated URLs & deep research)
+_L1_WEBPAGE_CACHE: Dict[str, Tuple[float, str]] = {}
+_L1_WEBPAGE_TTL = 1800.0       # 30 minutes in RAM
+_L1_WEBPAGE_MAX_KEYS = 500     # Maximum entries to protect RAM
+
+
+def _l1_webpage_put(key: str, value: str) -> None:
+    """Bounded L1 RAM cache insertion with TTL expiry and size-based eviction."""
+    try:
+        if not key or not value:
+            return
+        if len(_L1_WEBPAGE_CACHE) >= _L1_WEBPAGE_MAX_KEYS:
+            now = time.time()
+            # 1. Evict expired entries
+            expired = [k for k, (ts, _) in _L1_WEBPAGE_CACHE.items() if (now - ts) > _L1_WEBPAGE_TTL]
+            for k in expired:
+                _L1_WEBPAGE_CACHE.pop(k, None)
+            # 2. If still at/over capacity, evict oldest 100 entries (FIFO)
+            if len(_L1_WEBPAGE_CACHE) >= _L1_WEBPAGE_MAX_KEYS:
+                for _k in list(_L1_WEBPAGE_CACHE.keys())[:100]:
+                    _L1_WEBPAGE_CACHE.pop(_k, None)
+        _L1_WEBPAGE_CACHE[key] = (time.time(), value)
+    except Exception:
+        pass
+
+
+def _l1_webpage_get(key: str) -> Optional[str]:
+    """Retrieve webpage content from L1 RAM cache if unexpired, else return None."""
+    try:
+        if not key:
+            return None
+        entry = _L1_WEBPAGE_CACHE.get(key)
+        if entry is None and key.startswith("WEBPAGE_"):
+            entry = _L1_WEBPAGE_CACHE.get(key[8:])
+        elif entry is None:
+            entry = _L1_WEBPAGE_CACHE.get(f"WEBPAGE_{key}")
+
+        if entry is not None:
+            ts, val = entry
+            if (time.time() - ts) < _L1_WEBPAGE_TTL:
+                return val
+            _L1_WEBPAGE_CACHE.pop(key, None)
+    except Exception:
+        pass
+    return None
+
+
+_RE_HTML_JUNK = re.compile(r'<(script|style|svg|noscript|iframe|form|nav|footer|header|aside)\b[^>]*>.*?</\1>', re.DOTALL | re.IGNORECASE)
+_RE_HTML_COMMENTS = re.compile(r'<!--.*?-->', re.DOTALL)
+
+
 def _kv_safe_key(prefix: str, query: str) -> str:
     # Cloudflare KV keys max out at 512 chars; hash long Persian queries.
     try:
@@ -762,25 +813,37 @@ async def fetch_webpage_content(url: str, max_chars: int = 4000) -> str:
     except Exception:
         return "⛔ این آدرس مجاز نیست (اهداف داخلی/خصوصی مسدود است)."
 
+    # 1. Ultra-fast L1 RAM cache check (<0.05ms)
+    l1_cached = _l1_webpage_get(clean_u)
+    if l1_cached:
+        return l1_cached
+
+    # 2. Cloudflare KV persistent cache check
     cache_key = f"WEBPAGE_{clean_u}"
     cached = await database.kv_get_cache_async(cache_key)
     if cached:
+        _l1_webpage_put(clean_u, cached)
         return cached
 
     client = get_async_client()
     try:
         from src.utils.net_guard import safe_stream_get as _safe_stream
-        # 8MB cap: never buffer hostile giant pages into RAM & enforce hop-by-hop redirect SSRF safety
-        async with _safe_stream(client, clean_u, timeout=7.0) as r:
+        # 512KB cap: sufficient for all articles/content, saves bandwidth and eliminates seconds of buffering
+        async with _safe_stream(client, clean_u, timeout=5.0) as r:
             if r.status_code == 200:
                 body = b""
-                async for chunk in r.aiter_bytes(65536):
+                async for chunk in r.aiter_bytes(32768):
                     body += chunk
-                    if len(body) > 8 * 1024 * 1024:
+                    if len(body) >= 512 * 1024:
                         break
                 html = body.decode("utf-8", errors="replace")
             else:
                 return f"خطا در دریافت صفحه: کد وضعیت HTTP {r.status_code}"
+
+        # Fast pre-cleaning regex: strips large scripts, styles, SVGs in <2ms before DOM parsing
+        html = _RE_HTML_COMMENTS.sub("", html)
+        html = _RE_HTML_JUNK.sub("", html)
+
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "svg", "form", "aside", "iframe"]):
             tag.decompose()
@@ -798,6 +861,7 @@ async def fetch_webpage_content(url: str, max_chars: int = 4000) -> str:
 
         if text:
             trimmed = text[:max_chars]
+            _l1_webpage_put(clean_u, trimmed)
             await database.kv_set_cache_async(cache_key, trimmed, expiration_ttl=3600)
             return trimmed
         return "محتوای متنی مفیدی در این آدرس یافت نشد."

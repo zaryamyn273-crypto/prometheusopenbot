@@ -8,14 +8,194 @@ Advanced Barcode & QR Code Engine with Damaged Barcode Reconstruction:
     * Regenerates 100% clean, fresh, scannable barcode images.
 """
 
+import io
 import logging
 import re
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
+from PIL import Image, ImageDraw
 from src.tools.registry import register_tool
 
 logger = logging.getLogger(__name__)
+
+# Code 128 patterns (Indices 0 to 106)
+_CODE128_PATTERNS = [
+    '212222', '222122', '222221', '121223', '121322', '131222', '122213', '122312',
+    '132212', '221213', '221312', '231212', '112232', '122132', '122231', '113222',
+    '123122', '123221', '223211', '221132', '221231', '213212', '223112', '312131',
+    '311222', '321122', '321221', '312212', '322112', '322211', '212123', '212321',
+    '232121', '111323', '131123', '131321', '112313', '132113', '132311', '211313',
+    '231113', '231311', '112133', '112331', '132131', '113123', '113321', '133121',
+    '313121', '211331', '231131', '213113', '213311', '213131', '311123', '311321',
+    '331121', '312113', '312311', '332111', '314111', '221411', '431111', '111224',
+    '111422', '121124', '121421', '141122', '141221', '112214', '112412', '122114',
+    '122411', '142112', '142211', '241211', '221114', '413111', '241112', '134111',
+    '111242', '121142', '121241', '114212', '124112', '124211', '411212', '421112',
+    '421211', '212141', '214121', '412121', '111143', '111341', '131141', '114113',
+    '114311', '411113', '411311', '113141', '114131', '311141', '411131', '211412',
+    '211214', '211232', '2331112'
+]
+
+# EAN-13 encoding tables
+_EAN13_L_CODE = {
+    '0': '0001101', '1': '0011001', '2': '0010011', '3': '0111101', '4': '0100011',
+    '5': '0110001', '6': '0101111', '7': '0111011', '8': '0110111', '9': '0001011'
+}
+_EAN13_G_CODE = {
+    '0': '0100111', '1': '0110011', '2': '0011011', '3': '0100001', '4': '0011101',
+    '5': '0111001', '6': '0000101', '7': '0010001', '8': '0001001', '9': '0010111'
+}
+_EAN13_R_CODE = {
+    '0': '1110010', '1': '1100110', '2': '1101100', '3': '1000010', '4': '1011100',
+    '5': '1001110', '6': '1010000', '7': '1000100', '8': '1001000', '9': '1110100'
+}
+_EAN13_PARITY = {
+    '0': 'LLLLLL', '1': 'LLGLGG', '2': 'LLGGLG', '3': 'LLGGGL', '4': 'LGLLGG',
+    '5': 'LGGLLG', '6': 'LGGGLL', '7': 'LGLGLG', '8': 'LGLGGL', '9': 'LGGLGL'
+}
+
+
+def generate_qr_image_bytes(data: str, box_size: int = 10, border: int = 4) -> bytes:
+    """
+    Generates pure in-memory QR code PNG bytes using Pillow and io.BytesIO (zero disk operations).
+    """
+    try:
+        import qrcode
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_H,
+            box_size=box_size,
+            border=border,
+        )
+        qr.add_data(data)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+    except Exception as e:
+        logger.error(f"Error generating QR image in memory: {e}")
+        return b""
+
+
+def generate_ean13_image_bytes(digits13: str, scale: int = 3, height: int = 120) -> bytes:
+    """
+    Renders pure in-memory EAN-13 barcode PNG bytes using Pillow and io.BytesIO (zero disk operations).
+    """
+    try:
+        clean = "".join(c for c in digits13 if c.isdigit())
+        if len(clean) == 12:
+            chk = compute_ean13_check_digit(clean)
+            clean = f"{clean}{chk}"
+        elif len(clean) != 13:
+            return b""
+
+        first = clean[0]
+        left = clean[1:7]
+        right = clean[7:13]
+        par = _EAN13_PARITY.get(first, "LLLLLL")
+
+        modules = ["101"]  # Start guard
+        for d, p in zip(left, par):
+            modules.append(_EAN13_L_CODE[d] if p == "L" else _EAN13_G_CODE[d])
+        modules.append("01010")  # Center guard
+        for d in right:
+            modules.append(_EAN13_R_CODE[d])
+        modules.append("101")  # End guard
+
+        bitstring = "".join(modules)
+        quiet_zone = 9
+        total_modules = len(bitstring) + 2 * quiet_zone
+        width = total_modules * scale
+
+        img = Image.new("RGB", (width, height), "white")
+        draw = ImageDraw.Draw(img)
+
+        x = quiet_zone * scale
+        for bit in bitstring:
+            if bit == "1":
+                draw.rectangle([x, 10, x + scale - 1, height - 10], fill="black")
+            x += scale
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+    except Exception as e:
+        logger.error(f"Error rendering EAN-13 in memory: {e}")
+        return b""
+
+
+def generate_code128_image_bytes(text: str, scale: int = 2, height: int = 100) -> bytes:
+    """
+    Renders pure in-memory Code 128 barcode PNG bytes using Pillow and io.BytesIO (zero disk operations).
+    """
+    try:
+        raw_text = str(text or "")
+        if not raw_text:
+            return b""
+        values = [104]  # Start B
+        checksum = 104
+        for idx, c in enumerate(raw_text, 1):
+            v = ord(c) - 32
+            if 0 <= v <= 95:
+                values.append(v)
+                checksum += idx * v
+            else:
+                values.append(0)
+        values.append(checksum % 103)
+        values.append(106)  # Stop
+
+        bits = []
+        for val in values:
+            pat = _CODE128_PATTERNS[val]
+            is_bar = True
+            for width in pat:
+                w = int(width)
+                bits.extend(["1" if is_bar else "0"] * w)
+                is_bar = not is_bar
+
+        quiet_zone = 10
+        total_len = len(bits) + 2 * quiet_zone
+        width = total_len * scale
+
+        img = Image.new("RGB", (width, height), "white")
+        draw = ImageDraw.Draw(img)
+
+        x = quiet_zone * scale
+        for b in bits:
+            if b == "1":
+                draw.rectangle([x, 5, x + scale - 1, height - 5], fill="black")
+            x += scale
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+    except Exception as e:
+        logger.error(f"Error rendering Code 128 in memory: {e}")
+        return b""
+
+
+def render_barcode_in_memory(data: str, barcode_type: str = "auto", scale: int = 3, height: int = 120) -> bytes:
+    """
+    Unified fast in-memory renderer for 1D/2D barcodes with pure io.BytesIO and zero disk operations.
+    """
+    btype = str(barcode_type or "auto").strip().lower()
+    raw_val = str(data or "").strip()
+    if btype in ("auto", "default"):
+        if raw_val.isdigit() and len(raw_val) in (12, 13):
+            btype = "ean13"
+        elif raw_val.startswith("http://") or raw_val.startswith("https://") or len(raw_val) > 40:
+            btype = "qr"
+        else:
+            btype = "code128"
+
+    if btype in ("qr", "qrcode", "دوبعدی"):
+        return generate_qr_image_bytes(raw_val)
+    elif btype in ("ean13", "ean", "فروشگاهی"):
+        return generate_ean13_image_bytes(raw_val, scale=scale, height=height)
+    else:
+        return generate_code128_image_bytes(raw_val, scale=max(2, scale - 1), height=height)
 
 
 def compute_ean13_check_digit(digits12: str) -> int:
@@ -70,15 +250,20 @@ def generate_barcode_tool(
     text_or_url: Optional[str] = None,
     barcode_type: str = "auto",
     include_text: bool = True,
-) -> str:
+    return_bytes: bool = False,
+) -> Any:
     """
     :param data: متن، عدد، آدرس URL یا شماره سریال برای درج در بارکد
     :param text_or_url: پارامتر جایگزین برای آدرس یا متن
     :param barcode_type: نوع بارکد: 'qr' (دوبعدی)، 'code128' (میله‌ای عمومی)، 'ean13' (محصولات فروشگاهی)، 'code39' یا 'auto'
     :param include_text: نمایش متن خوانا زیر بارکد میله‌ای (پیش‌فرض True)
+    :param return_bytes: بازگرداندن مستقیم بایت‌های تصویر بارکد در حافظه (پیش‌فرض False)
     """
     raw_val = str(data or text_or_url or "https://t.me/prometheusopenbot").strip()
     btype = str(barcode_type or "auto").strip().lower()
+
+    if return_bytes:
+        return render_barcode_in_memory(raw_val, btype)
 
     # Auto-detection of barcode type
     is_numeric = raw_val.isdigit()

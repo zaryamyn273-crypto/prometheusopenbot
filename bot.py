@@ -387,38 +387,28 @@ async def reply_safely(message, text: str, reply_markup=None):
         try:
             return await message.reply_text(chunk, parse_mode=ParseMode.HTML, reply_markup=markup)
         except Exception as e:
-            logger.debug(f"HTML Parse error, falling back to plain text: {e}")
+            logger.debug(f"HTML Parse error, falling back to clean plain text: {e}")
             try:
-                # Plain-text fallback must also respect the 4096 limit.
-                return await message.reply_text(chunk[:3900] if len(chunk) > 3900 else chunk, reply_markup=markup)
+                # Clean plain-text fallback: strips HTML tags & unescapes entities so raw tokens are never seen.
+                plain_chunk = telegram_formatter.strip_html_to_plain(chunk)
+                return await message.reply_text(plain_chunk[:3900] if len(plain_chunk) > 3900 else plain_chunk, reply_markup=markup)
             except Exception as e2:
                 logger.error(f"Failed to send reply: {e2}")
                 return None
 
-    # Telegram hard limit is 4096 chars — split long answers instead of failing silently.
-    if len(formatted) <= 4000 and len(text) <= 4000:
+    # Telegram hard limit is 4096 chars — split long answers safely with tag balancing.
+    if len(formatted) <= 3900 and len(text) <= 3900:
         return await _send_one(formatted, reply_markup)
 
-    # Prefer splitting the already-formatted HTML on newlines to keep tags intact.
-    chunks: list[str] = []
-    buf = ""
-    for line in formatted.split("\n"):
-        if len(buf) + len(line) + 1 > 3800:
-            if buf.strip():
-                chunks.append(buf)
-            buf = line
-            # Single huge line (e.g. a link dump) — hard cut it.
-            while len(buf) > 3800:
-                chunks.append(buf[:3800])
-                buf = buf[3800:]
-        else:
-            buf = (buf + "\n" + line) if buf else line
-    if buf.strip():
-        chunks.append(buf)
+    # Use tag-aware HTML splitter to preserve formatting across boundaries
+    chunks = telegram_formatter.split_telegram_html(formatted, max_chunk_len=3800)
+    if not chunks:
+        chunks = [formatted]
+
     # Keep replies readable: max 4 chunks (~15k chars), truncate the rest.
     if len(chunks) > 4:
         chunks = chunks[:4]
-        chunks[-1] += "\n\n… [ادامه به دلیل سقف تلگرام خلاصه شد]"
+        chunks[-1] = telegram_formatter.balance_html_tags(chunks[-1] + "\n\n… [ادامه به دلیل سقف تلگرام خلاصه شد]")
 
     sent = None
     for i, ch in enumerate(chunks):
@@ -3095,12 +3085,131 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await reply_safely(message, _wres)
             return
 
-    if message.reply_to_message and is_admin(user.id) and user_text.strip():
+    # Resolve Group Authority & Whitelist status for moderation
+    from src.tools.admin import group_manager as _gm
+    _is_group = bool(chat and str(chat.type) in ["group", "supergroup"])
+    _grp_auth = await _gm.resolve_group_user_authority(chat.id, user.id, context.bot) if _is_group else {
+        "is_creator": False,
+        "is_tg_admin": False,
+        "is_whitelisted": False,
+        "can_moderate": is_admin(user.id),
+        "can_manage_whitelist": False
+    }
+    _can_mod = is_admin(user.id) or _grp_auth.get("can_moderate", False)
+    _can_whitelist = _grp_auth.get("is_creator", False)
+
+    # Group Whitelist Listing & Non-reply commands (works in groups)
+    if _is_group and user_text.strip():
+        _chk_low = user_text.strip().lower()
+        if any(_chk_low == _wl or _chk_low.startswith(_wl + " ") for _wl in [
+            "/whitelisted", "/whitelist_list", "!whitelisted", "!whitelist_list",
+            "/whitelist list", "!whitelist list",
+            "لیست ادمین‌های ربات", "لیست ادمین های ربات", "لیست ادمین‌ها", "لیست ادمین ها",
+            "لیست وایت لیست", "لیست وایت‌لیست", "ادمین‌های مجازی", "ادمین های مجازی",
+            "لیست ادمین های مجازی", "لیست ادمین‌های مجازی"
+        ]):
+            _wl_list_res = await _gm.group_whitelist_list_tool(chat.id, caller_id=user.id)
+            await reply_safely(message, _wl_list_res)
+            return
+
+        # Direct /whitelist or /unwhitelist with explicit numeric user ID (without reply)
+        _wl_id_add_m = re.match(r'^[!/](?:whitelist|وایت\s*لیست)\s+(\d+)$', _chk_low)
+        if _wl_id_add_m:
+            if not _can_whitelist:
+                await reply_safely(
+                    message,
+                    "❌ تنها مالک و سازنده اصلی این گروه (Group Owner/Creator) صلاحیت افزودن ادمین‌های مجازی را دارد. حتی ادمین کل ربات در صورتی که مالک این گروه نباشد، این دسترسی را ندارد."
+                )
+                return
+            _target_uid = int(_wl_id_add_m.group(1))
+            if _target_uid == context.bot.id:
+                await reply_safely(message, "🤖 ربات نیازی به قرارگیری در لیست ادمین‌های مجازی خود ندارد.")
+                return
+            _wl_res = await _gm.group_whitelist_add_tool(chat.id, _target_uid, user.id)
+            await reply_safely(message, _wl_res)
+            return
+
+        _wl_id_del_m = re.match(r'^[!/](?:unwhitelist|آن\s*وایت\s*لیست|ان\s*وایت\s*لیست)\s+(\d+)$', _chk_low)
+        if _wl_id_del_m:
+            if not _can_whitelist:
+                await reply_safely(
+                    message,
+                    "❌ تنها مالک و سازنده اصلی این گروه (Group Owner/Creator) صلاحیت حذف ادمین‌های مجازی از وایت‌لیست ربات را دارد."
+                )
+                return
+            _target_uid = int(_wl_id_del_m.group(1))
+            _unwl_res = await _gm.group_whitelist_remove_tool(chat.id, _target_uid, user.id)
+            await reply_safely(message, _unwl_res)
+            return
+
+        # /whitelist or وایت لیست alone without reply: show list + help
+        if not message.reply_to_message and _chk_low in ["/whitelist", "!whitelist", "وایت لیست", "وایت‌لیست"]:
+            _wl_list_res = await _gm.group_whitelist_list_tool(chat.id, caller_id=user.id)
+            _hint = "\n\n<i>💡 برای افزودن ادمین مجازی، این دستور را روی پیام کاربر ریپلای کنید:</i> <code>وایت لیست</code>\n<i>یا از شناسه عددی استفاده کنید:</i> <code>/whitelist 12345678</code>"
+            await reply_safely(message, _wl_list_res + _hint)
+            return
+
+    if message.reply_to_message and (_can_mod or _can_whitelist) and user_text.strip():
         clean_cmd = user_text.strip().lower()
         target_user = message.reply_to_message.from_user
 
-        # 1. Direct Delete ("حذف", "پاک کن", "del", "delete")
-        if clean_cmd in ["حذف", "پاکش کن", "حذفش کن", "پاک کن", "حذف کن", "del", "delete", "/del", "/delete"]:
+        # 0a. Virtual Admin Whitelist ADD (STRICT: ONLY Group Creator/Owner has authority!)
+        _wl_add_triggers = [
+            "/whitelist", "!whitelist", "وایت لیست", "وایت‌لیست",
+            "ادمین ربات کن", "ادمین مجازیش کن", "ادمین مجازی کن", "ادمین رباتش کن",
+            "وایت‌لیستش کن", "وایت لیستش کن", "وایت لیست کن", "وایت‌لیست کن",
+            "ادمین ربات", "ادمین مجازی"
+        ]
+        if (any(clean_cmd == _w or clean_cmd.startswith(_w + " ") for _w in _wl_add_triggers)) and target_user:
+            if not _can_whitelist:
+                await reply_safely(
+                    message,
+                    "❌ تنها مالک و سازنده اصلی این گروه (Group Owner/Creator) صلاحیت افزودن ادمین‌های مجازی را دارد. حتی ادمین کل ربات در صورتی که مالک این گروه نباشد، این دسترسی را ندارد."
+                )
+                return
+            if target_user.id == context.bot.id:
+                await reply_safely(message, "🤖 ربات نیازی به قرارگیری در لیست ادمین‌های مجازی خود ندارد.")
+                return
+            if getattr(target_user, "is_bot", False):
+                await reply_safely(message, "❌ امکان افزودن سایر ربات‌ها به عنوان ادمین مجازی وجود ندارد.")
+                return
+            t_uid = target_user.id
+            t_uname = target_user.username or ""
+            t_fname = target_user.first_name or ""
+            _wl_res = await _gm.group_whitelist_add_tool(chat.id, t_uid, user.id, target_username=t_uname, target_first_name=t_fname)
+            await reply_safely(message, _wl_res)
+            return
+
+        # 0b. Virtual Admin Whitelist REMOVE (STRICT: ONLY Group Creator/Owner has authority!)
+        _wl_del_triggers = [
+            "/unwhitelist", "!unwhitelist", "آن‌وایت‌لیست", "ان‌وایت‌لیست",
+            "آن وایت‌لیست", "ان وایت‌لیست", "آن وایت لیست", "ان وایت لیست",
+            "حذف از وایت لیست", "حذف از وایت‌لیست",
+            "حذف از ادمین های ربات", "حذف از ادمین‌های ربات",
+            "حذف از ادمین های مجازی", "حذف از ادمین‌های مجازی",
+            "لغو ادمین ربات", "لغو ادمینی ربات", "عزل ادمین ربات"
+        ]
+        if (any(clean_cmd == _w or clean_cmd.startswith(_w + " ") for _w in _wl_del_triggers)) and target_user:
+            if not _can_whitelist:
+                await reply_safely(
+                    message,
+                    "❌ تنها مالک و سازنده اصلی این گروه (Group Owner/Creator) صلاحیت حذف ادمین‌های مجازی از وایت‌لیست ربات را دارد."
+                )
+                return
+            _unwl_res = await _gm.group_whitelist_remove_tool(chat.id, target_user.id, user.id)
+            await reply_safely(message, _unwl_res)
+            return
+
+        # 1. Direct Delete ("حذف", "پاک کن", "این پیامو پاک کن", "del", "delete")
+        _del_triggers = [
+            "حذف", "پاکش کن", "حذفش کن", "پاک کن", "حذف کن",
+            "این پیامو پاک کن", "این پیام رو پاک کن", "این پیام رو حذف کن", "این رو پاک کن", "این رو حذف کن",
+            "del", "delete", "/del", "/delete", "!del", "!delete"
+        ]
+        if any(clean_cmd == _dt or clean_cmd.startswith(_dt + " ") for _dt in _del_triggers):
+            if not _can_mod:
+                await reply_safely(message, "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید.")
+                return
             try:
                 await message.reply_to_message.delete()
             except Exception as e:
@@ -3108,22 +3217,42 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             try:
                 await message.delete()
             except Exception as e:
-                logger.warning(f"Failed to delete admin trigger message: {e}")
-            # Do NOT send any extra reply message! Complete silent deletion.
+                logger.warning(f"Failed to delete trigger message: {e}")
             return
 
         # 2. Direct Reply Ban ("بن", "مسدود", "ban", "بنش کن", "مسدودش کن")
-        elif clean_cmd in ["بن", "بنش کن", "مسدود", "مسدودش کن", "ban", "/ban"] and target_user:
+        _ban_triggers = [
+            "بن", "بنش کن", "بن کن", "بنش", "مسدود", "مسدودش کن", "مسدود کن", "مسدودش",
+            "اخراج دائم", "اخراج دائمش کن", "بلاک", "بلاک کن", "بلاکش کن", "ban", "/ban", "!ban"
+        ]
+        if (clean_cmd in _ban_triggers or any(clean_cmd.startswith(b + " ") for b in _ban_triggers)) and target_user:
+            if not _can_mod:
+                await reply_safely(message, "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید.")
+                return
             if target_user.id == ADMIN_ID:
                 await message.reply_text(t(ulang, "immune"))
                 return
+            if target_user.id == context.bot.id:
+                await reply_safely(message, "🤖 ربات نمی‌تواند خودش را مسدود کند.")
+                return
+            target_auth = await _gm.resolve_group_user_authority(chat.id, target_user.id, context.bot) if _is_group else {}
+            if target_auth.get("is_creator"):
+                await reply_safely(message, "⛔ مالک و سازنده اصلی گروه دارای مصونیت است و قابل بن شدن نیست.")
+                return
+
+            if _is_group:
+                try:
+                    await context.bot.ban_chat_member(chat.id, target_user.id)
+                except Exception as e:
+                    logger.warning(f"Telegram ban_chat_member failed: {e}")
+
             target_uname = target_user.username or ""
             target_uid = target_user.id
             target_fname = target_user.first_name or ""
             src_chat_title = chat.title or ""
             await database.ban_target_async(
                 target_uid,
-                reason="دستور مستقیم فرمانده بر روی پیام",
+                reason="دستور مدیریتی بر روی پیام",
                 first_name=target_fname,
                 banned_by=user.id,
                 source_chat_id=chat.id,
@@ -3132,7 +3261,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             if target_uname:
                 await database.ban_target_async(
                     f"@{target_uname}",
-                    reason="دستور مستقیم فرمانده بر روی پیام",
+                    reason="دستور مدیریتی بر روی پیام",
                     first_name=target_fname,
                     banned_by=user.id,
                     source_chat_id=chat.id,
@@ -3144,8 +3273,53 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await reply_safely(message, t(ulang, "ban_done", name=who, uid=target_uid))
             return
 
+        # 2b. Direct Reply Kick ("کیک", "کیکش کن", "بنداز بیرون", "اخراج", "kick")
+        _kick_triggers = [
+            "کیک", "کیکش کن", "کیک کن", "بنداز بیرون", "بندازش بیرون",
+            "اخراج", "اخراجش کن", "اخراج کن", "kick", "/kick", "!kick"
+        ]
+        if (clean_cmd in _kick_triggers or any(clean_cmd.startswith(k + " ") for k in _kick_triggers)) and target_user:
+            if not _can_mod:
+                await reply_safely(message, "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید.")
+                return
+            if target_user.id == ADMIN_ID:
+                await message.reply_text(t(ulang, "immune"))
+                return
+            if target_user.id == context.bot.id:
+                await reply_safely(message, "🤖 ربات نمی‌تواند خودش را اخراج کند.")
+                return
+            target_auth = await _gm.resolve_group_user_authority(chat.id, target_user.id, context.bot) if _is_group else {}
+            if target_auth.get("is_creator"):
+                await reply_safely(message, "⛔ مالک و سازنده اصلی گروه دارای مصونیت است و قابل اخراج نیست.")
+                return
+
+            if _is_group:
+                try:
+                    await context.bot.ban_chat_member(chat.id, target_user.id)
+                    await context.bot.unban_chat_member(chat.id, target_user.id)
+                    t_name = target_user.first_name or (f"@{target_user.username}" if target_user.username else f"کاربر {target_user.id}")
+                    await reply_safely(message, f"👢 {t_name} با موفقیت از گروه اخراج گردید.")
+                    return
+                except Exception as e:
+                    await reply_safely(message, f"❌ خطا در اخراج کاربر: {e}")
+                    return
+
         # 3. Direct Reply Unban ("آنبن", "آن بن", "انبن", "unban", "آزادش کن")
-        elif clean_cmd in ["آنبن", "آن بن", "انبن", "unban", "/unban", "آزادش کن", "آنبنش کن"] and target_user:
+        _unban_triggers = [
+            "آنبن", "آن بن", "آن‌بن", "انبن", "ان بن", "ان‌بن",
+            "unban", "/unban", "!unban", "آزادش کن", "آزاد کن",
+            "آنبنش کن", "آن بنش کن", "انبنش کن", "رفع مسدودی", "رفع بن", "لغو بن",
+            "از بن دربیار", "از مسدودی دربیار"
+        ]
+        if (any(clean_cmd == ub or clean_cmd.startswith(ub + " ") for ub in _unban_triggers) or clean_cmd.startswith("unban") or clean_cmd.startswith("/unban") or clean_cmd.startswith("!unban")) and target_user:
+            if not _can_mod:
+                await reply_safely(message, "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید.")
+                return
+            if _is_group:
+                try:
+                    await context.bot.unban_chat_member(chat.id, target_user.id)
+                except Exception as e:
+                    logger.warning(f"Telegram unban_chat_member failed: {e}")
             target_uname = target_user.username or ""
             target_uid = target_user.id
             await database.unban_target_async(target_uid)
@@ -3157,51 +3331,103 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await reply_safely(message, t(ulang, "unban_done", name=target_name, uid=target_uid))
             return
 
-        # 3b. Direct Reply Mute with duration (MUTE30 / MUTE2H / MUTE1D / MUTE + text)
-        elif (clean_cmd == "mute" or clean_cmd.startswith("mute") or clean_cmd in ["/mute"]) and target_user:
-            _m = re.match(r"^(mute)\s*(\d+\s*[mhd])?$", clean_cmd)
-            _sfx = (_m.group(2) or "").replace(" ", "") if _m else ""
-            _dur = 1800
-            try:
-                if _sfx:
-                    _n = int(re.sub(r"[^0-9]", "", _sfx) or 0)
-                    _u = re.sub(r"[0-9\s]", "", _sfx).lower()
-                    _dur = _n * (60 if _u == "m" else (3600 if _u == "h" else 86400)) if _n else 1800
-                else:
-                    _dur = database.parse_mute_duration_to_sec(user_text)
-                    if not _dur:
-                        _dur = 1800
-            except Exception:
-                _dur = 1800
+        # 3b. Direct Reply Mute with duration (MUTE30 / MUTE2H / MUTE1D / MUTE / سکوت / میوت)
+        _mute_triggers = [
+            "mute", "/mute", "!mute", "سکوت", "میوت", "ساکت",
+            "میوتش کن", "میوت کن", "ساکتش کن", "ساکت کن",
+            "سکوت بده", "سکوتش کن", "سکوت کن"
+        ]
+        if (
+            any(clean_cmd == m or clean_cmd.startswith(m + " ") for m in _mute_triggers)
+            or clean_cmd.startswith("mute")
+            or clean_cmd.startswith("/mute")
+            or clean_cmd.startswith("!mute")
+        ) and target_user:
+            if not _can_mod:
+                await reply_safely(message, "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید.")
+                return
             if target_user.id == ADMIN_ID:
                 await message.reply_text(t(ulang, "immune"))
                 return
-            await database.mute_target_async(target_user.id, _dur, "direct-reply-mute", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
-            if target_user.username:
-                await database.mute_target_async("@" + target_user.username, _dur, "direct-reply-mute", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
-            await reply_safely(message, t(ulang, "mute_done", dur=database.format_mute_remaining(_dur, ulang)))
-            return
+            if target_user.id == context.bot.id:
+                await reply_safely(message, "🤖 ربات نمی‌تواند خودش را میوت کند.")
+                return
+            target_auth = await _gm.resolve_group_user_authority(chat.id, target_user.id, context.bot) if _is_group else {}
+            if target_auth.get("is_creator"):
+                await reply_safely(message, "⛔ مالک و سازنده اصلی گروه دارای مصونیت است و قابل میوت شدن نیست.")
+                return
 
-        # 3b2. Persian Reply Mute triggers with duration words
-        elif (clean_cmd == "سکوت" or clean_cmd.startswith("سکوت") or clean_cmd in ["میوت", "میوتش کن", "سکوتش کن"]) and target_user:
-            _dur = database.parse_mute_duration_to_sec(user_text)
-            if not _dur:
-                _dur = 1800
-            if target_user.id == ADMIN_ID:
-                await message.reply_text(t(ulang, "immune"))
-                return
-            await database.mute_target_async(target_user.id, _dur, "direct-reply-mute-fa", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
+            _dur = max(30, int(database.parse_mute_duration_to_sec(user_text) or 3600))
+            if _is_group:
+                try:
+                    from telegram import ChatPermissions
+                    perms = ChatPermissions(can_send_messages=False)
+                    until_ts = int(time.time()) + _dur
+                    await context.bot.restrict_chat_member(chat.id, target_user.id, permissions=perms, until_date=until_ts)
+                except Exception as e:
+                    logger.warning(f"Telegram restrict_chat_member failed: {e}")
+
+            await database.mute_target_async(target_user.id, _dur, "group-moderation-mute", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
             if target_user.username:
-                await database.mute_target_async("@" + target_user.username, _dur, "direct-reply-mute-fa", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
+                await database.mute_target_async("@" + target_user.username, _dur, "group-moderation-mute", first_name=target_user.first_name or "", muted_by=user.id, source_chat_id=chat.id, source_chat_title=chat.title or "")
             await reply_safely(message, t(ulang, "mute_done", dur=database.format_mute_remaining(_dur, ulang)))
             return
 
         # 3c. Direct Reply Unmute (EN + FA triggers)
-        elif (clean_cmd in ["unmute", "/unmute", "un mute", "آنمیوت", "آن میوت", "رفع سکوت"] or clean_cmd.startswith("لغو سکوت")) and target_user:
+        _unmute_triggers = [
+            "unmute", "/unmute", "!unmute", "un mute",
+            "آنمیوت", "آن میوت", "آن‌میوت", "انمیوت", "ان میوت", "ان‌میوت",
+            "آنمیوتش کن", "آن میوتش کن", "آن‌میوتش کن", "انمیوتش کن",
+            "رفع سکوت", "رفع سکوتش کن", "لغو سکوت", "لغو سکوتش کن",
+            "از سکوت دربیار", "از سکوت درش بیار", "از سکوت دربیارش"
+        ]
+        if (
+            any(clean_cmd == u or clean_cmd.startswith(u + " ") for u in _unmute_triggers)
+            or clean_cmd.startswith("unmute")
+            or clean_cmd.startswith("/unmute")
+            or clean_cmd.startswith("!unmute")
+            or clean_cmd.startswith("لغو سکوت")
+            or clean_cmd.startswith("رفع سکوت")
+        ) and target_user:
+            if not _can_mod:
+                await reply_safely(message, "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید.")
+                return
+            if _is_group:
+                try:
+                    from telegram import ChatPermissions
+                    perms = ChatPermissions(can_send_messages=True)
+                    await context.bot.restrict_chat_member(chat.id, target_user.id, permissions=perms)
+                except Exception as e:
+                    logger.warning(f"Telegram unrestrict error: {e}")
             await database.unmute_target_async(target_user.id)
             if target_user.username:
                 await database.unmute_target_async("@" + target_user.username)
             await reply_safely(message, t(ulang, "unmute_done"))
+            return
+
+        # 3c2. Direct Reply Pin & Unpin ("پین", "سنجاق", "آنپین")
+        _pin_triggers = ["پین", "پینش کن", "پین کن", "سنجاق", "سنجاقش کن", "سنجاق کن", "این پیامو پین کن", "این پیام رو پین کن", "pin", "/pin", "!pin"]
+        if any(clean_cmd == p or clean_cmd.startswith(p + " ") for p in _pin_triggers):
+            if not _can_mod:
+                await reply_safely(message, "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید.")
+                return
+            try:
+                await context.bot.pin_chat_message(chat.id, message.reply_to_message.message_id)
+                await reply_safely(message, "📌 پیام با موفقیت در گروه سنجاق (پین) گردید.")
+            except Exception as e:
+                await reply_safely(message, f"❌ خطا در پین کردن پیام: {e}")
+            return
+
+        _unpin_triggers = ["آنپین", "آن پین", "آن‌پین", "انپین", "ان پین", "ان‌پین", "آنپینش کن", "از پین دربیار", "سنجاقشو بردار", "unpin", "/unpin", "!unpin"]
+        if any(clean_cmd == up or clean_cmd.startswith(up + " ") for up in _unpin_triggers):
+            if not _can_mod:
+                await reply_safely(message, "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید.")
+                return
+            try:
+                await context.bot.unpin_chat_message(chat.id, message.reply_to_message.message_id)
+                await reply_safely(message, "📌 سنجاق پیام با موفقیت برداشته شد.")
+            except Exception as e:
+                await reply_safely(message, f"❌ خطا در آنپین کردن پیام: {e}")
             return
 
         # 3d. Direct Reply User ID & Identity Extraction ("آیدی", "شناسه", "آیدیش چنده", "getid", "whois", "استعلام")

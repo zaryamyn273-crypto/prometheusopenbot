@@ -6,11 +6,11 @@ import re
 import urllib.parse
 import io
 from bs4 import BeautifulSoup
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 from src.tools.registry import register_tool
 from src.core import database
-from src.core.http import shared_client_ctx
+from src.core.http import shared_client_ctx, get_http_client
 from src.tools.media import transcription  # noqa - side effect: registers transcribe_audio_tool
 from src.tools.media import barcode  # noqa - side effect: registers generate_barcode_tool & reconstruct_damaged_barcode_tool
 
@@ -18,20 +18,91 @@ __all__ = ["transcription", "barcode"]
 
 logger = logging.getLogger(__name__)
 
-_http_limits = httpx.Limits(max_keepalive_connections=100, max_connections=200, keepalive_expiry=240.0)
 _shared_client: Optional[httpx.AsyncClient] = None
 
 def get_async_client() -> httpx.AsyncClient:
-    global _shared_client
-    if _shared_client is None or _shared_client.is_closed:
-        _shared_client = httpx.AsyncClient(
-            limits=_http_limits,
-            timeout=12.0,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-            }
-        )
-    return _shared_client
+    try:
+        return get_http_client("fast")
+    except Exception:
+        global _shared_client
+        if _shared_client is None or _shared_client.is_closed:
+            _shared_client = httpx.AsyncClient(
+                limits=httpx.Limits(max_keepalive_connections=100, max_connections=200, keepalive_expiry=240.0),
+                timeout=8.0,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+                }
+            )
+        return _shared_client
+
+# Ultra-Fast Bounded L1 RAM Caches for Media (<0.02ms latency)
+_L1_MUSIC_CACHE: Dict[str, Tuple[float, Any]] = {}
+_L1_MUSIC_TTL = 1800.0  # 30 minutes in RAM
+_L1_MUSIC_MAX_KEYS = 300
+
+_L1_LYRICS_CACHE: Dict[str, Tuple[float, Any]] = {}
+_L1_LYRICS_TTL = 3600.0  # 1 hour in RAM
+_L1_LYRICS_MAX_KEYS = 300
+
+def _l1_music_put(key: str, val: Any) -> None:
+    try:
+        if not key or not val:
+            return
+        if len(_L1_MUSIC_CACHE) >= _L1_MUSIC_MAX_KEYS:
+            now = time.time()
+            expired = [k for k, (ts, _) in _L1_MUSIC_CACHE.items() if (now - ts) > _L1_MUSIC_TTL]
+            for k in expired:
+                _L1_MUSIC_CACHE.pop(k, None)
+            if len(_L1_MUSIC_CACHE) >= _L1_MUSIC_MAX_KEYS:
+                for _k in list(_L1_MUSIC_CACHE.keys())[:50]:
+                    _L1_MUSIC_CACHE.pop(_k, None)
+        _L1_MUSIC_CACHE[key] = (time.time(), val)
+    except Exception:
+        pass
+
+def _l1_music_get(key: str) -> Optional[Any]:
+    try:
+        if not key:
+            return None
+        entry = _L1_MUSIC_CACHE.get(key)
+        if entry is not None:
+            ts, val = entry
+            if (time.time() - ts) < _L1_MUSIC_TTL:
+                return val
+            _L1_MUSIC_CACHE.pop(key, None)
+    except Exception:
+        pass
+    return None
+
+def _l1_lyrics_put(key: str, val: Any) -> None:
+    try:
+        if not key or not val:
+            return
+        if len(_L1_LYRICS_CACHE) >= _L1_LYRICS_MAX_KEYS:
+            now = time.time()
+            expired = [k for k, (ts, _) in _L1_LYRICS_CACHE.items() if (now - ts) > _L1_LYRICS_TTL]
+            for k in expired:
+                _L1_LYRICS_CACHE.pop(k, None)
+            if len(_L1_LYRICS_CACHE) >= _L1_LYRICS_MAX_KEYS:
+                for _k in list(_L1_LYRICS_CACHE.keys())[:50]:
+                    _L1_LYRICS_CACHE.pop(_k, None)
+        _L1_LYRICS_CACHE[key] = (time.time(), val)
+    except Exception:
+        pass
+
+def _l1_lyrics_get(key: str) -> Optional[Any]:
+    try:
+        if not key:
+            return None
+        entry = _L1_LYRICS_CACHE.get(key)
+        if entry is not None:
+            ts, val = entry
+            if (time.time() - ts) < _L1_LYRICS_TTL:
+                return val
+            _L1_LYRICS_CACHE.pop(key, None)
+    except Exception:
+        pass
+    return None
 
 def clean_music_query(q: str) -> str:
     cleaned = re.sub(r'[\\/:\*\?\"<>\|]', ' ', q or '')
@@ -290,6 +361,10 @@ async def download_music_track(query: str) -> Any:
         return "لطفاً نام موزیک، خواننده یا بخشی از متن ترانه را مشخص فرمایید."
 
     cache_key = f"music_v2_{clean_q.replace(' ', '_')}"
+    l1_cached = _l1_music_get(cache_key)
+    if l1_cached is not None:
+        return l1_cached
+
     try:
         cached = await database.kv_get_cache_async(cache_key)
     except Exception:
@@ -303,8 +378,10 @@ async def download_music_track(query: str) -> Any:
                 t = hit.get("type")
                 # Instant Sub-Second Delivery via Cached Telegram File-ID
                 if t == "audio_file_id" and hit.get("file_id"):
+                    _l1_music_put(cache_key, hit)
                     return hit
                 if (t == "audio_bytes" and hit.get("bytes")) or (t == "audio" and hit.get("url")):
+                    _l1_music_put(cache_key, hit)
                     return hit
                 # Tiny cached YouTube video ID: stream audio straight from it,
                 # skipping search (~8s) AND metadata lookups entirely.
@@ -376,7 +453,7 @@ async def download_music_track(query: str) -> Any:
         cdn_bytes = await _stream_candidate_mp3(cand["url"])
         if cdn_bytes:
             thumb_url = cand.get("cover") or (sp_meta.get("cover") if sp_meta else "") or (meta.get("cover") if meta else "")
-            return {
+            res_val = {
                 "type": "audio_bytes",
                 "bytes": cdn_bytes,
                 "title": cand.get("title", clean_q),
@@ -390,6 +467,8 @@ async def download_music_track(query: str) -> Any:
                     f"• *منبع*: `High-Speed Direct Studio CDN`"
                 )
             }
+            _l1_music_put(cache_key, res_val)
+            return res_val
 
     # 2. Universal Global Web MP3 Discovery (Covers International, English, Pop & Indie tracks)
     web_cand = await _search_global_mp3_via_web(clean_q, t_tokens)
@@ -399,7 +478,7 @@ async def download_music_track(query: str) -> Any:
             final_title = (sp_meta.get("title") if sp_meta else (meta.get("title") if meta else clean_q.title()))
             final_artist = (sp_meta.get("artist") if sp_meta else (meta.get("performer") if meta else "Prometheus Music"))
             thumb_url = (sp_meta.get("cover") if sp_meta else "") or (meta.get("cover") if meta else "")
-            return {
+            res_val = {
                 "type": "audio_bytes",
                 "bytes": web_bytes,
                 "title": final_title,
@@ -413,13 +492,15 @@ async def download_music_track(query: str) -> Any:
                     f"• *منبع*: `Direct Global Music CDN`"
                 )
             }
+            _l1_music_put(cache_key, res_val)
+            return res_val
 
     # 3. Studio Quality YouTube 320kbps Extraction (Fallback or primary for rare tracks)
     try:
         yt_tokens = _tokenize_fa(portal_query)
         yt_res = await _yt.youtube_download_full_track(portal_query, yt_tokens, sp_meta)
         if yt_res and yt_res.get("audio_bytes"):
-            return {
+            res_val = {
                 "type": "audio_bytes",
                 "bytes": yt_res["audio_bytes"],
                 "title": yt_res["title"],
@@ -433,6 +514,8 @@ async def download_music_track(query: str) -> Any:
                     f"• *کاور*: `Spotify/Apple Music` | *منبع صوت*: `HQ Studio Audio`"
                 ),
             }
+            _l1_music_put(cache_key, res_val)
+            return res_val
     except Exception as e:
         logger.debug(f"YouTube strategy failed: {e}")
 
@@ -445,7 +528,7 @@ async def download_music_track(query: str) -> Any:
             f"• *کیفیت*: `{fallback_cand.get('quality', '320kbps HQ')}`\n\n"
             f"🔗 [دریافت مستقیم فایل صوتی MP3]({fallback_cand['url']})"
         )
-        return {
+        res_val = {
             "type": "audio",
             "url": fallback_cand["url"],
             "title": fallback_cand.get("title", clean_q),
@@ -453,6 +536,8 @@ async def download_music_track(query: str) -> Any:
             "thumb": fallback_cand.get("cover", ""),
             "caption": caption
         }
+        _l1_music_put(cache_key, res_val)
+        return res_val
 
     return f"نسخه صوتی کامل برای «{query}» در پایگاه‌های موسیقی یافت نشد."
 

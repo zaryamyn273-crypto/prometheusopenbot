@@ -385,3 +385,341 @@ async def leave_group_by_admin_tool(
     await database.remove_group_presence_async(target_chat_id)
 
     return f"خروج انجام شد: ربات از گروه {name_str}(`{target_chat_id}`) خارج شد. رکورد گروه به صورت غیرفعال نگه داشته شد."
+
+
+# =========================================================================
+# Group Authority & Moderation Actions (Delete, Ban, Kick, Mute, Pin)
+# Only Group Owner (Creator) can whitelist/unwhitelist.
+# Owner, Telegram Admins, and Whitelisted Virtual Admins can moderate.
+# =========================================================================
+
+async def resolve_group_user_authority(chat_id: int, user_id: int, bot_inst=None) -> dict:
+    """
+    Resolves the exact permissions of user_id in chat_id.
+    Returns:
+      is_creator: True only if user is Telegram Owner/Creator of the chat
+      is_tg_admin: True if user is Telegram Creator or Administrator
+      is_whitelisted: True if user is in the group's virtual admin whitelist
+      can_moderate: True if user is Creator, Telegram Admin, or Whitelisted
+      can_manage_whitelist: True ONLY for the Creator/Owner (Even global ADMIN_ID cannot if not creator!)
+    """
+    cid = int(chat_id)
+    uid = int(user_id)
+    if not bot_inst:
+        bot_inst = get_bot_instance()
+    if not bot_inst:
+        bot_inst, _ = await _resolve_live_bot()
+
+    is_creator = False
+    is_tg_admin = False
+    if bot_inst:
+        try:
+            from telegram.constants import ChatMemberStatus
+            try:
+                mem = await bot_inst.get_chat_member(chat_id=cid, user_id=uid)
+            except TypeError:
+                mem = await bot_inst.get_chat_member(cid, uid)
+            status = getattr(mem, "status", None)
+            owner_val = getattr(ChatMemberStatus, "OWNER", getattr(ChatMemberStatus, "CREATOR", "owner"))
+            admin_val = getattr(ChatMemberStatus, "ADMINISTRATOR", "administrator")
+            st_str = str(status).lower() if status is not None else ""
+            if status == owner_val or "creator" in st_str or "owner" in st_str:
+                is_creator = True
+                is_tg_admin = True
+            elif status == admin_val or "admin" in st_str:
+                is_tg_admin = True
+        except Exception as e:
+            logger.debug(f"get_chat_member check failed for {uid} in {cid}: {e}")
+
+    is_whitelisted = database.is_user_group_whitelisted(cid, uid)
+    can_moderate = is_creator or is_tg_admin or is_whitelisted
+
+    # CRUCIAL RULE: Only the Owner/Creator of this specific group can manage the whitelist!
+    # Even the global bot admin (ADMIN_ID) CANNOT whitelist admins unless they are the Owner/Creator of this group.
+    can_manage_whitelist = is_creator
+
+    return {
+        "is_creator": is_creator,
+        "is_tg_admin": is_tg_admin,
+        "is_whitelisted": is_whitelisted,
+        "can_moderate": can_moderate,
+        "can_manage_whitelist": can_manage_whitelist
+    }
+
+
+@register_tool(
+    name="group_whitelist_add_tool",
+    description="افزودن کاربر به لیست ادمین‌های مجازی ربات در گروه (صلاحیت اجرای فرامین به ربات؛ منحصراً در اختیار مالک و اونر اصلی گروه)",
+    category="admin"
+)
+async def group_whitelist_add_tool(
+    chat_id: int,
+    target_user_id: int,
+    caller_id: int,
+    target_username: str = "",
+    target_first_name: str = "",
+    bot_inst=None
+) -> str:
+    """Adds a user to the group's virtual admin whitelist. ONLY Group Owner can execute."""
+    auth = await resolve_group_user_authority(chat_id, caller_id, bot_inst=bot_inst)
+    if not auth["can_manage_whitelist"]:
+        return "❌ تنها مالک و سازنده اصلی این گروه (Group Owner/Creator) صلاحیت افزودن ادمین‌های مجازی به وایت‌لیست ربات را دارد. حتی ادمین کل ربات در صورتی که مالک این گروه نباشد، این دسترسی را ندارد."
+
+    success = await database.add_group_whitelisted_admin_async(
+        chat_id=chat_id,
+        user_id=target_user_id,
+        added_by=caller_id,
+        username=target_username,
+        first_name=target_first_name
+    )
+    name_label = target_first_name or (f"@{target_username}" if target_username else f"کاربر {target_user_id}")
+    if success:
+        return f"✅ {name_label} (`{target_user_id}`) با موفقیت توسط مالک گروه به لیست ادمین‌های مجازی ربات اضافه شد و اکنون می‌تواند فرامین مدیریتی (حذف، بن، میوت، پین) را صادر کند."
+    return f"❌ خطا در افزودن {name_label} به وایت‌لیست ادمین‌های مجازی."
+
+
+@register_tool(
+    name="group_whitelist_remove_tool",
+    description="حذف کاربر از لیست ادمین‌های مجازی ربات در گروه (منحصراً در اختیار مالک و اونر اصلی گروه)",
+    category="admin"
+)
+async def group_whitelist_remove_tool(
+    chat_id: int,
+    target_user_id: int,
+    caller_id: int,
+    bot_inst=None
+) -> str:
+    """Removes a user from the group's virtual admin whitelist. ONLY Group Owner can execute."""
+    auth = await resolve_group_user_authority(chat_id, caller_id, bot_inst=bot_inst)
+    if not auth["can_manage_whitelist"]:
+        return "❌ تنها مالک و سازنده اصلی این گروه (Group Owner/Creator) صلاحیت حذف ادمین‌های مجازی از وایت‌لیست ربات را دارد."
+
+    success = await database.remove_group_whitelisted_admin_async(chat_id=chat_id, user_id=target_user_id)
+    if success:
+        return f"✅ کاربر `{target_user_id}` با موفقیت از لیست ادمین‌های مجازی ربات در این گروه حذف شد."
+    return f"❌ خطا در حذف کاربر `{target_user_id}` از وایت‌لیست."
+
+
+@register_tool(
+    name="group_whitelist_list_tool",
+    description="مشاهده لیست تمام ادمین‌های مجازی وایت‌لیست‌شده ربات در گروه",
+    category="admin"
+)
+async def group_whitelist_list_tool(chat_id: int, caller_id: int = 0) -> str:
+    """Lists all whitelisted virtual admins for this group."""
+    admins = await database.get_group_whitelisted_admins_async(chat_id)
+    if not admins:
+        return "📋 هیچ ادمین مجازی برای این گروه در وایت‌لیست ربات ثبت نشده است."
+
+    lines = ["📋 *لیست ادمین‌های مجازی مجاز ربات در این گروه:*\n"]
+    for idx, a in enumerate(admins, 1):
+        uname = f" (@{a['username']})" if a.get("username") else ""
+        fname = a.get("first_name") or "ادمین مجازی"
+        uid = a.get("user_id")
+        lines.append(f"{idx}. 👤 *{fname}*{uname} — شناسه: `<code>{uid}</code>`")
+    return "\n".join(lines)
+
+
+@register_tool(
+    name="group_delete_message_tool",
+    description="حذف یک پیام در گروه (مختص اونر، ادمین‌های تلگرام، و ادمین‌های مجازی وایت‌لیست‌شده)",
+    category="admin"
+)
+async def group_delete_message_tool(chat_id: int, message_id: int, caller_id: int, bot_inst=None) -> str:
+    auth = await resolve_group_user_authority(chat_id, caller_id, bot_inst=bot_inst)
+    if not auth["can_moderate"]:
+        return "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید (نیاز به دسترسی اونر، ادمین گروه، یا ادمین مجازی وایت‌لیست‌شده)."
+
+    if not bot_inst:
+        bot_inst = get_bot_instance()
+    if not bot_inst:
+        bot_inst, _ = await _resolve_live_bot()
+    if not bot_inst:
+        return "❌ اتصال ربات به تلگرام برقرار نیست."
+
+    try:
+        await bot_inst.delete_message(chat_id=chat_id, message_id=message_id)
+        return "✅ پیام با موفقیت حذف گردید."
+    except Exception as e:
+        return f"❌ خطا در حذف پیام: {e} (اطمینان حاصل کنید ربات دسترسی ادمین 'حذف پیام' را دارد)"
+
+
+@register_tool(
+    name="group_ban_member_tool",
+    description="مسدودسازی و بن دائمی کاربر از گروه (مختص اونر، ادمین‌های تلگرام، و ادمین‌های مجازی وایت‌لیست‌شده)",
+    category="admin"
+)
+async def group_ban_member_tool(chat_id: int, target_user_id: int, caller_id: int, reason: str = "", bot_inst=None) -> str:
+    auth = await resolve_group_user_authority(chat_id, caller_id, bot_inst=bot_inst)
+    if not auth["can_moderate"]:
+        return "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید."
+
+    # Prevent banning supreme commander or group creator
+    if is_admin_id(target_user_id):
+        return "⛔ فرمانده ارشد ربات مصونیت مطلق دارد و قابل بن شدن نیست."
+
+    target_auth = await resolve_group_user_authority(chat_id, target_user_id, bot_inst=bot_inst)
+    if target_auth["is_creator"]:
+        return "⛔ مالک و اونر اصلی گروه قابل بن شدن نیست."
+
+    if not bot_inst:
+        bot_inst = get_bot_instance()
+    if not bot_inst:
+        bot_inst, _ = await _resolve_live_bot()
+    if not bot_inst:
+        return "❌ اتصال ربات به تلگرام برقرار نیست."
+
+    try:
+        await bot_inst.ban_chat_member(chat_id=chat_id, user_id=target_user_id)
+        return f"🚫 کاربر `{target_user_id}` با موفقیت از گروه مسدود و اخراج شد."
+    except Exception as e:
+        return f"❌ خطا در بن کردن کاربر: {e} (اطمینان حاصل کنید ربات دسترسی ادمین 'مسدودسازی کاربران' را دارد)"
+
+
+@register_tool(
+    name="group_kick_member_tool",
+    description="اخراج موقت کاربر از گروه بدون بن دائمی (مختص اونر، ادمین‌های تلگرام، و ادمین‌های مجازی وایت‌لیست‌شده)",
+    category="admin"
+)
+async def group_kick_member_tool(chat_id: int, target_user_id: int, caller_id: int, bot_inst=None) -> str:
+    auth = await resolve_group_user_authority(chat_id, caller_id, bot_inst=bot_inst)
+    if not auth["can_moderate"]:
+        return "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید."
+
+    if is_admin_id(target_user_id) or (await resolve_group_user_authority(chat_id, target_user_id, bot_inst=bot_inst))["is_creator"]:
+        return "⛔ این کاربر دارای مصونیت است و قابل اخراج نیست."
+
+    if not bot_inst:
+        bot_inst = get_bot_instance()
+    if not bot_inst:
+        bot_inst, _ = await _resolve_live_bot()
+    if not bot_inst:
+        return "❌ اتصال ربات به تلگرام برقرار نیست."
+
+    try:
+        await bot_inst.ban_chat_member(chat_id=chat_id, user_id=target_user_id)
+        await bot_inst.unban_chat_member(chat_id=chat_id, user_id=target_user_id)
+        return f"👢 کاربر `{target_user_id}` با موفقیت از گروه اخراج گردید."
+    except Exception as e:
+        return f"❌ خطا در اخراج کاربر: {e}"
+
+
+@register_tool(
+    name="group_mute_member_tool",
+    description="سکوت موقت کاربر در گروه (مختص اونر، ادمین‌های تلگرام، و ادمین‌های مجازی وایت‌لیست‌شده)",
+    category="admin"
+)
+async def group_mute_member_tool(chat_id: int, target_user_id: int, caller_id: int, duration_seconds: int = 3600, bot_inst=None) -> str:
+    auth = await resolve_group_user_authority(chat_id, caller_id, bot_inst=bot_inst)
+    if not auth["can_moderate"]:
+        return "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید."
+
+    if is_admin_id(target_user_id) or (await resolve_group_user_authority(chat_id, target_user_id, bot_inst=bot_inst))["is_creator"]:
+        return "⛔ این کاربر دارای مصونیت است و قابل میوت شدن نیست."
+
+    if not bot_inst:
+        bot_inst = get_bot_instance()
+    if not bot_inst:
+        bot_inst, _ = await _resolve_live_bot()
+    if not bot_inst:
+        return "❌ اتصال ربات به تلگرام برقرار نیست."
+
+    try:
+        import time as _t
+        from telegram import ChatPermissions
+        until_ts = int(_t.time()) + max(60, min(86400 * 365, int(duration_seconds or 3600)))
+        permissions = ChatPermissions(
+            can_send_messages=False
+        )
+        await bot_inst.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=target_user_id,
+            permissions=permissions,
+            until_date=until_ts
+        )
+        mins = int(duration_seconds // 60)
+        return f"🔇 کاربر `{target_user_id}` به مدت {mins} دقیقه در گروه در حالت سکوت (Mute) قرار گرفت."
+    except Exception as e:
+        return f"❌ خطا در اعمال سکوت: {e}"
+
+
+@register_tool(
+    name="group_unmute_member_tool",
+    description="رفع سکوت (آنمیوت) کاربر در گروه (مختص اونر، ادمین‌های تلگرام، و ادمین‌های مجازی وایت‌لیست‌شده)",
+    category="admin"
+)
+async def group_unmute_member_tool(chat_id: int, target_user_id: int, caller_id: int, bot_inst=None) -> str:
+    auth = await resolve_group_user_authority(chat_id, caller_id, bot_inst=bot_inst)
+    if not auth["can_moderate"]:
+        return "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید."
+
+    if not bot_inst:
+        bot_inst = get_bot_instance()
+    if not bot_inst:
+        bot_inst, _ = await _resolve_live_bot()
+    if not bot_inst:
+        return "❌ اتصال ربات به تلگرام برقرار نیست."
+
+    try:
+        from telegram import ChatPermissions
+        permissions = ChatPermissions(
+            can_send_messages=True
+        )
+        await bot_inst.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=target_user_id,
+            permissions=permissions
+        )
+        return f"🔊 سکوت کاربر `{target_user_id}` با موفقیت برداشته شد."
+    except Exception as e:
+        return f"❌ خطا در رفع سکوت: {e}"
+
+
+@register_tool(
+    name="group_pin_message_tool",
+    description="سنجاق (پین) کردن پیام در گروه (مختص اونر، ادمین‌های تلگرام، و ادمین‌های مجازی وایت‌لیست‌شده)",
+    category="admin"
+)
+async def group_pin_message_tool(chat_id: int, message_id: int, caller_id: int, notify: bool = False, bot_inst=None) -> str:
+    auth = await resolve_group_user_authority(chat_id, caller_id, bot_inst=bot_inst)
+    if not auth["can_moderate"]:
+        return "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید."
+
+    if not bot_inst:
+        bot_inst = get_bot_instance()
+    if not bot_inst:
+        bot_inst, _ = await _resolve_live_bot()
+    if not bot_inst:
+        return "❌ اتصال ربات به تلگرام برقرار نیست."
+
+    try:
+        await bot_inst.pin_chat_message(chat_id=chat_id, message_id=message_id, disable_notification=not notify)
+        return "📌 پیام با موفقیت در گروه سنجاق (پین) گردید."
+    except Exception as e:
+        return f"❌ خطا در پین کردن پیام: {e}"
+
+
+@register_tool(
+    name="group_unpin_message_tool",
+    description="برداشتن سنجاق (آنپین) پیام در گروه (مختص اونر، ادمین‌های تلگرام، و ادمین‌های مجازی وایت‌لیست‌شده)",
+    category="admin"
+)
+async def group_unpin_message_tool(chat_id: int, message_id: int, caller_id: int, bot_inst=None) -> str:
+    auth = await resolve_group_user_authority(chat_id, caller_id, bot_inst=bot_inst)
+    if not auth["can_moderate"]:
+        return "❌ شما صلاحیت اجرای فرامین مدیریتی در این گروه را ندارید."
+
+    if not bot_inst:
+        bot_inst = get_bot_instance()
+    if not bot_inst:
+        bot_inst, _ = await _resolve_live_bot()
+    if not bot_inst:
+        return "❌ اتصال ربات به تلگرام برقرار نیست."
+
+    try:
+        await bot_inst.unpin_chat_message(chat_id=chat_id, message_id=message_id)
+        return "📌 سنجاق پیام با موفقیت برداشته شد."
+    except Exception as e:
+        return f"❌ خطا در آنپین کردن پیام: {e}"
+
+

@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     ADMIN_ID: int
     ROUTER_API_KEY: str = ""
     ROUTER_BASE_URL: str = "https://api.openai.com/v1"
-    ROUTER_MODEL: str = "gpt-4o-mini"
+    ROUTER_MODEL: str = "3.8-low"
 
     # --- Optional: every one of these degrades gracefully ---
     CLOUDFLARE_ACCOUNT_ID: str = ""
