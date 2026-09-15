@@ -316,3 +316,107 @@ async def test_ai_service_caller_info_enrichment(monkeypatch):
     assert "55555" in sys_msg_norm
     assert "کاربر عمومی (ادمین نیست)" in sys_msg_norm
 
+
+@pytest.mark.asyncio
+async def test_expanded_social_greetings_and_help_fastpaths():
+    class DummyUser:
+        id = 12345
+        first_name = "Reza"
+        last_name = "Tehrani"
+        username = "rezat"
+
+    class DummyChat:
+        id = 999
+
+    class DummyMessage:
+        message_id = 1
+        reply_to_message = None
+
+    # Test greetings
+    greetings = ["سلام", "سلام پرومته", "سلام خوبی", "چطوری", "صبح بخیر", "شب بخیر", "خسته نباشی", "ممنون", "دستت درد نکنه"]
+    for g in greetings:
+        res = await bot._triage_fast_turn(DummyMessage(), DummyChat(), DummyUser(), g, "Reza", "fa", None, False)
+        assert res is not None, f"Greeting failed: {g}"
+        reply, extra = res
+        assert extra is None
+        assert len(reply) > 3
+
+    # Test Bot Identity & Capabilities
+    cap_queries = ["تو کی هستی", "اسمت چیه", "چیکار میتونی بکنی", "قابلیت هات چیه", "راهنما", "/help", "help"]
+    for cq in cap_queries:
+        res = await bot._triage_fast_turn(DummyMessage(), DummyChat(), DummyUser(), cq, "Reza", "fa", None, False)
+        assert res is not None, f"Capability/Identity query failed: {cq}"
+        reply, _ = res
+        assert ("پرومته" in reply or "Prometheus" in reply or "قابلیت" in reply)
+
+    # Test Date & Time queries
+    dt_queries = ["ساعت چنده", "ساعت چند است", "الان ساعت چنده", "امروز چه روزیه", "امروز چند شنبه است", "تاریخ امروز"]
+    for dt in dt_queries:
+        res = await bot._triage_fast_turn(DummyMessage(), DummyChat(), DummyUser(), dt, "Reza", "fa", None, False)
+        assert res is not None, f"Date/Time query failed: {dt}"
+        reply, _ = res
+        assert ("⏰" in reply or "📅" in reply)
+
+
+def test_smart_tools_conceptual_zero_overhead():
+    from src.tools.registry import get_smart_tools_for_prompt
+
+    # Conceptual questions must attach ZERO tools
+    assert get_smart_tools_for_prompt("پایتون چیه؟") == []
+    assert get_smart_tools_for_prompt("هوش مصنوعی چیست") == []
+    assert get_smart_tools_for_prompt("سلام چطوری") == []
+    assert get_smart_tools_for_prompt("فرق لینوکس با ویندوز چیه") == []
+
+    # Real-time / shopping queries must attach proper tools
+    price_tools = [t["function"]["name"] for t in get_smart_tools_for_prompt("قیمت دلار چنده الان؟")]
+    assert any("price" in pt or "forex" in pt or "dollar" in pt for pt in price_tools)
+
+    shop_tools = [t["function"]["name"] for t in get_smart_tools_for_prompt("خرید گوشی سامسونگ از دیجیکالا")]
+    assert "digikala_search" in shop_tools
+
+
+@pytest.mark.asyncio
+async def test_adaptive_model_routing_and_reasoning_effort(monkeypatch):
+    from unittest.mock import AsyncMock
+    from src.core import ai_service
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = '{"choices": [{"message": {"content": "پاسخ سریع"}}]}'
+
+    mock_client = MagicMock()
+    mock_client.post = AsyncMock(return_value=mock_resp)
+    monkeypatch.setattr(ai_service, "get_shared_client", lambda: mock_client)
+    monkeypatch.setattr(config, "ROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("ROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("ROUTER_MODEL", "High")
+    monkeypatch.setenv("ROUTER_FAST_MODEL", "ag/gemini-3.8-flash-low")
+
+    # 1. Standard question -> should use fast model with reasoning_effort="low"
+    await ai_service.generate_response(
+        chat_id=123,
+        user_prompt="پایتون چیه؟",
+        caller_user_id=12345,
+        caller_name="User",
+        caller_username="user1",
+        is_private_chat=True
+    )
+    payload_std = mock_client.post.call_args[1]["json"]
+    assert payload_std["model"] == "ag/gemini-3.8-flash-low"
+    assert payload_std.get("reasoning_effort") == "low"
+    # Empty tools should not have tools key
+    assert "tools" not in payload_std
+
+    # 2. Deep coding task (contains code block) -> should escalate to High model
+    await ai_service.generate_response(
+        chat_id=123,
+        user_prompt="```python\ndef buggy():\n    pass\n```\nاین کد رو دیباگ کن",
+        caller_user_id=12345,
+        caller_name="User",
+        caller_username="user1",
+        is_private_chat=True
+    )
+    payload_deep = mock_client.post.call_args[1]["json"]
+    assert payload_deep["model"] == "High"
+
+

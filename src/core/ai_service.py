@@ -95,7 +95,12 @@ def _get_target_router_endpoints() -> List[str]:
         _FAILED_ENDPOINTS.pop(ep, None)
 
     endpoints = []
-    if public_url:
+    # If internal VPC endpoint is configured and we are in Railway environment (or RAILWAY_ENVIRONMENT is set), put internal_url FIRST before public_url
+    in_railway = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_NAME"))
+    if in_railway and internal_url and _FAILED_ENDPOINTS.get(internal_url, 0.0) <= now:
+        endpoints.append(internal_url)
+
+    if public_url and public_url not in endpoints:
         endpoints.append(public_url)
 
     if internal_url and internal_url not in endpoints:
@@ -1075,10 +1080,47 @@ async def generate_response(
     # Read model/base-url fresh per-turn so Railway variable changes apply without restart.
     try:
         from src.core import config as _cfg_turn
-        _live_model = _cfg_turn.ROUTER_MODEL
-        _live_base = (_cfg_turn.ROUTER_BASE_URL or "").rstrip("/")
+        _base_model = os.getenv("ROUTER_MODEL") or _cfg_turn.ROUTER_MODEL
+        _fast_model = os.getenv("ROUTER_FAST_MODEL") or getattr(_cfg_turn, "ROUTER_FAST_MODEL", "ag/gemini-3.8-flash-low")
+        _live_base = (os.getenv("ROUTER_BASE_URL") or _cfg_turn.ROUTER_BASE_URL or "").rstrip("/")
     except Exception:
-        _live_model, _live_base = ROUTER_MODEL, ROUTER_BASE_URL
+        _base_model = os.getenv("ROUTER_MODEL") or ROUTER_MODEL
+        _fast_model = os.getenv("ROUTER_FAST_MODEL") or "ag/gemini-3.8-flash-low"
+        _live_base = ROUTER_BASE_URL
+
+    # Adaptive Model Routing:
+    # Use ultra-fast model (ROUTER_FAST_MODEL / ag/gemini-3.8-flash-low) for simple conversational & general turns.
+    # Reserve ROUTER_MODEL (or "High") only for complex tasks (code execution, deep math, large documents, or explicit complex query).
+    _prompt_len = len(user_prompt or "")
+    _code_exec_signals = [
+        "کد بنویس", "برنامه بنویس", "اسکریپت بنویس", "کد کامل", "کد رو اجرا کن",
+        "اجرای کد", "دیباگ", "رفع باگ", "سندباکس", "e2b", "write code", "execute code",
+        "run code", "debug this", "implement in"
+    ]
+    _deep_math_signals = [
+        "معادله دیفرانسیل", "حل معادله", "انتگرال", "مشتق", "ماتریس", "جبر خطی",
+        "اثبات ریاضی", "قضیه ریاضی", "فضای برداری", "calculus", "differential equation",
+        "linear algebra", "mathematical proof", "eigenvalue"
+    ]
+    _explicit_complex_signals = [
+        "تحلیل عمیق", "تحلیل پیشرفته", "بررسی تخصصی", "تحلیل جامع",
+        "گام به گام با استدلال", "توضیح بسیار مفصل", "پاسخ تفصیلی", "معماری سیستم",
+        "deep analysis", "step by step reasoning", "complex reasoning", "detailed architecture"
+    ]
+    _has_heavy_tool = any(
+        t.get("function", {}).get("name") in ("run_python_code_in_e2b", "execute_python_code", "execute_shell_command", "read_document_file")
+        for t in (tools_schema or [])
+    )
+    _is_complex = (
+        _is_internal_admin_query
+        or _prompt_len > 1500
+        or "```" in (user_prompt or "")
+        or any(w in _cv_pl for w in _code_exec_signals)
+        or any(w in _cv_pl for w in _deep_math_signals)
+        or any(w in _cv_pl for w in _explicit_complex_signals)
+        or _has_heavy_tool
+    )
+    _live_model = _base_model if _is_complex else _fast_model
 
     # High-Performance Multimodal Vision Routing:
     # 1. Route image turns to 'Good' (Gemini 3.8 Flash High) with dedicated multimodal vision weights & 1.2s latency.
@@ -1109,7 +1151,7 @@ async def generate_response(
         # Mid-loop escalation: if the model stalls without calling tools twice,
         # open the wider cabinet — but NEVER admin tools for non-admin turns.
         active_schemas = tools_schema
-        if consecutive_empty_loops >= 1 and len(tools_schema) < 40:
+        if consecutive_empty_loops >= 1 and 0 < len(tools_schema) < 40:
             from src.tools.registry import get_all_tool_definitions as _all_defs
             try:
                 _defs = _all_defs()  # internal bot_* tools excluded by default
@@ -1130,9 +1172,14 @@ async def generate_response(
             "stream": False,
             "messages": messages,
             "temperature": 0.2,
-            "max_tokens": _tok_cap
+            "max_tokens": _tok_cap,
         }
-        if active_schemas:
+        # In payload to 9router/OpenAI: pass "reasoning_effort": "low" for standard turns so Gemini doesn't generate thousands of unnecessary thinking tokens
+        if not _is_complex:
+            payload["reasoning_effort"] = "low"
+
+        # When tools_schema is empty, do NOT include "tools" or "tool_choice" in the payload to keep requests ultra-light
+        if active_schemas and len(active_schemas) > 0:
             payload["tools"] = active_schemas
             payload["tool_choice"] = "auto"
 

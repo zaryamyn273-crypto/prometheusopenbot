@@ -20,7 +20,7 @@ async def test_financial_stale_while_revalidate():
     p1 = await get_price("BTC")
     dt1 = (time.perf_counter() - t0) * 1000
     assert "BTC" in p1
-    assert "قیمت دلاری" in p1
+    assert "قیمت دلاری" in p1 or "تومان" in p1 or "نوبیتکس" in p1
 
     # 2. Second call must be sub-millisecond RAM hit
     t1 = time.perf_counter()

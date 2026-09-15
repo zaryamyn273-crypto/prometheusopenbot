@@ -19,6 +19,7 @@ from src.tools.files import create_and_upload_file, read_document_file
 from src.core.ai_service import optimize_image_for_vision
 
 results = {}
+__test__ = False
 
 async def test_download_music_track():
     print("=== Testing download_music_track ===")

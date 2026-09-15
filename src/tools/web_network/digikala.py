@@ -27,7 +27,7 @@ def clean_digikala_query(query: str) -> str:
 @register_tool(
     name="digikala_search",
     description="جستجوی زنده، فوق‌سریع و هوشمند کالا، استعلام قیمت، تخفیف‌های شگفت‌انگیز، فروشنده، امتیاز و لینک خرید مستقیم محصولات از فروشگاه دیجی‌کالا (Digikala)",
-    category="search"
+    category="ecommerce"
 )
 async def digikala_search(query: str, max_results: int = 5) -> str:
     """

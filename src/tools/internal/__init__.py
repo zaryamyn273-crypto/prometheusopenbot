@@ -108,12 +108,14 @@ async def bot_smart_cache_put(key: str = "", value: str = "") -> str:
 
 _PINGPONG_WORDS = {
     "سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood",
-    "خوبی", "چطوری", "چه خبر", "خسته نباشی", "ممنون", "مرسی",
+    "سلام علیک", "سلام علیکم", "سلام پرومته", "سلام خوبی", "صبح بخیر", "عصر بخیر", "شب بخیر",
+    "خوبی", "چطوری", "چه خبر", "خسته نباشی", "خسته‌نباشی", "ممنون", "مرسی",
     "باشه", "اوکی", "ok", "okay", "بله", "نه", "آره", "اره",
-    "چشم", "حله", "دمت گرم", "حاجی",
+    "چشم", "حله", "دمت گرم", "دمت‌گرم", "دستت درد نکنه", "سپاس", "تشکر", "حاجی",
     # English small talk (same instant lane, answered in the user's language)
     "thanks", "thank you", "thx", "ty", "yes", "yeah", "sure", "alright",
     "no", "nope", "how are you", "how are u", "whats up", "what's up",
+    "good morning", "good evening", "good night",
 }
 
 

@@ -70,6 +70,7 @@ _CATEGORY_MODULES: Dict[str, List[str]] = {
     "crypto": ["src.tools.financial"],
     "weather": ["src.tools.web_network"],
     "search": ["src.tools.web_network"],
+    "ecommerce": ["src.tools.web_network"],
     "network": ["src.tools.web_network"],
     "media": ["src.tools.media"],
     "security": ["src.tools.scientific"],
@@ -274,10 +275,14 @@ CATEGORY_KEYWORDS = {
     ],
     "search": [
         "سرچ", "جستجو", "گوگل", "خبر", "اخبار", "search", "news", "پیدا کن", "مقاله", "تحقیق",
-        "دیجیکالا", "دیجی کالا", "دیجی", "digikala", "خرید", "کالا", "اجناس", "گوشی", "موبایل", "لپتاپ", "لپ تاپ",
-        "آمازون", "amazon", "ای بی", "ای‌بی", "ebay", "خرید خارجی", "محصولات خارجی", "قیمت آمازون", "قیمت ای بی",
         "توییتر", "توییت", "twitter", "tweet", "اکس", "x.com", "توییت ها", "هشتگ", "پست های توییتر",
         "tavily", "تاویلی", "وب", "اینترنت", "اطلاعات روز", "تازه‌ترین", "تازه ترین", "جدیدترین"
+    ],
+    "ecommerce": [
+        "خرید", "دیجیکالا", "دیجی کالا", "دیجی", "digikala", "فروشگاه", "فروشگاه اینترنتی",
+        "قیمت کالا", "آمازون", "amazon", "ای بی", "ای‌بی", "ebay", "ترب", "torob",
+        "خرید آنلاین", "خرید اینترنتی", "خرید کالا", "قیمت دیجیکالا", "قیمت آمازون",
+        "قیمت ای بی", "خرید خارجی", "محصولات خارجی", "چند میفروشن", "از کجا بخرم", "قیمت محصول"
     ],
     "network": [
         "ip", "dns", "ssl", "whois", "ping", "دامنه", "هاست", "پورت", "سایت", "لینک", "اینترنت", "وب",
@@ -338,9 +343,9 @@ CATEGORY_KEYWORDS = {
         "خلاصه پیام", "۵۰ پیام", "۱۰۰ پیام", "۵۰ تا پیام", "۱۰۰ تا پیام", "پنجاه پیام", "صد پیام", "summary", "summarize"
     ],
     "dev": [
-        "اجرای کد", "پایتون", "کد پایتون", "برنامه", "اسکریپت", "run python",
+        "اجرای کد", "کد پایتون", "اسکریپت پایتون", "برنامه نویسی", "اسکریپت", "run python",
         "ردیت", "reddit", "استک", "استک اورفلو", "stackoverflow", "باگ", "ارور", "error", "bug",
-        "exception", "ایشو", "issue", "کدنویسی", "برنامه نویسی", "توسعه دهنده", "حل مشکل", "سایت تخصصی",
+        "exception", "ایشو", "issue", "کدنویسی", "توسعه دهنده", "حل مشکل", "سایت تخصصی",
         "stack", "مخزن", "repo", "کامپایل", "دیباگ", "debug", "crash", "کرش",
         "e2b", "سندباکس ابری", "سندباکس", "sandbox", "کلاد", "کد ابری",
         "جاوااسکریپت", "javascript", "pip install", "نصب پکیج",
@@ -376,6 +381,44 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     if cached is not None:
         return cached
     prompt_lower = (prompt or "").lower()
+
+    # 1. Pure casual conversation / greeting detector: zero tool overhead = ultra fast sub-second turn
+    pure_conversational = [
+        "سلام", "درود", "خوبی", "چطوری", "چه خبر", "خسته نباشی", "ممنون", "مرسی",
+        "تشکر", "دمت گرم", "فدات", "قربانت", "سلامت باشی", "صبح بخیر", "شب بخیر",
+        "hi", "hello", "hey", "thanks", "thank you"
+    ]
+    is_pure_chat = any(w in prompt_lower for w in pure_conversational) and len(prompt_lower) < 60
+    if is_pure_chat:
+        _SMART_FILTER_CACHE[cache_key] = []
+        return []
+
+    # 2. Pure knowledge / conceptual definition detector: zero tool overhead = instant sub-second AI response
+    _def_phrases = [
+        "چیست", "چیه", "تعریف", "توضیح بده", "توضیح بدید", "توضیح دهید", "توضیح بفرمایید",
+        "معنی", "مفهوم", "یعنی چه", "یعنی چی", "منظور از",
+        "چگونه کار میکند", "چگونه کار می کند", "چگونه کار میکنه", "چگونه کار می کنه",
+        "چطور کار میکند", "چطور کار می کند", "چطور کار میکنه", "چطور کار می کنه",
+        "طرز کار", "نحوه کار", "فرق ", "تفاوت ", "مقایسه ",
+        "how does", "what is", "meaning of", "definition of", "explain "
+    ]
+    _has_def = any(w in prompt_lower for w in _def_phrases) or (
+        re.search(r"\b(?:فرق|تفاوت)\b", prompt_lower) is not None and any(w in prompt_lower for w in ("با", "و", "between", "and"))
+    )
+    _is_concept_definition = (
+        _has_def
+        and not any(w in prompt_lower for w in [
+            "امروز", "الان", "لحظه ای", "لحظه‌ای", "زنده", "قیمت", "چنده", "ساعت", "تاریخ", "تقویم",
+            "جدید", "آخرین", "اخبار", "سرچ کن", "جستجو کن", "لینک", "سایت", "دیجیکالا", "خرید",
+            "فروشگاه", "آمازون", "ای بی", "ebay", "amazon", "ترب", "torob", "latest", "today", "now",
+            "هوا", "آب و هوا", "آهنگ", "موزیک", "پلی", "play", "عکس", "تصویر", "بکش", "طراحی",
+            "بن ", "آنبن", "میوت", "سایلنت"
+        ])
+        and len(prompt_lower) < 400
+    )
+    if _is_concept_definition:
+        _SMART_FILTER_CACHE[cache_key] = []
+        return []
 
     def _kw_hit(kw: str) -> bool:
         # Short Latin tokens (ip, dns, ssl, qr, ...) need word boundaries,
@@ -420,12 +463,12 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     # (who/what/when/where/why/how, ؟/?, کی/کجا/چرا/چطور/آیا/کدوم/چند …).
     # The model then answers from live results instead of guessing.
     _question_markers = [
-        "؟", "?", "کیه", "چیه", "کجاست", "کجاست؟", "چرا", "چطور", "چگونه",
+        "؟", "?", "کیه", "کجاست", "کجاست؟", "چرا", "چطور", "چگونه",
         "کجا", "کی", "آیا", "کدوم", "کدام", "چند", "چه", "who", "what",
         "when", "where", "why", "how", "which", "is ", "are ",
     ]
     _looks_question = any(_qm in prompt_lower for _qm in _question_markers)
-    if _looks_question and "search" not in relevant_categories:
+    if _looks_question and "search" not in relevant_categories and not _has_def:
         # …unless it's pure chatter or a deterministic fast-path query.
         _no_search_words = ["سلام", "خوبی", "چطوری", "ممنون", "مرسی", "باشه", "اوکی"]
         if not any(_w in prompt_lower for _w in _no_search_words):
@@ -459,7 +502,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         "weather": ["بیرون", "بارون", "برف", "سرد", "گرم", "آفتاب", "چتر", "لباس بپوشم"],
         "media": ["بذار", "پخش", "بفرست", "بده", "پلی", "play", "پخش کن", "بکش", "طراحی", "draw", "paint"],
         "financial": ["بخرم", "بفروشم", "سرمایه", "سود", "گرون", "ارزون", "تحلیل بازار"],
-        "search": ["جدیدترین", "آخرین", "تازه", "خبر", "اطلاعات", "درباره", "کیه", "چیه"],
+        "search": ["جدیدترین", "آخرین", "تازه", "خبر", "اطلاعات", "درباره", "کیه"],
         "files": ["بساز", "درست کن", "آماده کن", "اکسل", "جدول", "لیست", "گزارش"],
         "admin": ["چطوره", "خوبه", "سالمه", "وضعیت"],
         "time": ["امروز", "فردا", "دیروز", "الان", "فعلا", "کی"],
@@ -515,17 +558,6 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     # scientific is near-free (stdlib + pytz/jdatetime, already pulled by database).
     ensure_categories(relevant_categories)
     ensure_category("scientific")
-
-    # Pure casual conversation / greeting detector: zero tool overhead = ultra fast sub-second turn
-    pure_conversational = [
-        "سلام", "درود", "خوبی", "چطوری", "چه خبر", "خسته نباشی", "ممنون", "مرسی",
-        "تشکر", "دمت گرم", "فدات", "قربانت", "سلامت باشی", "صبح بخیر", "شب بخیر",
-        "hi", "hello", "hey", "thanks", "thank you"
-    ]
-    is_pure_chat = any(w in prompt_lower for w in pure_conversational) and len(prompt_lower) < 60
-    if is_pure_chat:
-        _SMART_FILTER_CACHE[cache_key] = []
-        return []
 
     # If no specific category matched:
     if not relevant_categories:
@@ -594,6 +626,21 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
             if "extract_user_id_tool" in REGISTRY and "extract_user_id_tool" not in selected_names:
                 selected_schemas.append(REGISTRY["extract_user_id_tool"]["schema"])
                 selected_names.add("extract_user_id_tool")
+
+    # Strict Ecommerce Isolation: never attach heavy ecommerce shopping tools (digikala, amazon, ebay)
+    # unless prompt explicitly mentions buying, shopping, or specific store names.
+    _ecommerce_stores = {"digikala_search", "amazon_search", "ebay_search"}
+    _has_ecom_intent = any(w in prompt_lower for w in [
+        "خرید", "فروشگاه", "دیجیکالا", "دیجی کالا", "آمازون", "ای بی", "ای‌بی", "ebay", "amazon", "digikala", "چند میفروشن", "از کجا بخرم", "قیمت محصول"
+    ])
+    if not _has_ecom_intent:
+        selected_schemas = [s for s in selected_schemas if (s.get("function", {}) or {}).get("name") not in _ecommerce_stores]
+    else:
+        ensure_category("web_network")
+        for store_t in ("digikala_search", "amazon_search", "ebay_search"):
+            if store_t in REGISTRY and store_t not in selected_names:
+                selected_schemas.append(REGISTRY[store_t]["schema"])
+                selected_names.add(store_t)
 
     # Cap total tools passed to LLM to 26 to avoid prompt prefill latency
     if len(selected_schemas) > 26:

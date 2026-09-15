@@ -1,6 +1,8 @@
 import io
 import os
 import datetime
+import pytz
+import jdatetime
 import html
 import json
 import time
@@ -168,11 +170,14 @@ async def _maybe_translate(update, text: str) -> str:
 
 # Fast-path precompiled regex and lookup sets for deterministic social routing
 # Comprehensive unicode punctuation including zero-width, bidirectional, smart quotes, tatweel, ellipsis, and dashes
-_FASTPATH_PUNCT_CHARS = " \t\n\r\f\v!?,.:;~_-()[]{}<>\"'«»“”؟،؛\u200b\u200c\u200d\u200e\u200f\ufeff\u00a0…–—•ـ"
+_FASTPATH_PUNCT_CHARS = " \t\n\r\f\v!?,.:;~_-()[]{}<>\"'«»“”؟،؛\u200b\u200c\u200d\u200e\u200f\ufeff\u00a0…–—•ـ/\\|"
 _FASTPATH_CLEAN_RE = re.compile(
-    r"^[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0…–—•ـ]+|"
-    r"[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0…–—•ـ]+$"
+    r"^[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0…–—•ـ/\\|]+|"
+    r"[\s!?,.:;~_\-()\[\]{}<>\"'«»“”؟،؛\u200b-\u200f\ufeff\u00a0…–—•ـ/\\|]+$"
 )
+_FASTPATH_PUNCT_REGEX = re.compile(r"[!؟?،,.:;؛~_\-()\[\]{}<>\"'«»“”•…/\\|]+")
+_FASTPATH_MENTION_REGEX = re.compile(r"@[A-Za-z0-9_]+")
+_BOT_REFERENCE_WORDS = frozenset({"پرومته", "بات", "ربات", "prometheus", "bot"})
 _FASTPATH_INNER_ZW_RE = re.compile(r"[\u200b-\u200f\ufeff]+")
 _FASTPATH_TRANS = str.maketrans({
     "ـ": None,
@@ -184,60 +189,179 @@ _FASTPATH_TRANS = str.maketrans({
     "\ufeff": None,
 })
 
-_GREETING_WORDS = frozenset({"سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood", "سلام علیکم", "سلام علیک"})
-_STATUS_WORDS = frozenset({"خوبی", "چطوری", "چه خبر", "خسته نباشی", "خسته‌نباشی", "how are you", "how are u", "whats up", "what's up"})
-_THANKS_WORDS = frozenset({"ممنون", "مرسی", "دمت گرم", "دمت‌گرم", "سپاس", "تشکر", "ممنونم", "thanks", "thank you", "thx", "ty"})
-_ACK_WORDS = frozenset({"باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله", "yes", "yeah", "sure", "alright"})
-_NO_WORDS = frozenset({"نه", "no", "nope"})
+def _normalize_fastpath_text(raw_text: str) -> Tuple[str, str]:
+    """Clean normalization for Tier-0 fastpath:
+    - Normalizes Persian characters (kaf, yeh, tatweel, zero-width spaces/ZWNJ)
+    - Strips bot mentions (@username) and bot names ('پرومته', 'بات')
+    - Trims extra whitespace and Persian/English punctuation (؟ ! . , : etc.)
+    - Returns (norm_raw, norm_stripped)
+    """
+    if not raw_text or not isinstance(raw_text, str):
+        return "", ""
+    t = raw_text.lower().replace("\u064a", "\u06cc").replace("\u0643", "\u06a9")
+    t = t.translate(_FASTPATH_TRANS)
+    t = _FASTPATH_MENTION_REGEX.sub(" ", t)
+    t = _FASTPATH_PUNCT_REGEX.sub(" ", t)
+    norm_raw = " ".join(t.split())
+    if not norm_raw:
+        return "", ""
+    tokens = norm_raw.split()
+    filtered = [w for w in tokens if w not in _BOT_REFERENCE_WORDS]
+    norm_stripped = " ".join(filtered).strip() if filtered else norm_raw
+    return norm_raw, norm_stripped
+
+_MORNING_WORDS = frozenset({
+    "صبح بخیر", "صبح شما بخیر", "صبح تان بخیر", "صبح زیباتون بخیر",
+    "good morning"
+})
+
+_EVENING_WORDS = frozenset({
+    "عصر بخیر", "عصر شما بخیر", "عصر تان بخیر",
+    "شب بخیر", "شب شما بخیر", "شب خوش", "شب تان بخیر",
+    "good evening", "good night", "good afternoon"
+})
+
+_GREETING_WORDS = frozenset({
+    "سلام", "درود", "هی", "های", "hello", "hi", "hey", "salam", "drood",
+    "سلام علیک", "سلام علیکم", "سلام عليكم", "سلام پرومته", "سلام بات",
+    "درود بر شما", "سلام وقت بخیر", "وقت بخیر", "روز بخیر",
+    "good day", "greetings"
+} | _MORNING_WORDS | _EVENING_WORDS)
+
+_STATUS_WORDS = frozenset({
+    "خوبی", "چطوری", "سلام خوبی", "چطوری خوبی", "حالت چطوره", "چه خبر",
+    "احوالت", "اوضاعت چطوره", "خسته نباشی", "خسته‌نباشی",
+    "how are you", "how are u", "whats up", "what's up", "how are you doing"
+})
+
+_THANKS_WORDS = frozenset({
+    "ممنون", "تشکر", "دمت گرم", "دمت‌گرم", "مرسی", "دستت درد نکنه", "دست شما درد نکنه",
+    "دستت درد نکند", "سپاس", "ممنونم", "بسیار ممنون", "خیلی ممنون", "تشکر فراوان",
+    "thanks", "thank you", "thx", "ty", "thank u"
+})
+
+_ACK_WORDS = frozenset({
+    "باشه", "اوکی", "ok", "okay", "بله", "آره", "اره", "چشم", "حله",
+    "yes", "yeah", "sure", "alright"
+})
+
+_NO_WORDS = frozenset({
+    "نه", "no", "nope"
+})
+
+_ALL_SOCIAL_WORDS = _GREETING_WORDS | _STATUS_WORDS | _THANKS_WORDS | _ACK_WORDS | _NO_WORDS
+
+_PERSIAN_WEEKDAYS = ("دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه", "شنبه", "یکشنبه")
+_PERSIAN_MONTHS = ("", "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور", "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند")
+_ENGLISH_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_ENGLISH_MONTHS = ("", "Farvardin", "Ordibehesht", "Khordad", "Tir", "Mordad", "Shahrivar", "Mehr", "Aban", "Azar", "Dey", "Bahman", "Esfand")
+
+def _format_fast_time(ulang: str = "fa") -> str:
+    _, _hm, _ = database.get_tehran_timestamps()
+    return t(ulang, "time_is", hm=_hm)
+
+def _format_fast_date(ulang: str = "fa") -> str:
+    try:
+        tz = pytz.timezone("Asia/Tehran")
+        now = datetime.datetime.now(tz)
+        j_now = jdatetime.datetime.fromgregorian(datetime=now)
+        w_idx = now.weekday()
+        j_str = f"{j_now.year:04d}/{j_now.month:02d}/{j_now.day:02d}"
+        iso_str = f"{now.year:04d}-{now.month:02d}-{now.day:02d}"
+        time_str = f"{now.hour:02d}:{now.minute:02d}:{now.second:02d}"
+        if ulang == "fa":
+            w_name = _PERSIAN_WEEKDAYS[w_idx]
+            m_name = _PERSIAN_MONTHS[j_now.month]
+            return (
+                f"📅 *امروز (خورشیدی):* {w_name}، {j_now.day} {m_name} {j_now.year} (`{j_str}`)\n"
+                f"🌐 *میلادی:* `{iso_str}`\n"
+                f"⏰ *ساعت رسمی تهران:* `{time_str}`"
+            )
+        else:
+            w_name = _ENGLISH_WEEKDAYS[w_idx]
+            m_name = _ENGLISH_MONTHS[j_now.month]
+            return (
+                f"📅 *Today (Jalali):* {w_name}, {j_now.day} {m_name} {j_now.year} (`{j_str}`)\n"
+                f"🌐 *Gregorian:* `{iso_str}`\n"
+                f"⏰ *Official Tehran time:* `{time_str}`"
+            )
+    except Exception:
+        _iso, _, _j = database.get_tehran_timestamps()
+        return t(ulang, "date_today", jalali=_j, iso=_iso)
 
 _SOCIAL_DISPATCH: Dict[str, Tuple[str, str]] = {}
 for _w in _STATUS_WORDS:
     _SOCIAL_DISPATCH[_w] = (
-        "سیستم‌ها کاملاً عملیاتی‌اند. اگر کار فنی دارید بفرمایید، اگر نه منابع پردازشی را بیهوده اشغال نکنید.",
-        "Fully operational. If you have an actual task, state it."
+        "سلام، ممنون! من عالی و کاملاً آماده‌ام. شما چطورید؟ چه کمکی از دستم برمی‌آید؟",
+        "I'm doing great and fully operational! How are you doing? How can I assist?"
     )
 for _w in _THANKS_WORDS:
     _SOCIAL_DISPATCH[_w] = (
-        "خواهش می‌کنم. مورد دیگری هم هست یا برگردم سر کارهای اصلی؟",
-        "You're welcome. Any other task, or can I get back to work?"
+        "خواهش می‌کنم، انجام وظیفه است! اگر کار دیگری هست در خدمتم.",
+        "You're welcome! Happy to help. Let me know if you need anything else."
     )
 for _w in _ACK_WORDS:
     _SOCIAL_DISPATCH[_w] = (
-        "حله، هرچه کمتر حاشیه برویم سریع‌تر پیش می‌رویم.",
+        "حله، در خدمتم. هر وقت فرمایشی داشتید مطرح فرمایید.",
         "Noted. Less talk, faster execution."
     )
 for _w in _NO_WORDS:
     _SOCIAL_DISPATCH[_w] = (
-        "بسیار عالی، حداقل یک پیام اضافه ذخیره نشد.",
+        "بسیار عالی، در صورت نیاز به هر موضوعی در خدمتم.",
         "Fine. Less bandwidth wasted."
     )
 
 def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str = "fa") -> str:
-    """Instant deterministic reply for pure social chatter (no LLM, no tools)."""
+    """Instant deterministic reply for pure social chatter (no LLM, no tools, <1ms)."""
     is_fa = (lang == "fa")
     if not norm_text:
-        return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
+        return "بفرمایید، سریع و مشخص در خدمتم." if is_fa else "Yes? Keep it brief, at your service."
 
-    # Nanosecond C-level strip with comprehensive punctuation characters
-    t = norm_text.lower().strip(_FASTPATH_PUNCT_CHARS)
-    if not t:
-        return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
+    norm_raw, norm_stripped = _normalize_fastpath_text(norm_text)
+    t_val = norm_stripped or norm_raw
+    if not t_val:
+        return "بفرمایید، سریع و مشخص در خدمتم." if is_fa else "Yes? Keep it brief, at your service."
 
-    # Single-pass C-level normalization for tatweels, zero-width chars, and ZWNJ
-    t = t.translate(_FASTPATH_TRANS)
-    if " " in t or "\t" in t or "\n" in t or "\u00a0" in t:
-        t = " ".join(t.split())
+    # Priority 1: Time of day greetings
+    if t_val in _MORNING_WORDS or norm_raw in _MORNING_WORDS:
+        return "سلام، صبح شما بخیر و شادی! روز بسیار خوبی داشته باشید. در خدمتم، بفرمایید." if is_fa else "Good morning! Have a wonderful day. How can I help you?"
 
-    if t in _GREETING_WORDS:
+    if t_val in _EVENING_WORDS or norm_raw in _EVENING_WORDS:
+        target_w = t_val if t_val in _EVENING_WORDS else norm_raw
+        if "شب" in target_w or "night" in target_w:
+            return "شب شما بخیر و سرشار از آرامش! هر زمان امری بود در خدمتم." if is_fa else "Good night! Wishing you a peaceful rest."
+        return "سلام، عصر شما بخیر! در خدمتم، بفرمایید چه کمکی از دستم برمی‌آید." if is_fa else "Good evening! How can I assist you today?"
+
+    # Priority 2: General Greetings
+    if t_val in _GREETING_WORDS or norm_raw in _GREETING_WORDS:
         if is_admin(user_id):
             return "👑 درود فرمانده! بفرمایید، در خدمتم." if is_fa else "👑 Hello commander! At your command."
-        return "سلام. بفرمایید، کارتان را خلاصه و دقیق مطرح کنید." if is_fa else "Hello. State your request clearly and concisely."
+        disp = (f" {user_display}" if (user_display and user_display not in ("کاربر", "User")) else "")
+        return f"سلام{disp}! در خدمتم، چطور می‌توانم کمکتان کنم؟" if is_fa else f"Hello{disp}! How can I help you today?"
 
-    dispatch_res = _SOCIAL_DISPATCH.get(t)
+    # Priority 3: Wellness & status questions ("خوبی", "چطوری", "خسته نباشی")
+    if t_val in _STATUS_WORDS or norm_raw in _STATUS_WORDS:
+        target_s = t_val if t_val in _STATUS_WORDS else norm_raw
+        if "خسته" in target_s:
+            return "سلامت باشید و پرتوان! خستگی‌ناپذیر در خدمت شما هستم. بفرمایید." if is_fa else "Thank you! Always active and ready to help."
+        return "سلام، ممنون! من عالی و کاملاً آماده‌ام. شما چطورید؟ چه کمکی از دستم برمی‌آید؟" if is_fa else "I'm doing great and fully operational! How are you doing? How can I assist?"
+
+    # Priority 4: Gratitude / Thanks
+    if t_val in _THANKS_WORDS or norm_raw in _THANKS_WORDS:
+        return "خواهش می‌کنم، انجام وظیفه است! اگر کار دیگری هست در خدمتم." if is_fa else "You're welcome! Happy to help. Let me know if you need anything else."
+
+    # Priority 5: Acknowledgements
+    if t_val in _ACK_WORDS or norm_raw in _ACK_WORDS:
+        return "حله، در خدمتم. هر وقت فرمایشی داشتید مطرح فرمایید." if is_fa else "Noted. Less talk, faster execution."
+
+    if t_val in _NO_WORDS or norm_raw in _NO_WORDS:
+        return "بسیار عالی، در صورت نیاز به هر موضوعی در خدمتم." if is_fa else "Fine. Less bandwidth wasted."
+
+    dispatch_res = _SOCIAL_DISPATCH.get(t_val)
     if dispatch_res is not None:
         return dispatch_res[0] if is_fa else dispatch_res[1]
 
-    return "بفرمایید، سریع و مشخص." if is_fa else "Yes? Keep it brief."
+    return "بفرمایید، سریع و مشخص در خدمتم." if is_fa else "Yes? Keep it brief."
 
 _DEDUP_FUNC: Any = None
 
@@ -2395,36 +2519,100 @@ def _match_financial_fast_intent(text: str) -> Optional[Tuple[str, Tuple[Any, ..
 
     return None
 
+_TIME_PHRASES = frozenset({
+    "ساعت", "ساعت چنده", "ساعت چند است", "الان ساعت چنده", "ساعت الان",
+    "ساعت چنده الان", "ساعت چند", "تایم", "زمان",
+    "time", "what time is it", "current time", "time now", "whats the time", "what's the time"
+})
+
+_DATE_PHRASES = frozenset({
+    "امروز چه روزیه", "امروز چه روزی است", "امروز چندمه", "امروز چندم است",
+    "تاریخ امروز", "تاریخ", "امروز چند شنبه است", "امروز چندشنبه است",
+    "امروز چند شنبه ست", "امروز چندشنبه ست", "امروز چند شنبه", "امروز چندشنبه",
+    "روز هفته", "تاریخ روز", "تاریخ الان",
+    "date", "what date is it", "todays date", "today's date",
+    "current date", "what day is today", "what day is it", "today"
+})
+
+_WHOAMI_PHRASES = frozenset({
+    "من کی هستم", "من کیم", "من چه کسیم", "مشخصات من", "اطلاعات من",
+    "شناسه من", "آیدی من", "ایدی من", "یوزر آیدی من", "پروفایل من",
+    "whoami", "who am i", "my id", "my profile", "about me", "id man"
+})
+
+_OWNER_PHRASES = frozenset({
+    "ادمین کیه", "ادمین کیست", "مدیر کیه", "مدیر کیست", "مدیرت کیه", "مدیرت کیست",
+    "رییس کیه", "رئیس کیه", "رییس کیست", "رئیس کیست", "رییست کیه", "رئیست کیه",
+    "سازنده کیه", "سازنده کیست", "سازندت کیه", "سازندت کیست", "سازنده ات کیه", "سازنده‌ات کیه",
+    "خالق کیه", "خالق کیست", "خالقت کیه", "خالقت کیست", "خالق ات کیه", "خالق‌ات کیه",
+    "فرمانده کیه", "فرمانده کیست", "مالک کیه", "مالک کیست", "مالکت کیه",
+    "who is admin", "who is the admin", "who is owner", "who is the owner", "creator",
+    "who made you", "who created you"
+})
+
+_BOT_IDENTITY_PHRASES = frozenset({
+    "تو کی هستی", "تو کیستی", "اسمت چیه", "نامت چیه", "اسمت", "نامت",
+    "معرفی کن", "خودتو معرفی کن", "کی هستی", "کیستی", "معرفی",
+    "who are you", "who r u", "about you", "what are you", "who is prometheus",
+    "your name", "what is your name"
+})
+
+_BOT_CAPABILITIES_PHRASES = frozenset({
+    "چیکار میتونی بکنی", "چیکار می‌تونی بکنی", "چیکار بلدی", "چیکار میتونی انجام بدی",
+    "چه کارهایی بلدی", "چه کار هایی بلدی", "چه کاری بلدی", "کارهایی که بلدی",
+    "قابلیت هات چیه", "قابلیت‌هات چیه", "قابلیتهات چیه", "قابلیت هات", "قابلیت های تو",
+    "امکاناتت چیه", "امکانات تو چیه", "امکاناتت", "امکانات", "توانایی هات",
+    "راهنما", "help", "/help", "دستورات", "منو", "منوی راهنما",
+    "menu", "commands", "what can you do", "capabilities", "features"
+})
+
+_PING_PHRASES = frozenset({
+    "پینگ", "ping", "ربات بیداری", "پرومته بیداری", "بیداری", "تست سرعت", "تست پینگ"
+})
+
+_ADMIN_DIAG_PHRASES = frozenset({
+    "وضعیت سرور", "تله متری", "تله‌متری", "تلهمتری", "استاتوس سرور",
+    "server status", "telemetry", "سیستم سرور"
+})
+
+_ADMIN_GROUP_PHRASES = frozenset({
+    "لیست گروه", "لیست گروه‌ها", "لیست گروهها", "گروه هام", "گروه های من",
+    "گروه ها", "گروه‌ها", "groups", "my groups", "list groups", "show groups", "group list"
+})
+
+_CHANNEL_PHRASES = frozenset({
+    "کانال", "کانال‌ها", "کانالها", "کانال های من", "لیست کانال", "لیست کانال‌ها",
+    "channels", "public channels"
+})
+
 async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang, image_bytes, has_reply):
     """Tier 0/1 triage: answer trivial turns with the minimum possible machinery.
 
     Returns (text, extra_action) or None when a full Tier-2 AI turn is needed.
-    - Tier 0a (clock/date): database timestamps only, <1ms, zero imports.
-    - Tier 0b (social chatter): internal query-rewriter only, no network.
+    - Tier 0a (clock/date): dynamic live time & Jalali/Gregorian calendar, <1ms.
+    - Tier 0b (social chatter & greetings): friendly instant ping-pong, <1ms.
+    - Tier 0-ID / Owner / Bot / Ping / Capabilities: deterministic instant responses, <1ms.
     - Tier 1 (market boards): instant sub-millisecond execution, bypasses LLM completely.
     """
+    if not user_text or len(user_text) >= 120 or image_bytes or has_reply:
+        return None
     try:
-        _norm = re.sub(r"[!؟?،,.]+", "", user_text or "").strip().lower()
+        norm_raw, norm_stripped = _normalize_fastpath_text(user_text)
     except Exception:
         return None
-    if not _norm or len(_norm) >= 120 or image_bytes or has_reply:
+    if not norm_raw:
         return None
     try:
-        # Tier 0a: time / date
-        if _norm in ["ساعت", "ساعت چنده", "ساعت چند است", "ساعت الان", "تایم", "time", "what time is it", "current time", "time now", "whats the time"]:
-            _, _hm, _ = database.get_tehran_timestamps()
-            return t(ulang, "time_is", hm=_hm), None
-        if _norm in ["تاریخ", "امروز چندمه", "تاریخ امروز", "امروز چندم است", "امروز چندمه؟", "date", "what date is it", "todays date", "today's date", "current date"]:
-            _iso, _, _j = database.get_tehran_timestamps()
-            return t(ulang, "date_today", jalali=_j, iso=_iso), None
+        # Tier 0-Time: Clock & Time Fast Path (<0.1ms)
+        if norm_stripped in _TIME_PHRASES or norm_raw in _TIME_PHRASES:
+            return _format_fast_time(ulang), None
+
+        # Tier 0-Date: Dynamic Live Jalali & Gregorian Calendar Fast Path (<0.1ms)
+        if norm_stripped in _DATE_PHRASES or norm_raw in _DATE_PHRASES:
+            return _format_fast_date(ulang), None
 
         # Tier 0-ID: User Identity / WhoAmI Fast Path (<0.1ms execution, zero LLM cost)
-        _whoami_phrases = {
-            "من کی هستم", "من کیم", "من چه کسیم", "مشخصات من", "اطلاعات من",
-            "شناسه من", "آیدی من", "ایدی من", "یوزر آیدی من", "whoami", "who am i",
-            "my id", "my profile", "about me", "id man"
-        }
-        if _norm in _whoami_phrases:
+        if norm_stripped in _WHOAMI_PHRASES or norm_raw in _WHOAMI_PHRASES:
             _u_fname = getattr(user, "first_name", "") or ""
             _u_lname = f" {user.last_name}" if getattr(user, "last_name", None) else ""
             _u_full = f"{_u_fname}{_u_lname}".strip() or ("کاربر" if ulang == "fa" else "User")
@@ -2468,13 +2656,8 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
                     )
             return _card, None
 
-        # Tier 0-Owner: Master Admin Inquiry Fast Path (<0.1ms)
-        _owner_phrases = {
-            "ادمین کیه", "ادمین کیست", "فرمانده کیه", "فرمانده کیست", "مالک کیه", "مالک کیست",
-            "سازنده کیه", "سازنده کیست", "خالق کیه", "خالق کیست", "رئیس کیه", "رئیس کیست",
-            "who is admin", "who is the admin", "who is owner", "who is the owner", "creator"
-        }
-        if _norm in _owner_phrases:
+        # Tier 0-Owner: Master Admin / Creator Inquiry Fast Path (<0.1ms)
+        if norm_stripped in _OWNER_PHRASES or norm_raw in _OWNER_PHRASES:
             _m_id = config.ADMIN_ID
             if ulang == "fa":
                 _ans = (
@@ -2491,19 +2674,16 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
             return _ans, None
 
         # Tier 0-Bot: Bot Identity Fast Path (<0.1ms)
-        _bot_identity_phrases = {
-            "تو کی هستی", "تو کیستی", "معرفی کن", "خودتو معرفی کن", "who are you",
-            "who r u", "about you", "what are you", "who is prometheus"
-        }
-        if _norm in _bot_identity_phrases:
+        if norm_stripped in _BOT_IDENTITY_PHRASES or norm_raw in _BOT_IDENTITY_PHRASES:
             if ulang == "fa":
                 _b_card = (
                     "⚡ *پرومته سوپر ایجنت (Prometheus AI v5.0 Ultimate)*\n\n"
-                    "دستیار هوش مصنوعی خودمختار با توانمندی‌های پیشرفته:\n"
+                    "من *پرومته* هستم؛ دستیار هوش مصنوعی خودمختار، پرسرعت و چندمنظوره با توانمندی‌های پیشرفته:\n"
                     "• تحلیل زنده بازارهای مالی، کریپتو، طلا و ارز\n"
                     "• موتور جستجوی وب، اخبار بلادرنگ و تله‌متری سرور\n"
                     "• پردازش چندوجهی تصویر، اسناد و ابزارهای علمی\n"
-                    "• پردازش فوق سریع پاسخ‌ها با معماری Multi-Tier"
+                    "• پردازش فوق سریع پاسخ‌ها با معماری Multi-Tier\n\n"
+                    "💡 *برای مشاهده راهنما و قابلیت‌ها:* ارسال `راهنما` یا `/help`"
                 )
             else:
                 _b_card = (
@@ -2512,15 +2692,53 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
                     "• Real-time financial, crypto & commodity market tracking\n"
                     "• Live web intelligence and multi-engine search\n"
                     "• Vision analysis, document processing & scientific math\n"
-                    "• Sub-millisecond Tier-0 fast paths"
+                    "• Sub-millisecond Tier-0 fast paths\n\n"
+                    "💡 *For commands & guide:* send `help` or `/help`"
                 )
             return _b_card, None
 
+        # Tier 0-Capabilities: Bot Capabilities & Help Fast Path (<0.1ms)
+        if norm_stripped in _BOT_CAPABILITIES_PHRASES or norm_raw in _BOT_CAPABILITIES_PHRASES:
+            if ulang == "fa":
+                _c_card = (
+                    "⚡ *راهنما و قابلیت‌های پرومته (Prometheus AI)*\n\n"
+                    "دستیار هوشمند، جامع و پرسرعت شما با امکانات گسترده:\n\n"
+                    "📊 *بازارهای مالی و رمزارزها:*\n"
+                    "• نرخ لحظه‌ای طلا، سکه، ارزهای جهانی و کریپتو (مانند `قیمت طلا` یا `قیمت بیتکوین`)\n"
+                    "• تحلیل تکنیکال و نمودارهای زنده\n\n"
+                    "🔍 *جستجو و اطلاعات زنده:*\n"
+                    "• جستجوی آنلاین وب و آخرین اخبار بلادرنگ\n"
+                    "• استعلام تاریخ خورشیدی/میلادی و ساعت رسمی تهران (مانند `ساعت چنده`، `امروز چندمه`)\n\n"
+                    "🛠️ *محاسبات و ابزارها:*\n"
+                    "• اجرای کدهای پایتون و حل مسائل ریاضی و آماری\n"
+                    "• پردازش و تحلیل تصویر و اسناد\n\n"
+                    "⚙️ *دستورات سریع:*\n"
+                    "• `راهنما` یا `/help` — مشاهده همین راهنما\n"
+                    "• `من کیم` یا `/id` — مشاهده مشخصات و شناسه کاربری\n"
+                    "• `پینگ` — بررسی وضعیت و پایداری سرور"
+                )
+            else:
+                _c_card = (
+                    "⚡ *Prometheus AI Capabilities & Guide*\n\n"
+                    "Autonomous, high-performance multi-modal AI agent:\n\n"
+                    "📊 *Financial & Crypto Markets:*\n"
+                    "• Real-time crypto, gold, forex & commodity tracking\n"
+                    "• Technical indicators & real-time market data\n\n"
+                    "🔍 *Real-time Web & Knowledge:*\n"
+                    "• Live web search and latest news retrieval\n"
+                    "• Official Tehran time & Jalali/Gregorian calendar checks\n\n"
+                    "🛠️ *Computation & Processing:*\n"
+                    "• Safe Python sandbox execution & advanced scientific math\n"
+                    "• Multi-modal vision analysis & document processing\n\n"
+                    "⚙️ *Quick Commands:*\n"
+                    "• `help` or `/help` — Display this guide\n"
+                    "• `whoami` or `/id` — View your profile & access level\n"
+                    "• `ping` — Server health & triage latency check"
+                )
+            return _c_card, None
+
         # Tier 0-Ping: Ping & Server Heartbeat Fast Path (<0.1ms)
-        _ping_phrases = {
-            "پینگ", "ping", "ربات بیداری", "پرومته بیداری", "بیداری", "تست سرعت", "تست پینگ"
-        }
-        if _norm in _ping_phrases:
+        if norm_stripped in _PING_PHRASES or norm_raw in _PING_PHRASES:
             _, _hm_p, _ = database.get_tehran_timestamps()
             if ulang == "fa":
                 _p_card = (
@@ -2538,25 +2756,24 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
                 )
             return _p_card, None
 
+        # Tier 0-Social: Pure social chatter & greetings fast path (<0.1ms)
+        if norm_stripped in _ALL_SOCIAL_WORDS or norm_raw in _ALL_SOCIAL_WORDS:
+            _social_target = norm_stripped if norm_stripped in _ALL_SOCIAL_WORDS else norm_raw
+            return _pingpong_reply(_social_target, user_display, user.id, ulang), None
+
         # Admin Fast Path: Instant Server Diagnostics without LLM (<10ms)
-        if is_admin(user.id) and _norm in [
-            "وضعیت سرور", "تله متری", "تله‌متری", "تلهمتری", "استاتوس سرور", "server status", "telemetry", "سیستم سرور"
-        ]:
+        if is_admin(user.id) and (norm_stripped in _ADMIN_DIAG_PHRASES or norm_raw in _ADMIN_DIAG_PHRASES):
             from src.tools.system import admin_system_diagnostics
             _d_res = admin_system_diagnostics(caller_id=user.id)
             return _d_res, None
 
         # Admin Fast Path: Instant Live Group Listing & Public Channels without LLM delay
-        if is_admin(user.id) and _norm in [
-            "لیست گروه", "لیست گروه‌ها", "لیست گروهها", "گروه هام", "گروه های من", "گروه ها", "گروه‌ها", "groups", "my groups", "list groups", "show groups", "group list"
-        ]:
+        if is_admin(user.id) and (norm_stripped in _ADMIN_GROUP_PHRASES or norm_raw in _ADMIN_GROUP_PHRASES):
             from src.tools.admin import group_manager as _gm_fast
             res_g = await _gm_fast.list_joined_groups_tool(caller_id=user.id)
             return res_g, None
 
-        if _norm in [
-            "کانال", "کانال‌ها", "کانالها", "کانال های من", "لیست کانال", "لیست کانال‌ها", "channels", "public channels"
-        ]:
+        if norm_stripped in _CHANNEL_PHRASES or norm_raw in _CHANNEL_PHRASES:
             from src.tools.admin import group_manager as _gm_fast
             res_c = await _gm_fast.list_public_channels_tool()
             return res_c, None
@@ -2573,7 +2790,7 @@ async def _triage_fast_turn(message, chat, user, user_text, user_display, ulang,
         pass
     # Tier 1: single-board market queries (instant sub-millisecond execution)
     try:
-        fin_match = _match_financial_fast_intent(_norm)
+        fin_match = _match_financial_fast_intent(norm_stripped) or _match_financial_fast_intent(norm_raw)
         if fin_match:
             _fname, _fargs = fin_match
             from src.tools import financial as _fin_mod

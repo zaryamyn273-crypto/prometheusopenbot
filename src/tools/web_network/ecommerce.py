@@ -20,7 +20,7 @@ _L1_TTL_SECONDS = 900.0
 @register_tool(
     name="amazon_search",
     description="جستجوی زنده کالا، استعلام قیمت دلاری، امتیاز خریداران، وضعیت Prime و لینک خرید محصولات در فروشگاه جهانی آمازون (Amazon) بدون نیاز به کلید API",
-    category="search"
+    category="ecommerce"
 )
 async def amazon_search(query: str, max_results: int = 5) -> str:
     """
@@ -160,7 +160,7 @@ async def amazon_search(query: str, max_results: int = 5) -> str:
 @register_tool(
     name="ebay_search",
     description="جستجوی زنده کالا، استعلام قیمت حراجی و خرید فوری، مشخصات و لینک مستقیم محصولات در مارکت جهانی ای‌بی (eBay) بدون نیاز به کلید API",
-    category="search"
+    category="ecommerce"
 )
 async def ebay_search(query: str, condition: str = "all", max_results: int = 5) -> str:
     """

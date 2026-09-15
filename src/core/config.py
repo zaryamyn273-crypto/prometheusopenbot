@@ -105,9 +105,13 @@ def is_admin_id(uid: Any) -> bool:
 # 2. High-Performance AI Router Configuration
 # ==========================================
 ROUTER_BASE_URL = os.getenv("ROUTER_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+# Smart Railway VPC internal routing: if inside Railway (or RAILWAY_ENVIRONMENT exists in env) and ROUTER_INTERNAL_BASE_URL is empty, default to internal micro-latency endpoint
 ROUTER_INTERNAL_BASE_URL = os.getenv("ROUTER_INTERNAL_BASE_URL", "").rstrip("/")
+if not ROUTER_INTERNAL_BASE_URL and (os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_NAME")):
+    ROUTER_INTERNAL_BASE_URL = "http://9router.railway.internal:20128/v1"
 ROUTER_API_KEY = os.getenv("ROUTER_API_KEY", "")
 ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-4o-mini")
+ROUTER_FAST_MODEL = os.getenv("ROUTER_FAST_MODEL", "ag/gemini-3.8-flash-low")
 ROUTER_IMAGE_MODEL = os.getenv("ROUTER_IMAGE_MODEL", "dall-e-3")
 
 # ==========================================
