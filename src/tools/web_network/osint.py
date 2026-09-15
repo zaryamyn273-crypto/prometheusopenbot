@@ -27,20 +27,21 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 async def _check_github(username: str, client: Any) -> Optional[Dict[str, Any]]:
+    clean = username.lstrip("@").strip()
     try:
-        url = f"https://api.github.com/users/{username}"
+        url = f"https://api.github.com/users/{clean}"
         headers = {"User-Agent": "PrometheusOSINT/3.0"}
         from src.core import config as _cfg
         token = getattr(_cfg, "GITHUB_TOKEN", "")
         if token and len(token) > 10:
             headers["Authorization"] = f"Bearer {token}"
-        r = await client.get(url, headers=headers, timeout=3.0)
+        r = await client.get(url, headers=headers, timeout=3.5)
         if r.status_code == 200:
             d = r.json()
             return {
                 "platform": "GitHub",
                 "exists": True,
-                "url": d.get("html_url"),
+                "url": d.get("html_url") or f"https://github.com/{clean}",
                 "name": d.get("name") or "",
                 "bio": d.get("bio") or "",
                 "company": d.get("company") or "",
@@ -52,7 +53,31 @@ async def _check_github(username: str, client: Any) -> Optional[Dict[str, Any]]:
                 "created_at": (d.get("created_at") or "")[:10]
             }
     except Exception as e:
-        logger.debug(f"GitHub OSINT check error: {e}")
+        logger.debug(f"GitHub OSINT API check error: {e}")
+
+    # Fallback to HTML profile scraping (resilient to API 504/403/rate limits)
+    try:
+        html_url = f"https://github.com/{clean}"
+        h_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        hr = await client.get(html_url, headers=h_headers, timeout=4.0, follow_redirects=True)
+        if hr.status_code == 200 and "Not Found" not in hr.text:
+            soup = BeautifulSoup(hr.text, "html.parser")
+            name_tag = soup.find("span", class_="p-name") or soup.find("span", class_="vcard-fullname")
+            name_val = name_tag.get_text(strip=True) if name_tag else clean
+            bio_tag = soup.find("div", class_="p-note") or soup.find("div", class_="user-profile-bio")
+            bio_val = bio_tag.get_text(strip=True) if bio_tag else ""
+            return {
+                "platform": "GitHub",
+                "exists": True,
+                "url": html_url,
+                "name": name_val,
+                "bio": bio_val
+            }
+    except Exception as e:
+        logger.debug(f"GitHub HTML fallback check error: {e}")
     return None
 
 
@@ -671,5 +696,6 @@ async def osint_person_dossier(
     sections.append(f"\n📊 *سطح ردپای دیجیتال عمومی*: {risk_label}")
 
     final_report = "\n".join(sections)
-    await database.kv_set_cache_async(cache_key, final_report, expiration_ttl=1800)
+    if probe_results or web_findings:
+        await database.kv_set_cache_async(cache_key, final_report, expiration_ttl=1800)
     return final_report

@@ -207,7 +207,7 @@ def bot_tool_picker(query: str = "") -> str:
         }
         scored = []
         for _cat, _kws in _CKW.items():
-            if _cat in ("internal", "github_legacy_placeholder"):
+            if _cat == "internal":
                 continue
             _hits = 0
             for _kw in _kws:

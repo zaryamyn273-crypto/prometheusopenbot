@@ -799,6 +799,9 @@ async def _flush_dirty_daily_usage_async():
             await execute_d1_query(sql, params)
         except Exception as e:
             logger.debug(f"Failed to flush dirty daily usage batch to D1: {e}")
+            for k, val in chunk:
+                if k not in _DIRTY_DAILY_USAGE:
+                    _DIRTY_DAILY_USAGE[k] = val
 
 async def _d1_batch_writer_loop():
     """

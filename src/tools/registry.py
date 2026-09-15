@@ -6,6 +6,7 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from typing import Callable, Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -349,12 +350,21 @@ CATEGORY_KEYWORDS = {
         "stack", "مخزن", "repo", "کامپایل", "دیباگ", "debug", "crash", "کرش",
         "e2b", "سندباکس ابری", "سندباکس", "sandbox", "کلاد", "کد ابری",
         "جاوااسکریپت", "javascript", "pip install", "نصب پکیج",
-    ],
-    "github_legacy_placeholder": []
+    ]
 }
 
-_SMART_FILTER_CACHE: Dict[str, List[Dict[str, Any]]] = {}
-_SMART_FILTER_ORDER: List[str] = []
+_SMART_FILTER_CACHE: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
+_SMART_FILTER_LOCK = threading.Lock()
+_SMART_FILTER_MAX = 512
+
+
+def _cache_smart_tools(key: str, schemas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    with _SMART_FILTER_LOCK:
+        _SMART_FILTER_CACHE[key] = schemas
+        _SMART_FILTER_CACHE.move_to_end(key)
+        if len(_SMART_FILTER_CACHE) > _SMART_FILTER_MAX:
+            _SMART_FILTER_CACHE.popitem(last=False)
+    return schemas
 
 _COMPILED_SHORT_KW: Dict[str, Any] = {}
 
@@ -374,12 +384,14 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     Intelligently selects the most relevant tool schemas based on prompt intent.
     Always includes universally useful tools while filtering out unrelated heavy categories.
     When is_admin is False, admin-only categories/tools are strictly excluded from the schema.
-    Results are memoized (500-entry FIFO) so repeated intents cost ~0ms.
+    Results are memoized (512-entry LRU) so repeated intents cost ~0ms.
     """
     cache_key = f"{'adm:' if is_admin else 'usr:'}{(prompt or '')[:160].lower().strip()}"
-    cached = _SMART_FILTER_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
+    with _SMART_FILTER_LOCK:
+        cached = _SMART_FILTER_CACHE.get(cache_key)
+        if cached is not None:
+            _SMART_FILTER_CACHE.move_to_end(cache_key)
+            return cached
     prompt_lower = (prompt or "").lower()
 
     # 1. Pure casual conversation / greeting detector: zero tool overhead = ultra fast sub-second turn
@@ -390,8 +402,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     ]
     is_pure_chat = any(w in prompt_lower for w in pure_conversational) and len(prompt_lower) < 60
     if is_pure_chat:
-        _SMART_FILTER_CACHE[cache_key] = []
-        return []
+        return _cache_smart_tools(cache_key, [])
 
     # 2. Pure knowledge / conceptual definition detector: zero tool overhead = instant sub-second AI response
     _def_phrases = [
@@ -417,8 +428,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         and len(prompt_lower) < 400
     )
     if _is_concept_definition:
-        _SMART_FILTER_CACHE[cache_key] = []
-        return []
+        return _cache_smart_tools(cache_key, [])
 
     def _kw_hit(kw: str) -> bool:
         # Short Latin tokens (ip, dns, ssl, qr, ...) need word boundaries,
@@ -565,8 +575,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         ensure_categories({"search"})
         core_names.update({"tavily_search", "web_search", "get_current_datetime_info"})
         out = [t["schema"] for name, t in REGISTRY.items() if name in core_names]
-        _SMART_FILTER_CACHE[cache_key] = out
-        return out
+        return _cache_smart_tools(cache_key, out)
 
     selected_schemas = []
     selected_names = set()
@@ -678,12 +687,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     if len(selected_schemas) > max_tool_cap:
         selected_schemas = selected_schemas[:max_tool_cap]
 
-    _SMART_FILTER_CACHE[cache_key] = selected_schemas
-    _SMART_FILTER_ORDER.append(cache_key)
-    if len(_SMART_FILTER_ORDER) > 500:
-        oldest = _SMART_FILTER_ORDER.pop(0)
-        _SMART_FILTER_CACHE.pop(oldest, None)
-    return selected_schemas
+    return _cache_smart_tools(cache_key, selected_schemas)
 
 def get_tools_by_category(category: str) -> List[Dict[str, Any]]:
     """Return all tools belonging to a specific category."""
