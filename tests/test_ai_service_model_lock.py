@@ -115,3 +115,26 @@ async def test_translate_text_uses_locked_model(monkeypatch):
     assert res == "Hello world"
     payload = mock_client.post.call_args[1]["json"]
     assert payload["model"] == "3.8-low"
+
+
+def test_endpoint_failure_and_cooldown_resilience(monkeypatch):
+    """Verify that failed/timeout endpoints are cooled down and excluded from candidate list."""
+    import time
+    from src.core.ai_service import mark_endpoint_failure, mark_endpoint_success, _get_target_router_endpoints, _FAILED_ENDPOINTS
+
+    bad_ep = "http://bad-router.railway.internal:20128/v1"
+    good_ep = "https://good-proxy.com/v1"
+
+    monkeypatch.setattr(config, "ROUTER_INTERNAL_BASE_URL", bad_ep)
+    monkeypatch.setattr(config, "ROUTER_BASE_URL", good_ep)
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+
+    # Initial state: bad_ep might be attempted first
+    mark_endpoint_failure(bad_ep, cooldown_sec=120.0)
+    eps = _get_target_router_endpoints()
+    assert bad_ep not in eps
+    assert good_ep in eps
+
+    # Success marks endpoint healthy
+    mark_endpoint_success(good_ep)
+    assert good_ep not in _FAILED_ENDPOINTS

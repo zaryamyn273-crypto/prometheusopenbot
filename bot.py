@@ -3059,19 +3059,41 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if is_admin(user.id) and user_text.strip():
         _admin_low = user_text.strip().lower()
 
-        # 0a. Admin-ordered Bot Self-Silence (works with AND without reply to the bot)
+        # 0a. Admin-ordered Bot Self-Silence
+        # In groups, casual phrases like "خفه شو" must NEVER silence the bot unless:
+        # 1. Private chat, OR
+        # 2. Directly replying to the bot itself (reply_to_message.from_user.id == context.bot.id), OR
+        # 3. Explicitly addressing the bot by name or slash command.
         _bot_silence_hits = [
             "سایلنت", "سایلنت شو", "ساکت شو", "ساکت", "خفه شو", "خفه",
             "دهنتو ببند", "دهن تو ببند", "حرف نزن", "سکوت کن", "بخواب",
             "/silence", "silence", "shutup", "shut up", "quiet", "mute yourself",
         ]
-        if any(_admin_low == _h or _admin_low.startswith(_h + " ") for _h in _bot_silence_hits):
-            _sss = "global" if any(_w in _admin_low for _w in ["همه", "همه جا", "همه‌جا", "سراسری", "کل", "global", "all", "everywhere"]) else "chat"
-            _sdur = database.parse_mute_duration_to_sec(user_text) or 3600
-            from src.tools import system as _sys_sil
-            _sres = await _sys_sil.mute_bot_self_tool(duration_sec=_sdur, scope=_sss, caller_id=user.id, chat_id=chat.id if chat else 0)
-            await reply_safely(message, _sres)
-            return
+        _matched_silence = any(_admin_low == _h or _admin_low.startswith(_h + " ") for _h in _bot_silence_hits)
+        if _matched_silence:
+            _is_group_chat = bool(chat and str(chat.type) in ["group", "supergroup"])
+            _reply_to_other = bool(
+                message.reply_to_message
+                and message.reply_to_message.from_user
+                and message.reply_to_message.from_user.id != context.bot.id
+            )
+            _reply_to_bot = bool(
+                message.reply_to_message
+                and message.reply_to_message.from_user
+                and message.reply_to_message.from_user.id == context.bot.id
+            )
+            _bot_u = (getattr(context.bot, "username", "") or "").lower()
+            _names_bot = any(_n in _admin_low for _n in ["پرومته", "prometheus", "ربات", "بات", "/silence", "!silence"]) or bool(_bot_u and f"@{_bot_u}" in _admin_low)
+
+            if _is_group_chat and (_reply_to_other or (not _reply_to_bot and not _names_bot)):
+                pass  # Fall through to group moderation or conversation
+            else:
+                _sss = "global" if any(_w in _admin_low for _w in ["همه", "همه جا", "همه‌جا", "سراسری", "کل", "global", "all", "everywhere"]) else "chat"
+                _sdur = database.parse_mute_duration_to_sec(user_text) or 3600
+                from src.tools import system as _sys_sil
+                _sres = await _sys_sil.mute_bot_self_tool(duration_sec=_sdur, scope=_sss, caller_id=user.id, chat_id=chat.id if chat else 0)
+                await reply_safely(message, _sres)
+                return
 
         # 0b. Admin-ordered Bot Wake-Up from silence (highest priority, bypasses mute gate below)
         _bot_wake_hits = [
@@ -3331,11 +3353,12 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await reply_safely(message, t(ulang, "unban_done", name=target_name, uid=target_uid))
             return
 
-        # 3b. Direct Reply Mute with duration (MUTE30 / MUTE2H / MUTE1D / MUTE / سکوت / میوت)
+        # 3b. Direct Reply Mute with duration (MUTE30 / MUTE2H / MUTE1D / MUTE / سکوت / میوت / خفه شو)
         _mute_triggers = [
             "mute", "/mute", "!mute", "سکوت", "میوت", "ساکت",
             "میوتش کن", "میوت کن", "ساکتش کن", "ساکت کن",
-            "سکوت بده", "سکوتش کن", "سکوت کن"
+            "سکوت بده", "سکوتش کن", "سکوت کن",
+            "خفه شو", "خفه", "خفشو", "خفه‌شو", "دهنتو ببند", "حرف نزن"
         ]
         if (
             any(clean_cmd == m or clean_cmd.startswith(m + " ") for m in _mute_triggers)
@@ -3562,7 +3585,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # Master-Admin STOP switch: when the admin says stop in a group, the bot
     # halts generation there (tasks cancelled, turns skipped) until resumed.
     # NOTE: the message is still archived — stopping answers, not memory.
-    _STOP_PHRASES = ("پرومته بسه", "پرومته بس کن", "ربات بسه", "ربات بس کن", "بات بسه", "پرومته ساکت", "پرومته خفه", "ساکت شو", "خفه شو",
+    _STOP_PHRASES = ("پرومته بسه", "پرومته بس کن", "ربات بسه", "ربات بس کن", "بات بسه", "پرومته ساکت", "پرومته خفه", "پرومته ساکت شو", "پرومته خفه شو", "ربات ساکت شو", "ربات خفه شو",
                        "prometheus stop", "prometheus shut up", "prometheus silence", "prometheus hush", "bot stop")
     _RESUME_PHRASES = ("پرومته ادامه", "پرومته ادامه بده", "ربات ادامه", "ادامه بده پرومته", "شروع کن پرومته",
                        "prometheus continue", "prometheus resume", "prometheus go on", "continue prometheus")

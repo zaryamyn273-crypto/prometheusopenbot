@@ -137,24 +137,29 @@ def _get_target_router_endpoints() -> List[str]:
     for ep in expired:
         _FAILED_ENDPOINTS.pop(ep, None)
 
-    endpoints = []
-    # If internal VPC endpoint is configured and we are in Railway environment (or RAILWAY_ENVIRONMENT is set), put internal_url FIRST before public_url
+    all_candidates = []
+    # If user explicitly configured a public ROUTER_BASE_URL (custom 9router/OpenAI proxy), prioritize it
+    has_custom_public = bool(public_url and "api.openai.com" not in public_url)
+
+    if has_custom_public and public_url not in all_candidates:
+        all_candidates.append(public_url)
+
     in_railway = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_NAME"))
-    if in_railway and internal_url and _FAILED_ENDPOINTS.get(internal_url, 0.0) <= now:
-        endpoints.append(internal_url)
+    if in_railway and internal_url and internal_url not in all_candidates:
+        all_candidates.append(internal_url)
 
-    if public_url and public_url not in endpoints:
-        endpoints.append(public_url)
+    if public_url and public_url not in all_candidates:
+        all_candidates.append(public_url)
 
-    if internal_url and internal_url not in endpoints:
-        endpoints.append(internal_url)
+    if fallback_url and fallback_url not in all_candidates:
+        all_candidates.append(fallback_url)
 
-    if fallback_url and fallback_url not in endpoints:
-        endpoints.append(fallback_url)
-
-    # Prioritize healthy endpoints (key=0.0); cooled-down ones sorted by earliest recovery
-    endpoints.sort(key=lambda ep: _FAILED_ENDPOINTS.get(ep, 0.0) if _FAILED_ENDPOINTS.get(ep, 0.0) > now else 0.0)
-    return endpoints
+    # Return only healthy endpoints; only fall back to cooled-down if all failed
+    healthy_endpoints = [ep for ep in all_candidates if _FAILED_ENDPOINTS.get(ep, 0.0) <= now]
+    if healthy_endpoints:
+        return healthy_endpoints
+    all_candidates.sort(key=lambda ep: _FAILED_ENDPOINTS.get(ep, 0.0))
+    return all_candidates
 
 def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
     """
@@ -1198,7 +1203,7 @@ async def generate_response(
         for attempt in range(max_retries):
             for endpoint in endpoints_to_try:
                 try:
-                    to = httpx.Timeout(connect=2.5, read=28.0, write=5.0, pool=2.0)
+                    to = httpx.Timeout(connect=1.2, read=25.0, write=5.0, pool=2.0)
                     resp = await client.post(
                         f"{endpoint}/chat/completions",
                         headers=headers,
@@ -1206,13 +1211,18 @@ async def generate_response(
                         timeout=to
                     )
                     if resp.status_code == 200:
+                        mark_endpoint_success(endpoint)
                         break
                     logger.debug(f"Endpoint {endpoint} returned status {resp.status_code}")
+                    if resp.status_code in (500, 502, 503, 504):
+                        mark_endpoint_failure(endpoint, cooldown_sec=120.0)
                 except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError, httpx.TimeoutException) as e:
                     logger.debug(f"Router endpoint {endpoint} connection issue: {e}")
+                    mark_endpoint_failure(endpoint, cooldown_sec=300.0)
                     continue
                 except Exception as e:
                     logger.debug(f"Router endpoint {endpoint} error: {e}")
+                    mark_endpoint_failure(endpoint, cooldown_sec=180.0)
                     continue
 
             if resp is not None and resp.status_code == 200:

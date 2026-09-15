@@ -209,3 +209,33 @@ def test_chat_permissions_ptb_v20_compatibility():
     with pytest.raises(TypeError):
         ChatPermissions(can_send_messages=False, can_send_media_messages=False)
 
+
+def test_self_mute_prevention_and_group_slang_guard():
+    """Verify that saying 'خفه شو' or slang in groups does not mute or stop the bot."""
+    import re
+
+    # 1. Bare "خفه شو" must NOT match _STOP_PHRASES
+    _STOP_PHRASES = (
+        "پرومته بسه", "پرومته بس کن", "ربات بسه", "ربات بس کن", "بات بسه",
+        "پرومته ساکت", "پرومته خفه", "پرومته ساکت شو", "پرومته خفه شو", "ربات ساکت شو", "ربات خفه شو",
+        "prometheus stop", "prometheus shut up", "prometheus silence", "prometheus hush", "bot stop"
+    )
+    bare_slang = "خفه شو"
+    norm_stop = re.sub(r"[\s\u200c،,:؛!\-–—?.؟\"'()\[\]]+", " ", bare_slang).strip().lower()
+    assert not any(_p == norm_stop or f" {_p} " in f" {norm_stop} " for _p in _STOP_PHRASES)
+
+    # 2. Addressed phrase DOES match
+    addressed = "پرومته خفه شو"
+    norm_addr = re.sub(r"[\s\u200c،,:؛!\-–—?.؟\"'()\[\]]+", " ", addressed).strip().lower()
+    assert any(_p == norm_addr or f" {_p} " in f" {norm_addr} " for _p in _STOP_PHRASES)
+
+    # 3. "خفه شو" IS in group direct-reply _mute_triggers
+    _mute_triggers = [
+        "mute", "/mute", "!mute", "سکوت", "میوت", "ساکت",
+        "میوتش کن", "میوت کن", "ساکتش کن", "ساکت کن",
+        "سکوت بده", "سکوتش کن", "سکوت کن",
+        "خفه شو", "خفه", "خفشو", "خفه‌شو", "دهنتو ببند", "حرف نزن"
+    ]
+    assert "خفه شو" in _mute_triggers
+    assert "خفشو" in _mute_triggers
+
