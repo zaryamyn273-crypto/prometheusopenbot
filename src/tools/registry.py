@@ -247,21 +247,7 @@ def get_all_tool_definitions(include_internal: bool = False) -> List[Dict[str, A
 # =========================================================================
 
 # Precompiled Category Keyword Regex Index for high-throughput zero-latency tool matching
-_CATEGORY_PATTERNS: Dict[str, re.Pattern] = {}
-
-def _build_category_index():
-    global _CATEGORY_PATTERNS
-    patterns = {}
-    for cat, kws in CATEGORY_KEYWORDS.items():
-        if not kws:
-            continue
-        # Sort longest keywords first to prevent short prefixes shadowing longer phrases
-        sorted_kws = sorted(kws, key=len, reverse=True)
-        escaped = [re.escape(k) for k in sorted_kws]
-        pattern = re.compile(r"(?:" + "|".join(escaped) + r")", re.IGNORECASE)
-        patterns[cat] = pattern
-    _CATEGORY_PATTERNS = patterns
-
+# Precompiled Category Keyword Regex Index for high-throughput zero-latency tool matching
 CATEGORY_KEYWORDS = {
     "financial": [
         "دلار", "تتر", "بیتکوین", "بیت کوین", "ارز", "طلا", "سکه", "یورو", "پوند", "درهم", "لیر",
@@ -272,7 +258,7 @@ CATEGORY_KEYWORDS = {
         "بیتکوین", "بیت کوین", "کریپتو", "اتریوم", "btc", "eth", "usdt", "nobitex", "binance", "رمزارز", "تون", "داج", "سولانا"
     ],
     "weather": [
-        "هوا", "آب و هوا", "دما", "باران", "برف", "ابری", "weather", "forecast", "پیش بینی", "درجه"
+        "هوا", "آب و هوا", "آب‌وهوا", "دما", "باران", "برف", "ابری", "weather", "forecast", "پیش بینی", "درجه"
     ],
     "search": [
         "سرچ", "جستجو", "گوگل", "خبر", "اخبار", "search", "news", "پیدا کن", "مقاله", "تحقیق",
@@ -280,7 +266,7 @@ CATEGORY_KEYWORDS = {
         "tavily", "تاویلی", "وب", "اینترنت", "اطلاعات روز", "تازه‌ترین", "تازه ترین", "جدیدترین"
     ],
     "ecommerce": [
-        "خرید", "دیجیکالا", "دیجی کالا", "دیجی", "digikala", "فروشگاه", "فروشگاه اینترنتی",
+        "خرید", "دیجیکالا", "دیجی کالا", "دیجی‌کالا", "دیجی", "digikala", "فروشگاه", "فروشگاه اینترنتی",
         "قیمت کالا", "آمازون", "amazon", "ای بی", "ای‌بی", "ebay", "ترب", "torob",
         "خرید آنلاین", "خرید اینترنتی", "خرید کالا", "قیمت دیجیکالا", "قیمت آمازون",
         "قیمت ای بی", "خرید خارجی", "محصولات خارجی", "چند میفروشن", "از کجا بخرم", "قیمت محصول"
@@ -290,14 +276,14 @@ CATEGORY_KEYWORDS = {
         "osint", "اوسینت", "ردپای دیجیتال", "اطلاعات شخص", "هویت", "استعلام شخص", "پرونده شخص", "کی‌بیس", "keybase"
     ],
     "media": [
-        "آهنگ", "اهنگ", "موزیک", "ترانه", "خواننده", "دانلود", "ویس", "صدا", "وویس", "تلگراف", "telegraph",
-        "بارکد", "qr", "lyrics", "متن شعر", "شعر", "صوت", "پادکست", "مقاله", "کیوآر", "متن آهنگ",
-        "لیریکس", "تایم دار", "lrc", "synced lyrics", "متن ترانه", "بارکد میله‌ای", "qrcode", "barcode",
+        "آهنگ", "اهنگ", "موزیک", "ترانه", "خواننده", "دانلود آهنگ", "دانلود موزیک", "ویس", "وویس", "تلگراف", "telegraph",
+        "بارکد", "qr", "lyrics", "متن ترانه", "صوت", "پادکست", "کیوآر", "متن آهنگ",
+        "لیریکس", "تایم دار", "lrc", "synced lyrics", "بارکد میله‌ای", "qrcode", "barcode",
         "خط خورده", "آسیب دیده", "مخدوش", "پاره شده", "بازسازی بارکد", "ساخت بارکد", "تولید بارکد", "ean13", "code128",
-        "تصویر", "عکس", "نقاشی", "تولید عکس", "ساخت عکس", "ساخت تصویر", "تولید تصویر", "generate image", "draw", "paint", "dall-e", "flux", "طراحی عکس", "بکش", "طراحی کن"
+        "تولید عکس", "ساخت عکس", "ساخت تصویر", "تولید تصویر", "عکس بکش", "تصویر بکش", "نقاشی بکش", "generate image", "draw", "paint", "dall-e", "flux", "طراحی عکس"
     ],
     "security": [
-        "امنیت", "هش", "hash", "رمزنگاری", "base64", "uuid",
+        "هش", "hash", "رمزنگاری", "base64", "uuid",
         "شناسه یکتا", "یو یو آی دی", "انکد", "دیکد", "url encode"
     ],
     "scientific": [
@@ -306,21 +292,19 @@ CATEGORY_KEYWORDS = {
     ],
     "github": [
         "گیت هاب", "github", "ریپازیتوری", "مخزن", "repo", "ریپو", "سورس", "کدباز", "اوپن سورس",
-        "کامیت", "commit", "ایسیو", "issue", "ریلیز", "release", "نسخه", "ترند", "trending",
-        "پروفایل", "کاربر گیت", "مشارکت", "contributor", "ستاره", "فورک", "نمونه کد",
-        "pkgbuild", "پکیج بیلد", "cmake", "سی میک", "cmakelists", "ساخت ریپو", "ساخت مخزن", "کامیت فایل", "نوشتن فایل"
+        "کامیت", "commit", "ایسیو", "issue", "ریلیز", "release", "ترند", "trending",
+        "پروفایل", "کاربر گیت", "مشارکت", "contributor", "pkgbuild", "پکیج بیلد", "cmake", "سی میک", "cmakelists", "ساخت ریپو", "ساخت مخزن", "کامیت فایل", "نوشتن فایل"
     ],
     "admin": [
-        "بن", "آنبن", "مسدود", "لیست سیاه", "قانون ابدی", "دستور دائمی", "حافظه دائمی", "وضعیت سرور", "تله متری", "لینک گروه", "لینک گروه‌ها", "لینک گروهها", "سکوت", "میوت", "لغو سکوت", "رفع سکوت", "آنمیوت", "لیست سکوت", "mutelist", "سایلنت", "ساکت", "خفه", "دهنتو ببند", "حرف نزن", "بیدار شو", "بیدارشو", "بلند شو", "silence", "unsilence", "shutup", "quiet", "بخواب",
-        "رم", "cpu", "گروه", "گروه‌ها", "گروهها", "گروهم", "گروهام", "گروه هام", "گروه های من", "گروه های فعال", "لیست گروه", "لیست گروه‌ها", "لیست گروهها", "لفت", "خروج از گروه", "bangroup", "groups", "my groups", "list groups", "show groups", "group list",
+        "بن", "آنبن", "مسدود", "لیست سیاه", "قانون ابدی", "دستور دائمی", "حافظه دائمی", "وضعیت سرور", "تله متری", "لینک گروه", "سکوت", "میوت", "لغو سکوت", "رفع سکوت", "آنمیوت", "لیست سکوت", "mutelist", "سایلنت", "ساکت", "دهنتو ببند", "حرف نزن", "بیدار شو", "بیدارشو", "بلند شو", "silence", "unsilence", "shutup", "quiet", "بخواب",
+        "ram", "cpu", "گروه", "گروه‌ها", "گروهها", "گروهم", "گروهام", "گروه هام", "گروه های من", "گروه های فعال", "لیست گروه", "لیست گروه‌ها", "لفت", "خروج از گروه", "bangroup", "groups", "my groups", "list groups", "show groups", "group list",
         "کانال", "کانال‌ها", "کانالها", "کانال های من", "channels", "public channels", "چت ها", "چت‌ها", "chats",
-        "سرور", "سرورت", "هست", "حال", "سیستم", "سخت افزار", "حافظه", "آیدی", "شناسه", "user id", "userid", "getid",
+        "سرور", "سرورت", "سیستم", "سخت افزار", "حافظه سرور", "آیدی", "شناسه", "user id", "userid", "getid",
         "حذف پیام", "پاک کن", "پیام هات رو پاک کن", "پیام‌هات رو پاک کن", "پیام هاتو پاک کن", "purge", "clean", "حذف پیام‌ها", "حذف دسته‌جمعی", "پاکسازی پیام",
         "ریلوی", "railway", "ری‌دیپلوی", "redeploy", "وضعیت ریلوی", "سرور ریلوی", "متغیرهای ریلوی"
     ],
     "files": [
-        "فایل", "پی دی اف", "پی‌دی‌اف", "pdf", "اکسل", "excel", "xlsx", "word", "ورد", "docx", "csv", "json", "کد پایتون",
-        "دانلود فایل", "بساز برام", "ساخت فایل", "فایل متنی", "txt", "داکیومنت", "سند", "پی دی اف ساز"
+        "فایل", "پی دی اف", "پی‌دی‌اف", "pdf", "اکسل", "excel", "xlsx", "word", "فایل ورد", "docx", "csv", "فایل متنی", "txt", "داکیومنت", "سند", "پی دی اف ساز"
     ],
     "math": [
         "حساب", "ریاضی", "محاسبه", "فرمول", "ضرب", "تقسیم", "جمع", "منها", "توان", "جذر", "درصد",
@@ -338,20 +322,35 @@ CATEGORY_KEYWORDS = {
         "هر روز", "روزانه", "daily", "every"
     ],
     "database": [
-        "سوابق", "پیام های قبلی", "پیام‌های قبلی", "تاریخچه", "قبلا", "دیروز", "چت", "دیتابیس", "ذخیره در دیتابیس", "کانفیگ",
-        "یادداشت", "داده", "d1", "kv", "کلودفلر", "ذخیره رکورد", "بازیابی رکورد", "حذف رکورد", "لیست رکوردها",
+        "سوابق", "پیام های قبلی", "پیام‌های قبلی", "تاریخچه", "چت", "دیتابیس", "ذخیره در دیتابیس", "کانفیگ",
+        "یادداشت", "d1", "kv", "کلودفلر", "ذخیره رکورد", "بازیابی رکورد", "حذف رکورد", "لیست رکوردها",
         "خلاصه", "خلاصه کن", "خلاصه چت", "خلاصه گروه", "خلاصه‌سازی", "خلاصه سازی", "جمع بندی", "جمع‌بندی",
         "خلاصه پیام", "۵۰ پیام", "۱۰۰ پیام", "۵۰ تا پیام", "۱۰۰ تا پیام", "پنجاه پیام", "صد پیام", "summary", "summarize"
     ],
     "dev": [
-        "اجرای کد", "کد پایتون", "اسکریپت پایتون", "برنامه نویسی", "اسکریپت", "run python",
-        "ردیت", "reddit", "استک", "استک اورفلو", "stackoverflow", "باگ", "ارور", "error", "bug",
-        "exception", "ایشو", "issue", "کدنویسی", "توسعه دهنده", "حل مشکل", "سایت تخصصی",
-        "stack", "مخزن", "repo", "کامپایل", "دیباگ", "debug", "crash", "کرش",
-        "e2b", "سندباکس ابری", "سندباکس", "sandbox", "کلاد", "کد ابری",
-        "جاوااسکریپت", "javascript", "pip install", "نصب پکیج",
+        "اجرای کد", "کد را اجرا کن", "کد رو اجرا کن", "کد را تست کن", "کد رو تست کن", "run code", "run python", "execute code",
+        "سندباکس", "سندباکس ابری", "sandbox", "e2b", "کد ابری",
+        "ردیت", "reddit", "ساب ردیت", "ساب‌ردیت",
+        "استک اورفلو", "استک‌اورفلو", "stackoverflow",
+        "ایشوهای گیت‌هاب", "github issues"
     ]
 }
+
+_CATEGORY_PATTERNS: Dict[str, re.Pattern] = {}
+
+def _build_category_index() -> Dict[str, re.Pattern]:
+    patterns = {}
+    for cat, kws in CATEGORY_KEYWORDS.items():
+        if not kws:
+            continue
+        # Sort longest keywords first to prevent short prefixes shadowing longer phrases
+        sorted_kws = sorted(kws, key=len, reverse=True)
+        escaped = [re.escape(k) for k in sorted_kws]
+        pattern = re.compile(r"(?<!\w)(?:" + "|".join(escaped) + r")(?!\w)", re.IGNORECASE)
+        patterns[cat] = pattern
+    return patterns
+
+_CATEGORY_PATTERNS = _build_category_index()
 
 _SMART_FILTER_CACHE: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
 _SMART_FILTER_LOCK = threading.Lock()
@@ -370,13 +369,11 @@ _COMPILED_SHORT_KW: Dict[str, Any] = {}
 
 
 def _kw_hit_compiled(kw: str, prompt_lower: str) -> bool:
-    if re.match(r"^[a-z]{1,4}$", kw):
-        pat = _COMPILED_SHORT_KW.get(kw)
-        if pat is None:
-            pat = re.compile(rf"(?<![a-z]){re.escape(kw)}(?![a-z])")
-            _COMPILED_SHORT_KW[kw] = pat
-        return pat.search(prompt_lower) is not None
-    return kw in prompt_lower
+    pat = _COMPILED_SHORT_KW.get(kw)
+    if pat is None:
+        pat = re.compile(rf"(?<!\w){re.escape(kw)}(?!\w)", re.IGNORECASE)
+        _COMPILED_SHORT_KW[kw] = pat
+    return pat.search(prompt_lower) is not None
 
 
 def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict[str, Any]]:
@@ -430,20 +427,33 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     if _is_concept_definition:
         return _cache_smart_tools(cache_key, [])
 
-    def _kw_hit(kw: str) -> bool:
-        # Short Latin tokens (ip, dns, ssl, qr, ...) need word boundaries,
-        # otherwise 'github' would trigger 'ip' and 'crypto' would trigger 'qr'.
-        return _kw_hit_compiled(kw, prompt_lower)
+    # 3. Pure code generation, algorithm, or programming syntax detector: zero tool overhead = instant sub-second AI response
+    _code_request_markers = [
+        "کد بنویس", "تابع بنویس", "اسکریپت بنویس", "برنامه بنویس", "کد پایتون", "کد جاوا",
+        "الگوریتم", "مرتب سازی", "مرتب‌سازی", "سورت", "چطوری بنویسم", "چطور بنویسم",
+        "چگونه بنویسم", "نحوه نوشتن", "روش نوشتن", "پیاده سازی", "پیاده‌سازی", "کدشو بده", "کدش رو بده",
+        "write code", "write a python", "write a function", "write script", "implement ", "how to write"
+    ]
+    _prog_lang_tokens = ["پایتون", "python", "جاوااسکریپت", "javascript", "ts", "typescript", "c++", "cpp", "c#", "golang", "php", "sql", "css", "html", "bash"]
+    _prog_concepts = ["چطور", "چگونه", "چطوری", "نحوه", "روش", "how to", "how do", "کد", "تابع", "لیست", "دیکشنری", "آرایه", "حلقه", "فانکشن", "ارور", "خطا", "بنویس", "تایپ", "کلاس"]
+    _is_programming_query = any(lang in prompt_lower for lang in _prog_lang_tokens) and any(w in prompt_lower for w in _prog_concepts)
+    _has_code_intent = any(w in prompt_lower for w in _code_request_markers) or _is_programming_query
 
-    # Identify relevant categories (internal tools are system-only, never matched)
+    _is_explicit_exec_or_search = any(w in prompt_lower for w in [
+        "اجرا کن", "اجرای کد", "تست کن", "run code", "run python", "execute", "سندباکس", "sandbox", "e2b",
+        "استک اورفلو", "stackoverflow", "ردیت", "reddit", "گیت هاب", "github",
+        "امروز", "الان", "زنده", "قیمت", "چنده", "اخبار", "سرچ کن", "جستجو کن", "لینک", "سایت", "دانلود موزیک", "دانلود آهنگ", "عکس بکش", "تصویر بکش", "بن "
+    ])
+    if _has_code_intent and not _is_explicit_exec_or_search and len(prompt_lower) < 600:
+        return _cache_smart_tools(cache_key, [])
+
+    # Identify relevant categories using precompiled category word-boundary regex index
     relevant_categories = set()
-    for cat, kws in CATEGORY_KEYWORDS.items():
+    for cat, pat in _CATEGORY_PATTERNS.items():
         if cat == "internal":
             continue
-        for kw in kws:
-            if _kw_hit_compiled(kw, prompt_lower):
-                relevant_categories.add(cat)
-                break
+        if pat.search(prompt_lower):
+            relevant_categories.add(cat)
     relevant_categories.discard("internal")
 
     # --- Claim-verify auto-attach: factual statements with recency/version
@@ -478,7 +488,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         "when", "where", "why", "how", "which", "is ", "are ",
     ]
     _looks_question = any(_qm in prompt_lower for _qm in _question_markers)
-    if _looks_question and "search" not in relevant_categories and not _has_def:
+    if _looks_question and "search" not in relevant_categories and not _has_def and not _has_code_intent:
         # …unless it's pure chatter or a deterministic fast-path query.
         _no_search_words = ["سلام", "خوبی", "چطوری", "ممنون", "مرسی", "باشه", "اوکی"]
         if not any(_w in prompt_lower for _w in _no_search_words):
@@ -596,15 +606,35 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
 
     # Guaranteed inclusion and highest priority (#1 position) for AI image generation:
     _img_intent_hints = (
-        "عکس", "تصویر", "تصویرسازی", "نقاشی", "طراحی", "بکش", "draw", "paint",
-        "image", "photo", "picture", "dall-e", "flux", "تولید عکس", "تولید تصویر",
-        "ساخت عکس", "ساخت تصویر", "text-to-image", "text to image"
+        "بکش", "draw", "paint", "تولید عکس", "تولید تصویر", "ساخت عکس", "ساخت تصویر",
+        "عکس بساز", "تصویر بساز", "عکس بکش", "تصویر بکش", "نقاشی بکش",
+        "generate image", "create image", "dall-e", "flux", "text-to-image", "text to image"
     )
-    if any(_ih in prompt_lower for _ih in _img_intent_hints):
+    _non_img_intent = ("کد", "اسکریپت", "پایتون", "الگوریتم", "چیست", "چیه", "کیست", "قیمت", "چنده", "دانلود")
+    if any(_ih in prompt_lower for _ih in _img_intent_hints) and not any(_nw in prompt_lower for _nw in _non_img_intent):
         ensure_module("src.tools.media")
         if "generate_ai_image" in REGISTRY and "generate_ai_image" not in selected_names:
             selected_schemas.append(REGISTRY["generate_ai_image"]["schema"])
             selected_names.add("generate_ai_image")
+
+    # Guaranteed priority inclusion for admin moderation (ban, unban, mute)
+    if is_admin:
+        if is_ban_intent:
+            ensure_module("src.tools.system")
+            if "ban_user_tool" in REGISTRY and "ban_user_tool" not in selected_names:
+                selected_schemas.append(REGISTRY["ban_user_tool"]["schema"])
+                selected_names.add("ban_user_tool")
+        if is_unban_intent:
+            ensure_module("src.tools.system")
+            if "unban_user_tool" in REGISTRY and "unban_user_tool" not in selected_names:
+                selected_schemas.append(REGISTRY["unban_user_tool"]["schema"])
+                selected_names.add("unban_user_tool")
+        _is_mute = any(k in prompt_lower for k in ("میوت", "سکوت", "ساکت", "سایلنت", "mute"))
+        if _is_mute:
+            ensure_module("src.tools.system")
+            if "mute_user_tool" in REGISTRY and "mute_user_tool" not in selected_names:
+                selected_schemas.append(REGISTRY["mute_user_tool"]["schema"])
+                selected_names.add("mute_user_tool")
 
     for name, t in REGISTRY.items():
         cat = t.get("category", "")
@@ -642,6 +672,40 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
                     continue
             else:
                 if name not in ("github_search_repositories", "github_repo_info", "github_read_readme"):
+                    continue
+
+        # Slim Media Cabinet: attach only relevant media sub-tools based on intent
+        if cat == "media":
+            _is_music = any(k in prompt_lower for k in ("آهنگ", "اهنگ", "موزیک", "ترانه", "خواننده", "دانلود آهنگ", "دانلود موزیک", "لیریکس", "متن ترانه", "متن آهنگ", "song", "music", "track", "پلی", "play"))
+            _is_barcode = any(k in prompt_lower for k in ("بارکد", "qr", "کیوآر", "barcode", "qrcode", "ean13", "code128", "مخدوش"))
+            _is_voice = any(k in prompt_lower for k in ("ویس", "وویس", "صوت", "تبدیل ویس", "transcribe", "صدا"))
+            _is_telegraph = any(k in prompt_lower for k in ("تلگراف", "telegraph", "مقاله"))
+            if _is_music:
+                if name not in ("download_music_track", "get_song_lyrics"):
+                    continue
+            elif _is_barcode:
+                if name not in ("generate_barcode_tool", "generate_qr_code_tool", "reconstruct_damaged_barcode_tool"):
+                    continue
+            elif _is_voice:
+                if name not in ("transcribe_audio_tool",):
+                    continue
+            elif _is_telegraph:
+                if name not in ("publish_telegraph_article",):
+                    continue
+            else:
+                if name not in ("download_music_track", "generate_qr_code_tool"):
+                    continue
+
+        # Slim Admin Cabinet: prevent code execution or railway redeploy tools from polluting general moderation requests
+        if cat == "admin":
+            if name in ("e2b_run_code", "e2b_run_command", "e2b_status", "execute_python_code"):
+                if not any(k in prompt_lower for k in ("اجرا", "run", "سندباکس", "sandbox", "e2b", "execute", "کد")):
+                    continue
+            if name in ("railway_status_tool", "railway_redeploy_tool"):
+                if not any(k in prompt_lower for k in ("ریلوی", "railway", "ری‌دیپلوی", "redeploy")):
+                    continue
+            if name in ("purge_chat_messages_tool",):
+                if not any(k in prompt_lower for k in ("پاک", "حذف پیام", "purge", "clean")):
                     continue
 
         if cat in relevant_categories or name in core_names:

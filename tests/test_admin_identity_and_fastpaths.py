@@ -367,6 +367,13 @@ def test_smart_tools_conceptual_zero_overhead():
     assert get_smart_tools_for_prompt("سلام چطوری") == []
     assert get_smart_tools_for_prompt("فرق لینوکس با ویندوز چیه") == []
 
+    # Pure coding and algorithm queries must attach ZERO tools for instant sub-second responses
+    assert get_smart_tools_for_prompt("کد مرج سورت بنویس") == []
+    assert get_smart_tools_for_prompt("یک تابع برای مرتب سازی بنویس") == []
+    assert get_smart_tools_for_prompt("چگونه در پایتون فایل جیسون بخوانم؟") == []
+    assert get_smart_tools_for_prompt("کد پایتون برای دانلود عکس بنویس") == []
+    assert get_smart_tools_for_prompt("چطوری توی پایتون یک دیکشنری رو مرتب کنم؟") == []
+
     # Real-time / shopping queries must attach proper tools
     price_tools = [t["function"]["name"] for t in get_smart_tools_for_prompt("قیمت دلار چنده الان؟")]
     assert any("price" in pt or "forex" in pt or "dollar" in pt for pt in price_tools)

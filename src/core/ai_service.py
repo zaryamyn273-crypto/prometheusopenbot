@@ -880,11 +880,11 @@ async def generate_response(
     # Keeping the core persona and instructions byte-for-byte identical in Message 0 enables provider prompt caching.
     static_system_prompt = (
         SYSTEM_PROMPT
-        + "\n\n[دستور جستجوی زنده]: برای اخبار/حوادث روز/مقایسه نسخه‌ها از ابزار جستجوی زنده استفاده کن — اگر tavily_search در دسترس بود از آن، وگرنه از web_search رایگان. هرگز از داده‌های ذهنی بدون ابزار پاسخ نده.]"
+        + "\n\n[دستور جستجوی زنده]: برای وقایع، اشخاص و اخبار روز، فقط از ابزار `web_search` استفاده کن. برای سوالات علمی، کدنویسی، رفع باگ و تعاریف مفهومی، مطلقاً هیچ ابزاری فراخوانی نکن و فوراً پاسخ بده."
         + "\n[قانون سهمیه]: سهمیه شخصی کاربر در ربات فقط با دستور /limit نمایش داده می‌شود — خودت هرگز عدد سهمیه شخصی اعلام نکن. سؤال درباره سهمیه موضوعات دیگر (بنزین، اینترنت و ...) سؤال عادی است: عادی جواب بده و اسمی از سهمیه کاربر در ربات نبر."
-        + "\n\n[دستور قطعی لحن، اسکوپ و تمرکز پاسخ]:"
-        + "\n۱. تمرکز مطلق بر سؤال مستقیم: فقط و فقط دقیقاً به سؤالی که مستقیماً در همین پیام از شما پرسیده شده پاسخ بده. به هیچ موضوع جانبی، حاشیه‌ای، فرعی، نصیحت یا پند و اندرز نپرداز مگر اینکه کاربر صراحتاً در پیام خود آن را درخواست کرده باشد (مانند «توضیح کامل بده»، «تحلیل کن»، «راهنمایی کن»)."
-        + "\n۲. لحن خلاصه‌گو و نیش‌دار: کاملاً حرفه‌ای، مسلط، فوق‌العاده فشرده و خلاصه‌گو با چاشنی طعنه و کنایه ظریف و هوشمندانه (Sarcastic & Witty). بدون سلام، بدون احوال‌پرسی کش‌دار، بدون مقدمه‌چینی. اصل فکت‌ها، ارقام و داده‌های خالص با کلمات کلیدی بولد (*متن*) ارائه شود."
+        + "\n\n[قانون ضربه مستقیم و صفر حاشیه]:"
+        + "\n۱. اولین کلمه پاسخ باید دقیقاً پاسخ مستقیم، رقم، نام فکت یا بلوک کد باشد. هرگونه سلام، درود، احوال‌پرسی، مقدمه‌چینی («بر اساس بررسی‌ها»، «طبق اطلاعات دریافتی»)، موخره («امیدوارم مفید باشد»)، نصیحت اخلاقی یا هشدار ریسک تکراری اکیداً ممنوع است."
+        + "\n۲. پاسخ‌ها باید فوق‌العاده فشرده، مسلط، فنی و نیش‌دار (Witty & Sarcastic) باشند. اصل فکت‌ها و ارقام با کلمات کلیدی بولد (*متن*) ارائه شود."
     )
 
     # Ephemeral Context (Dynamic per session/caller/turn):
@@ -1375,7 +1375,7 @@ async def generate_response(
                 "base64_encode_decode", "url_encode_decode", "generate_uuid",
                 "digikala_search", "amazon_search", "ebay_search", "get_commodities_price", "reddit_search", "stackoverflow_search", "github_issues_search", "extract_user_id_tool", "ban_group_by_name_or_id_tool", "twitter_search", "cloudflare_d1_store_record", "cloudflare_d1_retrieve_record", "cloudflare_d1_delete_record", "cloudflare_d1_list_records", "cloudflare_d1_search_records", "manage_admin_memory",
                 "quick_http_inspect_tool",
-                "tavily_search", "web_search", "deep_search_and_read", "live_news", "fetch_webpage_content", "transcribe_audio_tool",
+                "transcribe_audio_tool",
                 "publish_telegraph_article", "check_ssl_certificate",
                 "e2b_run_code", "e2b_run_command", "e2b_status", "execute_python_code",
                 "schedule_task_tool", "set_user_timezone_tool", "list_scheduled_tasks_tool", "cancel_scheduled_task_tool",
@@ -1388,14 +1388,14 @@ async def generate_response(
             analysis_words = ["تحلیل", "توضیح", "چرا", "مقایسه", "پیشنهاد", "راهنمایی", "علت", "کامل بگو", "پیش بینی", "بررسی کن"]
             user_wants_analysis = any(w in (user_prompt or "").lower() for w in analysis_words)
 
-            # Verify-before-answer: version/recency claims need a synthesized verdict,
-            # never a raw link dump. Force one more reasoning turn so the model
-            # reads the live results and names the newest version + source date.
-            _pl2 = (user_prompt or "").lower()
-            _claim_verify_turn = any(_w in _pl2 for _w in ["آخرین", "جدیدترین", "تازه", "نسل", "مدل", "نسخه", "پرچمدار", "پیشرفته", "معرفی", "latest", "newest", "version", "release", "pro", "flash", "ultra"])
-            _search_only_turn = all(fn in ("tavily_search", "web_search", "deep_search_and_read", "live_news", "fetch_webpage_content") for fn in called_names if fn)
-            if _claim_verify_turn and _search_only_turn and last_tool_outputs and loop_idx == 0:
-                messages.append({"role": "user", "content": "بر اساس همین نتایج زنده، جدیدترین نسخه/مدل را همراه با نام، تاریخ و منبع معتبر اعلام کن."})
+            # Search & Web-Reader Synthesis: Search results must be synthesized into a sharp,
+            # zero-fluff 1-2 sentence verdict rather than dumping raw snippets or rambling.
+            _search_called = any(fn in ("web_search", "deep_search_and_read", "fetch_webpage_content", "live_news", "tavily_search") for fn in called_names if fn)
+            if _search_called and last_tool_outputs and loop_idx == 0:
+                messages.append({
+                    "role": "user",
+                    "content": "بر اساس نتایج زنده فوق، پاسخ دقیق و نهایی را در ۱ الی ۲ جمله بسیار کوتاه، صریح، بدون مقدمه و بدون تکرار لینک‌های خام تحویل بده."
+                })
                 tools_schema = []
                 consecutive_empty_loops = 0
                 continue
