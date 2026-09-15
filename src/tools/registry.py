@@ -617,6 +617,24 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
                 # web_search already handles live news and multi-engine/Tavily search natively
                 continue
 
+        # Slim GitHub Cabinet: attach only relevant GitHub sub-tools instead of the full suite
+        if cat == "github":
+            is_create_repo = any(k in prompt_lower for k in ("ساخت مخزن", "مخزن جدید", "ریپو جدید", "create repo", "create repository", "ریپوزیتوری بساز"))
+            is_pkg_build = any(k in prompt_lower for k in ("pkgbuild", "arch", "aur", "پکیج آرچ", "cmake", "cmakelists"))
+            is_code_read = any(k in prompt_lower for k in ("کد", "فایل", "file", "tree", "پوشه", "شاخه", "برنچ", "read_file", "سورس"))
+            if is_create_repo:
+                if name not in ("github_create_repository", "github_create_or_update_file"):
+                    continue
+            elif is_pkg_build:
+                if name not in ("github_generate_pkgbuild", "github_generate_cmake", "github_create_or_update_file"):
+                    continue
+            elif is_code_read:
+                if name not in ("github_read_file", "github_list_tree", "github_search_code"):
+                    continue
+            else:
+                if name not in ("github_search_repositories", "github_repo_info", "github_read_readme"):
+                    continue
+
         if cat in relevant_categories or name in core_names:
             if name not in selected_names:
                 selected_schemas.append(t["schema"])
@@ -654,9 +672,11 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
                 selected_schemas.append(REGISTRY[store_t]["schema"])
                 selected_names.add(store_t)
 
-    # Cap total tools passed to LLM to 26 to avoid prompt prefill latency
-    if len(selected_schemas) > 26:
-        selected_schemas = selected_schemas[:26]
+    # Dynamic Tool Budget (Prefill TTFT Latency Optimization):
+    # Cap total tools passed to LLM to 8 (or 10 for complex multi-intent) to keep prompt prefill under 1,200 tokens
+    max_tool_cap = 10 if _complex else 8
+    if len(selected_schemas) > max_tool_cap:
+        selected_schemas = selected_schemas[:max_tool_cap]
 
     _SMART_FILTER_CACHE[cache_key] = selected_schemas
     _SMART_FILTER_ORDER.append(cache_key)

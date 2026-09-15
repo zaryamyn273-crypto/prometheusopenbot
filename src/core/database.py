@@ -777,6 +777,29 @@ async def _flush_batch_to_d1(batch: List[Dict[str, Any]]):
                     except Exception:
                         pass
 
+_DIRTY_DAILY_USAGE: Dict[Tuple[int, str], int] = {}
+
+async def _flush_dirty_daily_usage_async():
+    """Flushes coalesced dirty daily usage counters in bulk to Cloudflare D1."""
+    global _DIRTY_DAILY_USAGE
+    if not _DIRTY_DAILY_USAGE:
+        return
+    items = list(_DIRTY_DAILY_USAGE.items())
+    _DIRTY_DAILY_USAGE.clear()
+    for chunk in [items[i:i + 25] for i in range(0, len(items), 25)]:
+        placeholders = ", ".join(["(?, ?, ?, CURRENT_TIMESTAMP)"] * len(chunk))
+        params = []
+        for (uid, day), used in chunk:
+            params.extend([uid, day, used])
+        sql = (
+            f"INSERT INTO daily_usage (user_id, day, used, updated_at) VALUES {placeholders} "
+            "ON CONFLICT(user_id, day) DO UPDATE SET used = excluded.used, updated_at = CURRENT_TIMESTAMP"
+        )
+        try:
+            await execute_d1_query(sql, params)
+        except Exception as e:
+            logger.debug(f"Failed to flush dirty daily usage batch to D1: {e}")
+
 async def _d1_batch_writer_loop():
     """
     Continuous Background Queue Worker with Adaptive Debouncing:
@@ -817,29 +840,35 @@ async def _d1_batch_writer_loop():
                 last_flush = now
                 await _flush_batch_to_d1(to_flush)
 
+            if _DIRTY_DAILY_USAGE and (now - last_flush >= _BATCH_DEBOUNCE_SEC):
+                await _flush_dirty_daily_usage_async()
+
         except asyncio.CancelledError:
             if batch:
                 await _flush_batch_to_d1(batch)
+            if _DIRTY_DAILY_USAGE:
+                await _flush_dirty_daily_usage_async()
             break
         except Exception as e:
             logger.error(f"D1 batch write loop exception: {e}")
             await asyncio.sleep(1.0)
 
 async def flush_write_queue_async():
-    """Immediately drains and persists all pending messages in memory to D1."""
+    """Immediately drains and persists all pending messages and dirty counters in memory to D1."""
     global _D1_WRITE_QUEUE
-    if _D1_WRITE_QUEUE is None or _D1_WRITE_QUEUE.empty():
-        return
     pending = []
-    while not _D1_WRITE_QUEUE.empty():
-        try:
-            item = _D1_WRITE_QUEUE.get_nowait()
-            pending.append(item)
-            _D1_WRITE_QUEUE.task_done()
-        except Exception:
-            break
+    if _D1_WRITE_QUEUE is not None and not _D1_WRITE_QUEUE.empty():
+        while not _D1_WRITE_QUEUE.empty():
+            try:
+                item = _D1_WRITE_QUEUE.get_nowait()
+                pending.append(item)
+                _D1_WRITE_QUEUE.task_done()
+            except Exception:
+                break
     if pending:
         await _flush_batch_to_d1(pending)
+    if _DIRTY_DAILY_USAGE:
+        await _flush_dirty_daily_usage_async()
 
 def ensure_batch_worker():
     global _D1_WRITE_QUEUE, _BATCH_WORKER_TASK
@@ -1353,8 +1382,7 @@ async def get_daily_usage_async(user_id: int) -> tuple:
 async def bump_daily_usage_async(user_id: int) -> tuple:
     """Consume one unit of today's quota. Returns (allowed, used, limit).
 
-    D1 persistence is best-effort (graceful when Cloudflare is unreachable —
-    RAM still enforces the limit for this process lifetime).
+    D1 persistence is write-behind coalesced to eliminate Cloudflare API latency and prevent rate-limiting.
     """
     try:
         uid = int(user_id)
@@ -1364,15 +1392,9 @@ async def bump_daily_usage_async(user_id: int) -> tuple:
     day = _today_key()
     used = get_daily_used(uid) + 1
     _DAILY_RAM[(uid, day)] = used
+    _DIRTY_DAILY_USAGE[(uid, day)] = used
+    ensure_batch_worker()
     limit = get_user_limit(uid)
-    try:
-        asyncio.create_task(execute_d1_query(
-            "INSERT INTO daily_usage (user_id, day, used, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
-            "ON CONFLICT(user_id, day) DO UPDATE SET used = excluded.used, updated_at = CURRENT_TIMESTAMP",
-            [uid, day, used],
-        ))
-    except Exception:
-        pass
     return used <= limit, used, limit
 
 
@@ -1735,16 +1757,20 @@ async def purge_messages_from_db_and_ram_async(chat_id: int, message_ids: List[i
 
     return len(id_set)
 
-async def get_chat_context_async(chat_id: int, max_tokens: int = 20000) -> List[Dict[str, Any]]:
+async def get_chat_context_async(chat_id: int, max_tokens: int = 20000, thread_id: Optional[int] = None) -> List[Dict[str, Any]]:
     clean_chat_id = int(chat_id) if isinstance(chat_id, (int, str)) and str(chat_id).lstrip("-").isdigit() else 0
     if not clean_chat_id:
         return []
+
+    clean_tid = int(thread_id) if (thread_id is not None and str(thread_id).isdigit()) else None
 
     # 1. Zero-Cost RAM Hit (Zero Cloudflare API calls, sub-microsecond latency)
     if clean_chat_id in _CHAT_HISTORIES and _CHAT_HISTORIES[clean_chat_id]:
         selected = []
         token_count = 0
         for m in reversed(_CHAT_HISTORIES[clean_chat_id]):
+            if clean_tid is not None and m.get("thread_id") not in (clean_tid, None, 0):
+                continue
             t_len = len(m.get("content", "")) // 3
             if token_count + t_len > max_tokens:
                 break
@@ -1758,11 +1784,16 @@ async def get_chat_context_async(chat_id: int, max_tokens: int = 20000) -> List[
     except Exception:
         _MAX_TURNS = 30
 
-    res = await execute_d1_query(
-        f"SELECT {_MESSAGE_COLS} FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
-        [clean_chat_id, _MAX_TURNS]
-    )
-    if res["success"] and res["results"]:
+    query = f"SELECT {_MESSAGE_COLS} FROM messages WHERE chat_id = ?"
+    params: List[Any] = [clean_chat_id]
+    if clean_tid is not None:
+        query += " AND (thread_id = ? OR thread_id IS NULL OR thread_id = 0)"
+        params.append(clean_tid)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(_MAX_TURNS)
+
+    res = await execute_d1_query(query, params)
+    if res.get("success") and res.get("results"):
         msgs = list(reversed(res["results"]))
         _CHAT_HISTORIES[clean_chat_id] = msgs
         return msgs
@@ -1778,6 +1809,9 @@ def clear_chat_context(chat_id: int):
         asyncio.create_task(execute_d1_query("DELETE FROM messages WHERE chat_id = ?", [clean_chat_id]))
     except RuntimeError:
         pass
+
+
+_SUMMARY_COLS = "id, user_name, username, role, content, msg_time, msg_date, message_id, thread_id"
 
 
 async def get_recent_messages_for_summary_async(chat_id: int, count: int = 50) -> List[Dict[str, Any]]:
@@ -1796,10 +1830,10 @@ async def get_recent_messages_for_summary_async(chat_id: int, count: int = 50) -
     if len(ram_msgs) >= target_count:
         return ram_msgs[-target_count:]
 
-    # 2. If RAM has fewer than target_count, fetch from Cloudflare D1
+    # 2. If RAM has fewer than target_count, fetch from Cloudflare D1 with slim projection
     try:
         res = await execute_d1_query(
-            f"SELECT {_MESSAGE_COLS} FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            f"SELECT {_SUMMARY_COLS} FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
             [clean_chat_id, target_count]
         )
         if res.get("success") and res.get("results"):

@@ -875,17 +875,25 @@ async def generate_response(
         _today_iso, _today_hm, _today_j = database.get_tehran_timestamps()
     except Exception:
         _today_iso, _today_hm, _today_j = ("", "", "")
-    system_content = (
+
+    # Static Prefix Anchor (100% Invariant for Router Prefix Caching Hit Rate > 95%):
+    # Keeping the core persona and instructions byte-for-byte identical in Message 0 enables provider prompt caching.
+    static_system_prompt = (
         SYSTEM_PROMPT
-        + memory_section
-        + caller_info
-        + _lang_rule
-        + f"\n\n[تاریخ تقویم: {_today_j} (شمسی) — میلادی (ISO): {_today_iso}]"
-        + "\n[دستور جستجوی زنده]: برای اخبار/حوادث روز/مقایسه نسخه‌ها از ابزار جستجوی زنده استفاده کن — اگر tavily_search در دسترس بود از آن، وگرنه از web_search رایگان. هرگز از داده‌های ذهنی بدون ابزار پاسخ نده.]"
+        + "\n\n[دستور جستجوی زنده]: برای اخبار/حوادث روز/مقایسه نسخه‌ها از ابزار جستجوی زنده استفاده کن — اگر tavily_search در دسترس بود از آن، وگرنه از web_search رایگان. هرگز از داده‌های ذهنی بدون ابزار پاسخ نده.]"
         + "\n[قانون سهمیه]: سهمیه شخصی کاربر در ربات فقط با دستور /limit نمایش داده می‌شود — خودت هرگز عدد سهمیه شخصی اعلام نکن. سؤال درباره سهمیه موضوعات دیگر (بنزین، اینترنت و ...) سؤال عادی است: عادی جواب بده و اسمی از سهمیه کاربر در ربات نبر."
         + "\n\n[دستور قطعی لحن، اسکوپ و تمرکز پاسخ]:"
         + "\n۱. تمرکز مطلق بر سؤال مستقیم: فقط و فقط دقیقاً به سؤالی که مستقیماً در همین پیام از شما پرسیده شده پاسخ بده. به هیچ موضوع جانبی، حاشیه‌ای، فرعی، نصیحت یا پند و اندرز نپرداز مگر اینکه کاربر صراحتاً در پیام خود آن را درخواست کرده باشد (مانند «توضیح کامل بده»، «تحلیل کن»، «راهنمایی کن»)."
         + "\n۲. لحن خلاصه‌گو و نیش‌دار: کاملاً حرفه‌ای، مسلط، فوق‌العاده فشرده و خلاصه‌گو با چاشنی طعنه و کنایه ظریف و هوشمندانه (Sarcastic & Witty). بدون سلام، بدون احوال‌پرسی کش‌دار، بدون مقدمه‌چینی. اصل فکت‌ها، ارقام و داده‌های خالص با کلمات کلیدی بولد (*متن*) ارائه شود."
+    )
+
+    # Ephemeral Context (Dynamic per session/caller/turn):
+    ephemeral_context = (
+        f"[اطلاعات نشست و متغیرها]\n"
+        f"[تاریخ تقویم: {_today_j} (شمسی) — میلادی (ISO): {_today_iso}]\n"
+        + memory_section
+        + caller_info
+        + _lang_rule
     )
 
     # On-Demand Memory & History Architecture:
@@ -895,7 +903,7 @@ async def generate_response(
     # 3. OR the user is replying to a message thread (has_reply_context) where conversation continuity is required.
     # Independent turns stay 100% clean with 0 past history overhead, lightning-fast execution, and no context contamination.
     messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": system_content}
+        {"role": "system", "content": f"{static_system_prompt}\n\n{ephemeral_context}"}
     ]
 
     # Detect Group History Summary Intent (50 or 100 messages)
@@ -1016,9 +1024,9 @@ async def generate_response(
                     pass
             return fast_price, None
 
-    # Multimodal Vision Analysis
+    # Multimodal Vision Analysis (Offloaded to thread pool to eliminate event loop blocking)
     if image_bytes:
-        b64_img, mime = optimize_image_for_vision(image_bytes)
+        b64_img, mime = await asyncio.to_thread(optimize_image_for_vision, image_bytes)
         system_vision_prompt = (
             "راهنمای جامع پردازش هوشمند تصویر و هوش بصری چندحالته (Multimodal Vision Engine):\n"
             "۱. کشف خودکار نیت بدون بلاتکلیفی (Zero-Assumption Intent Discovery): منتظر سوال کاربر نمان. بلافاصله هسته موضوعی تصویر را شناسایی کن و کامل پاسخ بده.\n"
@@ -1176,8 +1184,10 @@ async def generate_response(
                 except Exception:
                     pass
             active_schemas = _defs
-        # On first loop when tools are active, cap max_tokens to 400 so model generates tool calls rapidly without rambling
-        _tok_cap = 400 if (active_schemas and loop_idx == 0) else 800
+        # Modern reasoning models (Gemini 2.5/3, DeepSeek, GPT-4o-mini) consume 200-350 internal
+        # thinking tokens before emitting tool calls or content. 1400 for tool turns and 3000 for
+        # final synthesis turns completely prevents finish_reason='length' truncation.
+        _tok_cap = 1400 if active_schemas else 3000
         payload: Dict[str, Any] = {
             "model": _live_model,
             "stream": False,
@@ -1216,6 +1226,8 @@ async def generate_response(
                     logger.debug(f"Endpoint {endpoint} returned status {resp.status_code}")
                     if resp.status_code in (500, 502, 503, 504):
                         mark_endpoint_failure(endpoint, cooldown_sec=120.0)
+                    elif resp.status_code == 429:
+                        mark_endpoint_failure(endpoint, cooldown_sec=60.0)
                 except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError, httpx.TimeoutException) as e:
                     logger.debug(f"Router endpoint {endpoint} connection issue: {e}")
                     mark_endpoint_failure(endpoint, cooldown_sec=300.0)
@@ -1227,7 +1239,7 @@ async def generate_response(
 
             if resp is not None and resp.status_code == 200:
                 break
-            if resp is not None and resp.status_code in [429, 500, 502, 503, 504] and attempt < max_retries - 1:
+            if attempt < max_retries - 1:
                 await asyncio.sleep(backoff_delays[attempt])
                 continue
 
@@ -1400,8 +1412,10 @@ async def generate_response(
                         pass
                 return sanitize_output(_final), extra_action
 
-            # For subsequent reasoning turns, drop tool schemas to eliminate redundant latency
-            tools_schema = []
+            # Allow multi-step tool chaining (e.g. search -> fetch_webpage_content) up to loop 1;
+            # drop schemas on loop >= 2 or final synthesis turn to prevent infinite tool loops and save latency.
+            if loop_idx >= 2:
+                tools_schema = []
 
         except Exception as e:
             logger.error(f"Error in reasoning turn: {e}")

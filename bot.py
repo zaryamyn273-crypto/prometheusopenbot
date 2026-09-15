@@ -4540,6 +4540,13 @@ async def post_init_callback(application):
 
     asyncio.create_task(keep_ai_router_warm())
 
+async def post_shutdown_callback(application):
+    logger.info("Prometheus Bot shutting down: flushing all pending D1 write queues and dirty buffers...")
+    try:
+        await database.flush_write_queue_async()
+    except Exception as e:
+        logger.warning(f"Error flushing write queue on shutdown: {e}")
+
 def build_application():
     # Strict typed validation FIRST (Pydantic schema): malformed env fails here
     # with a clear bilingual message instead of a cryptic KeyError mid-run.
@@ -4591,6 +4598,7 @@ def build_application():
         .token(TELEGRAM_BOT_TOKEN)
         .request(extended_request)
         .post_init(post_init_callback)
+        .post_shutdown(post_shutdown_callback)
         .concurrent_updates(True)
         .build()
     )
