@@ -3859,6 +3859,32 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         pass
 
+    # Speculative Search Prefetch: Fire web_search concurrently with Turn 1 LLM!
+    try:
+        _search_intent = False
+        _t_hint = _prefetch_hints.get("tool_hint") or ""
+        if "web_search" in _t_hint:
+            _search_intent = True
+        else:
+            _low_txt = (rewritten or user_text).lower()
+            if any(k in _low_txt for k in (
+                "سرچ کن", "جستجو کن", "کیست", "چیست", "کجاست", "قیمت روز", "قیمت لحظه",
+                "آخرین اخبار", "اخبار امروز", "وضعیت هوا", "چه خبر", "نتایج زنده",
+                "کی اومد", "ویژگی های", "مشخصات", "who is", "what is", "latest news"
+            )):
+                _search_intent = True
+
+        if _search_intent and not image_bytes:
+            from src.tools.web_network import web_search
+            from src.core import ai_service as _ai_svc
+            _pref_q = rewritten or user_text
+            _clean_pref_q = re.sub(r"^(لطفاً|لطفا)?\s*(سرچ کن|جستجو کن|درباره|در مورد)\s*", "", _pref_q).strip()
+            if len(_clean_pref_q) >= 2:
+                _pref_task = asyncio.create_task(web_search(_clean_pref_q, max_results=4))
+                _ai_svc.register_active_search_prefetch(chat.id, _clean_pref_q, _pref_task)
+    except Exception:
+        pass
+
     # High-Speed Keep-Alive Typing Action (1.5s interval for instant feedback)
     typing_active = True
     async def keep_typing():
@@ -3894,6 +3920,11 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     finally:
         typing_active = False
         typing_task.cancel()
+        try:
+            from src.core import ai_service as _ai_svc
+            _ai_svc.pop_active_search_prefetch(chat.id)
+        except Exception:
+            pass
         try:
             if _INFLIGHT_TURNS.get(int(chat.id)) is asyncio.current_task():
                 _INFLIGHT_TURNS.pop(int(chat.id), None)

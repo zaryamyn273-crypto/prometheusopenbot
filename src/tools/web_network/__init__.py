@@ -49,22 +49,35 @@ def _kv_safe_key(prefix: str, query: str) -> str:
 
 _TAVILY_EXHAUSTED_UNTIL = 0.0
 
-def get_async_client() -> httpx.AsyncClient:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(
-            limits=_http_limits,
-            timeout=5.0,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7"
-            }
-        )
-    return _client
+def get_async_client(profile: str = "web") -> httpx.AsyncClient:
+    """Returns pooled high-concurrency AsyncClient with keep-alive socket reuse."""
+    try:
+        from src.core.http import get_http_client
+        return get_http_client(profile)
+    except Exception:
+        global _client
+        if _client is None or _client.is_closed:
+            _client = httpx.AsyncClient(
+                limits=_http_limits,
+                timeout=4.0,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7"
+                }
+            )
+        return _client
 
-async def tavily_search_raw(query: str, max_results: int = 5, search_depth: str = "advanced", include_answer: bool = True, time_range: Optional[str] = None) -> Dict[str, Any]:
-    """Direct Tavily API call with circuit breaker on quota exhaustion. Never raises."""
+def _normalize_search_query(q: str) -> str:
+    """Normalize Persian characters (ye/ke), remove zero-width spaces and noise for sub-millisecond cache hits."""
+    if not q:
+        return ""
+    text = q.replace("\u064a", "\u06cc").replace("\u0643", "\u06a9").replace("\u200c", " ").replace("\u200b", "")
+    text = re.sub(r'[!?,;؛؟،"\'\(\)\[\]\{\}\<\>]', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip().lower()
+
+async def tavily_search_raw(query: str, max_results: int = 5, search_depth: str = "basic", include_answer: bool = True, time_range: Optional[str] = None) -> Dict[str, Any]:
+    """Direct Tavily API call with circuit breaker on quota exhaustion. Uses fast basic depth (<800ms). Never raises."""
     global _TAVILY_EXHAUSTED_UNTIL
     if time.time() < _TAVILY_EXHAUSTED_UNTIL:
         return {}
@@ -86,7 +99,7 @@ async def tavily_search_raw(query: str, max_results: int = 5, search_depth: str 
     if not keys:
         return {}
     try:
-        client = get_async_client()
+        client = get_async_client("api")
         last_err = ""
         for _key in keys:
             try:
@@ -100,7 +113,7 @@ async def tavily_search_raw(query: str, max_results: int = 5, search_depth: str 
                 }
                 if time_range:
                     payload["time_range"] = time_range
-                r = await client.post(TAVILY_API_URL, json=payload, timeout=3.5)
+                r = await client.post(TAVILY_API_URL, json=payload, timeout=2.2)
                 if r.status_code == 200:
                     data = r.json()
                     if isinstance(data, dict) and data.get("results"):
@@ -194,7 +207,8 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
     # Freshness-aware cache: breaking/live queries revalidate every 90s so the
     # user always sees the newest data; ordinary queries keep the 3600s TTL.
     _fresh = _is_fresh_query(clean_q)
-    cache_key = _kv_safe_key("SEARCH", clean_q)
+    _norm_q = _normalize_search_query(clean_q)
+    cache_key = _kv_safe_key("SEARCH", _norm_q)
     _now = time.time()
 
     # 1. Fast L1 In-Memory RAM Cache (Sub-millisecond retrieval)
@@ -220,7 +234,7 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
                 _l1_web_put(cache_key, cached)
                 return cached
 
-    client = get_async_client()
+    client = get_async_client("fast")
     encoded = urllib.parse.quote(clean_q)
 
     def _decode_search_url(url: str) -> str:
@@ -275,34 +289,19 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
             return out, has_ans
         except Exception:
             return [], False
-    # Engine 1: DuckDuckGo Lite Engine (High-reliability, anti-bot resilient, zero JS/captchas)
+    # Engine 1: DuckDuckGo High-Speed HTML Engine (High-reliability, anti-bot resilient, zero JS/captchas)
     async def search_ddg_lite():
         try:
-            r = await client.post("https://lite.duckduckgo.com/lite/", data={"q": clean_q}, timeout=4.5)
-            if r.status_code == 200:
-                soup = BeautifulSoup(r.text, "html.parser")
-                links = soup.find_all("a", class_="result-link")
-                snippets = soup.find_all("td", class_="result-snippet")
-                results = []
-                for idx, a in enumerate(links):
-                    raw_href = a.get("href", "")
-                    if any(bad in raw_href for bad in ["duckduckgo.com/y.js", "bing.com/aclick", "ad_provider"]):
-                        continue
-                    target_url = _decode_search_url(raw_href)
-                    title = a.get_text(strip=True)
-                    snippet = snippets[idx].get_text(strip=True) if idx < len(snippets) else ""
-                    if title and target_url and target_url.startswith("http"):
-                        results.append(f"• *{title}*\n  🔗 {target_url}\n  📄 {snippet}")
-                        if len(results) >= 7:
-                            break
-                if results:
-                    return results
-        except Exception:
-            pass
-
-        # Fallback to HTML endpoint if Lite returned empty
-        try:
-            r = await client.post("https://html.duckduckgo.com/html/", data={"q": clean_q}, timeout=4.5)
+            r = await client.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": clean_q, "b": "", "kl": "wt-wt"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                    "Referer": "https://html.duckduckgo.com/",
+                },
+                follow_redirects=True,
+                timeout=2.5
+            )
             if r.status_code in (200, 202):
                 soup = BeautifulSoup(r.text, "html.parser")
                 results = []
@@ -321,9 +320,39 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
                     snippet = a_snippet.get_text(strip=True) if a_snippet else ""
                     if title and target_url and target_url.startswith("http"):
                         results.append(f"• *{title}*\n  🔗 {target_url}\n  📄 {snippet}")
-                        if len(results) >= 7:
+                        if len(results) >= max_results + 2:
                             break
-                return results
+                if results:
+                    return results
+        except Exception:
+            pass
+
+        # Fast fallback to Lite endpoint
+        try:
+            r = await client.post(
+                "https://lite.duckduckgo.com/lite/",
+                data={"q": clean_q},
+                follow_redirects=True,
+                timeout=2.0
+            )
+            if r.status_code in (200, 202):
+                soup = BeautifulSoup(r.text, "html.parser")
+                links = soup.find_all("a", class_="result-link")
+                snippets = soup.find_all("td", class_="result-snippet")
+                results = []
+                for idx, a in enumerate(links):
+                    raw_href = a.get("href", "")
+                    if any(bad in raw_href for bad in ["duckduckgo.com/y.js", "bing.com/aclick", "ad_provider"]):
+                        continue
+                    target_url = _decode_search_url(raw_href)
+                    title = a.get_text(strip=True)
+                    snippet = snippets[idx].get_text(strip=True) if idx < len(snippets) else ""
+                    if title and target_url and target_url.startswith("http"):
+                        results.append(f"• *{title}*\n  🔗 {target_url}\n  📄 {snippet}")
+                        if len(results) >= max_results + 2:
+                            break
+                if results:
+                    return results
         except Exception:
             pass
         return []
@@ -342,10 +371,11 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
 
         res = []
         query_tokens = [t for t in re.split(r"\s+", clean_q.lower()) if len(t) >= 2]
+        wiki_headers = {"User-Agent": "PrometheusBot/2.0 (KnowledgeEngine; +https://t.me/AMZprometheusopenbot)"}
         for lang in ["fa", "en"]:
             try:
                 wiki_url = f"https://{lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch={encoded}&format=json&utf8=1"
-                r = await client.get(wiki_url, timeout=3.0)
+                r = await client.get(wiki_url, headers=wiki_headers, timeout=2.0)
                 if r.status_code == 200:
                     for item in r.json().get("query", {}).get("search", [])[:3]:
                         title = item.get("title", "")
@@ -527,8 +557,8 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
         return out_text
 
     # High-Speed Multi-Engine Speculative Race:
-    # Run all fast, anti-bot resilient engines concurrently.
-    # Returns as soon as ANY fast engine delivers valid results, dropping latency to <1.2s.
+    # Run all fast, anti-bot resilient engines concurrently with pooled sockets.
+    # Returns as soon as ANY fast engine delivers valid results, dropping latency to <1.0s.
     try:
         from src.core.config import has_tavily as _has_tv_cfg
         _tavily_enabled = bool(_has_tv_cfg()) and (time.time() >= _TAVILY_EXHAUSTED_UNTIL)
@@ -536,55 +566,55 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
         _tavily_enabled = False
 
     tavily_task = asyncio.create_task(search_tavily()) if _tavily_enabled else None
-    bing_task = asyncio.create_task(search_bing())
-    ddg_instant_task = asyncio.create_task(search_ddg_instant())
-    wiki_task = asyncio.create_task(search_wikipedia())
     ddg_task = asyncio.create_task(search_ddg_lite())
+    wiki_task = asyncio.create_task(search_wikipedia())
+    ddg_instant_task = asyncio.create_task(search_ddg_instant())
+    bing_task = asyncio.create_task(search_bing())
 
-    all_spec_tasks = [t for t in (tavily_task, bing_task, ddg_instant_task, wiki_task, ddg_task) if t is not None]
+    all_spec_tasks = [t for t in (tavily_task, ddg_task, wiki_task, ddg_instant_task, bing_task) if t is not None]
     collected_results: List[str] = []
+    has_direct_ans = False
 
     try:
-        # Phase 1: Wait up to 2.2s for the fastest responder
-        done, pending = await asyncio.wait(all_spec_tasks, timeout=2.2, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
+        # Active Collector Loop: Process results as each engine finishes (deadline 1.6s)
+        race_deadline = time.time() + 1.6
+        for fut in asyncio.as_completed(all_spec_tasks, timeout=1.6):
             try:
-                res = task.result() if not task.cancelled() and not task.exception() else []
-                if task is tavily_task and isinstance(res, tuple):
-                    res = res[0]
+                res = await fut
+                if isinstance(res, tuple):
+                    res, is_ans = res
+                    if is_ans:
+                        has_direct_ans = True
                 if isinstance(res, list) and res:
-                    clean_res = _filter_and_dedup(res, clean_q, max_results + 2)
-                    if len(clean_res) >= 2:
-                        # Fast winner found! Cancel remaining tasks and return immediately!
-                        for p in pending:
-                            p.cancel()
-                        return await _format_and_cache(clean_res)
                     collected_results.extend(res)
+                    clean_res = _filter_and_dedup(collected_results, clean_q, max_results + 2)
+                    # Instant early exit: direct answer or at least 2 relevant hits
+                    if has_direct_ans or len(clean_res) >= 2:
+                        for t in all_spec_tasks:
+                            if not t.done():
+                                t.cancel()
+                        return await _format_and_cache(clean_res)
+            except asyncio.TimeoutError:
+                break
             except Exception:
                 pass
-
-        # Phase 2: If none had >=2 hits, wait up to 1.8s more for remaining tasks
-        if pending:
-            done_second, remaining = await asyncio.wait(pending, timeout=1.8)
-            for task in done_second:
-                try:
-                    res = task.result() if not task.cancelled() and not task.exception() else []
-                    if task is tavily_task and isinstance(res, tuple):
-                        res = res[0]
-                    if isinstance(res, list) and res:
-                        collected_results.extend(res)
-                except Exception:
-                    pass
-            for r_task in remaining:
-                r_task.cancel()
+            if time.time() >= race_deadline:
+                break
 
         if collected_results:
             clean_combined = _filter_and_dedup(collected_results, clean_q, max_results + 2)
             if clean_combined:
+                for t in all_spec_tasks:
+                    if not t.done():
+                        t.cancel()
                 return await _format_and_cache(clean_combined)
 
     except Exception:
         pass
+    finally:
+        for t in all_spec_tasks:
+            if not t.done():
+                t.cancel()
 
     # Fallback to secondary search engines (Brave & Mojeek)
     try:

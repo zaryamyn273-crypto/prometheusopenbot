@@ -43,11 +43,11 @@ def _parse_admin_ids(raw: Any) -> Set[int]:
                 ids.add(aid)
     return ids
 
-_raw_admin_env = f"{os.getenv('ADMIN_ID', '')} {os.getenv('ADMIN_IDS', '')}".strip()
+_raw_admin_env = f"{os.getenv('ADMIN_ID', '8814471014')} {os.getenv('ADMIN_IDS', '')}".strip()
 ADMIN_IDS: Set[int] = _parse_admin_ids(_raw_admin_env)
 
 # Primary ADMIN_ID for backward compatibility
-ADMIN_ID: int = _parse_admin_id(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID: int = _parse_admin_id(os.getenv("ADMIN_ID", "8814471014"))
 if ADMIN_ID <= 0 and ADMIN_IDS:
     ADMIN_ID = sorted(list(ADMIN_IDS))[0]
 elif ADMIN_ID > 0:
@@ -62,11 +62,11 @@ def get_admin_ids() -> Set[int]:
     refreshing automatically if os.getenv('ADMIN_ID') or os.getenv('ADMIN_IDS') changes.
     """
     global ADMIN_ID, ADMIN_IDS, _last_admin_env
-    env_raw = f"{os.getenv('ADMIN_ID', '')} {os.getenv('ADMIN_IDS', '')}".strip()
+    env_raw = f"{os.getenv('ADMIN_ID', '8814471014')} {os.getenv('ADMIN_IDS', '')}".strip()
     if env_raw != _last_admin_env or not ADMIN_IDS:
         _last_admin_env = env_raw
         parsed = _parse_admin_ids(env_raw)
-        p_admin = _parse_admin_id(os.getenv("ADMIN_ID", "0"))
+        p_admin = _parse_admin_id(os.getenv("ADMIN_ID", "8814471014"))
         if p_admin > 0:
             parsed.add(p_admin)
             ADMIN_ID = p_admin

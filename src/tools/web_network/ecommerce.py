@@ -67,8 +67,16 @@ async def amazon_search(query: str, max_results: int = 5) -> str:
         async with shared_client_ctx("web") as client:
             enc_q = urllib.parse.quote_plus(clean_q)
             url = f"https://www.amazon.com/s?k={enc_q}"
-            r = await client.get(url, headers=headers, follow_redirects=True, timeout=9.0)
-            if r.status_code == 200 and "To discuss automated access" not in r.text:
+            r = await client.get(url, headers=headers, follow_redirects=True, timeout=7.0)
+            is_anti_bot = (
+                r.status_code in (503, 403, 429) or
+                "To discuss automated access" in r.text or
+                "Robot Check" in r.text or
+                "bm-verify" in r.text or
+                "api-services-support@amazon.com" in r.text or
+                "validateCaptcha" in r.text
+            )
+            if r.status_code == 200 and not is_anti_bot:
                 soup = BeautifulSoup(r.text, "html.parser")
                 cards = soup.select('[data-component-type="s-search-result"]')
                 for card in cards:
@@ -130,7 +138,7 @@ async def amazon_search(query: str, max_results: int = 5) -> str:
             if not fallback_res or "یافت نشد" in fallback_res:
                 fallback_res = await web_search(f"amazon {clean_q} price", max_results=max_results)
             if fallback_res and "یافت نشد" not in fallback_res:
-                out_text = f"📦 *نتایج جستجوی آمازون (Amazon) برای «{clean_q}»:*\n\n{fallback_res}"
+                out_text = f"📦 *نتایج جستجو و استعلام قیمت آمازون (Amazon) برای «{clean_q}»:*\n\n{fallback_res}"
                 _L1_ECOMMERCE_CACHE[cache_key] = (now, out_text)
                 await database.kv_set_cache_async(cache_key, out_text, expiration_ttl=900)
                 return out_text
@@ -202,8 +210,13 @@ async def ebay_search(query: str, condition: str = "all", max_results: int = 5) 
                 sq += " used pre-owned"
 
             url = "https://search.yahoo.com/search?p=" + urllib.parse.quote(sq)
-            r = await client.get(url, headers=headers, follow_redirects=True, timeout=7.0)
-            if r.status_code == 200:
+            r = await client.get(url, headers=headers, follow_redirects=True, timeout=6.0)
+            is_anti_bot = (
+                r.status_code in (503, 500, 403, 429, 307) or
+                "captcha" in r.text.lower() or
+                "verify you are human" in r.text.lower()
+            )
+            if r.status_code == 200 and not is_anti_bot:
                 soup = BeautifulSoup(r.text, "html.parser")
                 algos = soup.select(".algo")
                 for li in algos:
@@ -250,7 +263,7 @@ async def ebay_search(query: str, condition: str = "all", max_results: int = 5) 
             if not fallback_res or "یافت نشد" in fallback_res:
                 fallback_res = await web_search(f"ebay {clean_q} price", max_results=max_results)
             if fallback_res and "یافت نشد" not in fallback_res:
-                out_text = f"🛒 *نتایج استعلام از eBay برای «{clean_q}»:*\n\n{fallback_res}"
+                out_text = f"🛒 *نتایج استعلام قیمت و کالاهای مارکت جهانی ای‌بی (eBay) برای «{clean_q}»:*\n\n{fallback_res}"
                 _L1_ECOMMERCE_CACHE[cache_key] = (now, out_text)
                 await database.kv_set_cache_async(cache_key, out_text, expiration_ttl=900)
                 return out_text

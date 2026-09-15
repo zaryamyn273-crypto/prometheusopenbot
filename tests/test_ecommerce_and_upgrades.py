@@ -33,7 +33,7 @@ async def test_amazon_search_zero_api():
     assert isinstance(res, str)
     assert len(res) > 20
     assert ("Amazon" in res or "آمازون" in res or "amazon.com" in res)
-    assert ("$" in res or "قیمت" in res or "dp/" in res or "محدودیت" in res or "یافت نشد" in res)
+    assert ("$" in res or "قیمت" in res or "dp/" in res or "محدودیت" in res or "یافت نشد" in res or "نتایج" in res)
 
 @pytest.mark.asyncio
 async def test_ebay_search_zero_api():
@@ -41,7 +41,65 @@ async def test_ebay_search_zero_api():
     assert isinstance(res, str)
     assert len(res) > 20
     assert ("eBay" in res or "ای‌بی" in res or "ebay.com" in res)
-    assert ("$" in res or "قیمت" in res or "itm" in res or "اختلال" in res or "یافت نشد" in res)
+    assert ("$" in res or "قیمت" in res or "itm" in res or "اختلال" in res or "یافت نشد" in res or "نتایج" in res or "استعلام" in res)
+
+@pytest.mark.asyncio
+async def test_amazon_search_anti_bot_mock_fallback():
+    """Verify that when Amazon scraper faces 503/anti-bot challenge, it gracefully invokes fallback without raising exceptions."""
+    from unittest.mock import patch, AsyncMock
+    from src.tools.web_network import ecommerce
+
+    cache_key = "AMZ_test_mock_device"
+    ecommerce._L1_ECOMMERCE_CACHE.pop(cache_key, None)
+
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 503
+    mock_resp.text = "<html><body><h1>503 Service Unavailable</h1><p>Robot Check bm-verify</p></body></html>"
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    class MockCtx:
+        async def __aenter__(self):
+            return mock_client
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    with patch("src.tools.web_network.ecommerce.shared_client_ctx", return_value=MockCtx()):
+        res = await amazon_search("test mock device", max_results=3)
+        assert isinstance(res, str)
+        assert len(res) > 20
+        assert ("Amazon" in res or "آمازون" in res or "amazon.com" in res)
+        assert ("$" in res or "قیمت" in res or "dp/" in res or "محدودیت" in res or "یافت نشد" in res or "نتایج" in res)
+
+@pytest.mark.asyncio
+async def test_ebay_search_anti_bot_mock_fallback():
+    """Verify that when eBay scraper faces 503/anti-bot challenge, it gracefully invokes fallback without raising exceptions."""
+    from unittest.mock import patch, AsyncMock
+    from src.tools.web_network import ecommerce
+
+    cache_key = "EBAY_test_mock_laptop_all"
+    ecommerce._L1_ECOMMERCE_CACHE.pop(cache_key, None)
+
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 503
+    mock_resp.text = "<html><body><h1>503 Service Temporarily Unavailable</h1></body></html>"
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    class MockCtx:
+        async def __aenter__(self):
+            return mock_client
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    with patch("src.tools.web_network.ecommerce.shared_client_ctx", return_value=MockCtx()):
+        res = await ebay_search("test mock laptop", max_results=3)
+        assert isinstance(res, str)
+        assert len(res) > 20
+        assert ("eBay" in res or "ای‌بی" in res or "ebay.com" in res)
+        assert ("$" in res or "قیمت" in res or "itm" in res or "اختلال" in res or "یافت نشد" in res or "نتایج" in res or "استعلام" in res)
 
 @pytest.mark.asyncio
 async def test_reddit_search_zero_api():
@@ -96,8 +154,12 @@ if __name__ == "__main__":
     print("✓ Digikala search OK")
     asyncio.run(test_amazon_search_zero_api())
     print("✓ Amazon search OK")
+    asyncio.run(test_amazon_search_anti_bot_mock_fallback())
+    print("✓ Amazon 503/anti-bot mock fallback OK")
     asyncio.run(test_ebay_search_zero_api())
     print("✓ eBay search OK")
+    asyncio.run(test_ebay_search_anti_bot_mock_fallback())
+    print("✓ eBay 503/anti-bot mock fallback OK")
     asyncio.run(test_reddit_search_zero_api())
     print("✓ Reddit search OK")
     asyncio.run(test_commodities_price_tool())

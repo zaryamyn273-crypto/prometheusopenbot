@@ -605,6 +605,18 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
             continue
         if exclude_extract_id and name == "extract_user_id_tool":
             continue
+
+        # Slim Search Cabinet: keep prompt lean and eliminate LLM hesitation.
+        # web_search and fetch_webpage_content handle 99% of queries.
+        if cat == "search":
+            if name in ("deep_search_and_read",) and not any(k in prompt_lower for k in ("تحقیق عمیق", "مطالعه صفحات", "deep search", "deep research")):
+                continue
+            if name in ("twitter_search",) and not any(k in prompt_lower for k in ("توییتر", "توییت", "twitter", "x.com", "پست توییتر")):
+                continue
+            if name in ("tavily_search", "live_news"):
+                # web_search already handles live news and multi-engine/Tavily search natively
+                continue
+
         if cat in relevant_categories or name in core_names:
             if name not in selected_names:
                 selected_schemas.append(t["schema"])

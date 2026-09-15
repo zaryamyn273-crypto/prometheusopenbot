@@ -75,6 +75,49 @@ async def close_shared_client() -> None:
         await _shared_client.aclose()
         _shared_client = None
 
+# Speculative Search Prefetch Task Registry:
+# Keeps pre-launched background search tasks keyed by chat_id so that tool execution latency is ~0ms.
+_ACTIVE_SEARCH_PREFETCH: Dict[int, Tuple[str, asyncio.Task]] = {}
+
+def register_active_search_prefetch(chat_id: int, query: str, task: asyncio.Task) -> None:
+    """Register an active background search prefetch task for a given chat."""
+    try:
+        old = _ACTIVE_SEARCH_PREFETCH.pop(int(chat_id), None)
+        if old and not old[1].done():
+            old[1].cancel()
+    except Exception:
+        pass
+    _ACTIVE_SEARCH_PREFETCH[int(chat_id)] = (query, task)
+
+def pop_active_search_prefetch(chat_id: int, target_query: str = "") -> Optional[asyncio.Task]:
+    """Retrieve and pop an active search prefetch task if compatible with target_query."""
+    item = _ACTIVE_SEARCH_PREFETCH.pop(int(chat_id), None)
+    if not item:
+        return None
+    pref_q, task = item
+    if not target_query:
+        return task
+    try:
+        from src.tools.web_network import _normalize_search_query
+        pq = _normalize_search_query(pref_q)
+        tq = _normalize_search_query(target_query)
+        if pq == tq:
+            return task
+        p_toks = set(pq.split())
+        t_toks = set(tq.split())
+        p_toks = {t for t in p_toks if len(t) >= 2}
+        t_toks = {t for t in t_toks if len(t) >= 2}
+        if not p_toks or not t_toks or (p_toks & t_toks):
+            return task
+    except Exception:
+        return task
+    try:
+        if not task.done():
+            task.cancel()
+    except Exception:
+        pass
+    return None
+
 def _get_target_router_endpoints() -> List[str]:
     """
     Returns prioritized list of router endpoints with timeout resilience:
@@ -1272,7 +1315,18 @@ async def generate_response(
                 args["is_admin"] = is_caller_admin
 
                 try:
-                    out = await execute_registered_tool(fn_name, args, caller_id=caller_user_id, is_private_chat=is_private_chat)
+                    if fn_name in ("web_search", "tavily_search"):
+                        pref_task = pop_active_search_prefetch(chat_id, args.get("query", ""))
+                        if pref_task:
+                            try:
+                                out = await pref_task
+                            except Exception as pe:
+                                logger.warning(f"Active search prefetch error ({pe}), executing tool directly")
+                                out = await execute_registered_tool(fn_name, args, caller_id=caller_user_id, is_private_chat=is_private_chat)
+                        else:
+                            out = await execute_registered_tool(fn_name, args, caller_id=caller_user_id, is_private_chat=is_private_chat)
+                    else:
+                        out = await execute_registered_tool(fn_name, args, caller_id=caller_user_id, is_private_chat=is_private_chat)
                 except Exception as e:
                     logger.error(f"Execution error in tool {fn_name}: {e}")
                     out = f"خطا در اجرای ابزار {fn_name}: {str(e)}"
