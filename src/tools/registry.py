@@ -870,7 +870,9 @@ async def execute_registered_tool(
     name: str,
     args: Dict[str, Any],
     caller_id: int = 0,
-    is_private_chat: bool = False
+    is_private_chat: bool = False,
+    chat_id: int = 0,
+    is_admin: bool = False
 ) -> Any:
     """
     Execute a registered tool by name with resilient type-coercion, robust argument mapping,
@@ -894,9 +896,13 @@ async def execute_registered_tool(
 
     for p_name, param in sig.parameters.items():
         if p_name == "caller_id":
-            call_kwargs["caller_id"] = caller_id
+            call_kwargs["caller_id"] = caller_id or args.get("caller_id", 0)
         elif p_name == "is_private_chat":
             call_kwargs["is_private_chat"] = is_private_chat
+        elif p_name == "chat_id":
+            call_kwargs["chat_id"] = chat_id or args.get("chat_id", 0)
+        elif p_name == "is_admin":
+            call_kwargs["is_admin"] = is_admin or args.get("is_admin", False)
         else:
             raw_val = None
             if p_name in args:
@@ -974,7 +980,7 @@ async def execute_registered_tool(
         if tool_meta["is_async"]:
             primary_out = await func(**call_kwargs)
         else:
-            primary_out = func(**call_kwargs)
+            primary_out = await asyncio.to_thread(func, **call_kwargs)
     except Exception as e:
         logger.error(f"Error executing tool {name}: {e}")
         primary_out = f"خطا در اجرای ابزار {name}: {str(e)}"

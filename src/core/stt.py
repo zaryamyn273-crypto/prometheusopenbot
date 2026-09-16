@@ -30,6 +30,7 @@ async def convert_audio_to_wav(raw_bytes: bytes) -> bytes:
     # If already a valid WAV header, return as-is
     if raw_bytes[:4] == b"RIFF" and raw_bytes[8:12] == b"WAVE":
         return raw_bytes
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-i", "pipe:0",
@@ -47,6 +48,12 @@ async def convert_audio_to_wav(raw_bytes: bytes) -> bytes:
             return wav_out
     except Exception as e:
         logger.debug(f"ffmpeg in-memory audio conversion skipped/failed: {e}")
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
     return raw_bytes
 
 

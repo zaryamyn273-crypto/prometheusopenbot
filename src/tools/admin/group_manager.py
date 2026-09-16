@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from typing import Optional
+from typing import Optional, Any
 
 from src.tools.registry import register_tool
 from src.core import database
@@ -67,9 +67,15 @@ async def _live_membership(bot_inst, bot_me_id, cid: int):
     description="مشاهده وضعیت زنده، تعداد اعضا، دسترسی و لینک تمام گروه‌هایی که ربات در آنها حضور فعال دارد (مختص فرمانده ارشد)",
     category="admin"
 )
-async def list_joined_groups_tool(caller_id: int = 0, is_private_chat: bool = False) -> str:
+async def list_joined_groups_tool(caller_id: int = 0, is_private_chat: bool = False, bot: Any = None, **kwargs) -> str:
     if not caller_id or int(caller_id or 0) <= 0 or not is_admin_id(caller_id):
         return "❌ این فرمان منحصراً در اختیار فرمانده ارشد سیستم است."
+
+    if bot is not None:
+        try:
+            set_bot_instance(bot)
+        except Exception:
+            pass
 
     await database.sync_memory_from_d1_async()
     groups = await database.get_all_tracked_groups_async()

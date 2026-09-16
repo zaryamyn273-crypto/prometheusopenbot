@@ -127,6 +127,14 @@ def check_rate_limit(user_id: int) -> bool:
 # briefly holds in-flight task refs so a running LLM turn can be cancelled.
 _STOPPED_CHATS: Dict[int, float] = {}
 _INFLIGHT_TURNS: Dict[int, Any] = {}
+_BACKGROUND_TASKS: Set[asyncio.Task] = set()
+
+def safe_create_task(coro) -> asyncio.Task:
+    """Spawns an asyncio task with strong reference tracking so CPython GC cannot collect it mid-run."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
 
 
 @functools.lru_cache(maxsize=64)
@@ -550,6 +558,19 @@ async def global_application_error_handler(update: object, context: ContextTypes
     logging detailed diagnostics without crashing the application event loop.
     """
     err = context.error
+    try:
+        from telegram.error import ChatMigrated
+        if isinstance(err, ChatMigrated):
+            new_chat_id = err.new_chat_id
+            effective_chat = getattr(update, "effective_chat", None) if update else None
+            old_chat_id = getattr(effective_chat, "id", 0) if effective_chat else 0
+            chat_title = getattr(effective_chat, "title", "Supergroup") if effective_chat else "Supergroup"
+            logger.info(f"Group migrated: {old_chat_id} -> {new_chat_id}")
+            if new_chat_id:
+                safe_create_task(database.track_group_presence_async(new_chat_id, chat_title, chat_type="supergroup", status="active"))
+            return
+    except Exception:
+        pass
     logger.error(f"Global Application Handler caught exception: {err}", exc_info=err)
 
 # ==========================================
@@ -3272,23 +3293,24 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             target_uid = target_user.id
             target_fname = target_user.first_name or ""
             src_chat_title = chat.title or ""
-            await database.ban_target_async(
-                target_uid,
-                reason="دستور مدیریتی بر روی پیام",
-                first_name=target_fname,
-                banned_by=user.id,
-                source_chat_id=chat.id,
-                source_chat_title=src_chat_title
-            )
-            if target_uname:
+            if is_admin(user.id) or not _is_group:
                 await database.ban_target_async(
-                    f"@{target_uname}",
+                    target_uid,
                     reason="دستور مدیریتی بر روی پیام",
                     first_name=target_fname,
                     banned_by=user.id,
                     source_chat_id=chat.id,
                     source_chat_title=src_chat_title
                 )
+                if target_uname:
+                    await database.ban_target_async(
+                        f"@{target_uname}",
+                        reason="دستور مدیریتی بر روی پیام",
+                        first_name=target_fname,
+                        banned_by=user.id,
+                        source_chat_id=chat.id,
+                        source_chat_title=src_chat_title
+                    )
 
             target_name = target_fname or (f"@{target_uname}" if target_uname else "") or f"کاربر {target_uid}"
             who = target_name if ulang == "fa" else (target_fname or (f"@{target_uname}" if target_uname else "") or f"user {target_uid}")
@@ -3344,9 +3366,10 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     logger.warning(f"Telegram unban_chat_member failed: {e}")
             target_uname = target_user.username or ""
             target_uid = target_user.id
-            await database.unban_target_async(target_uid)
-            if target_uname:
-                await database.unban_target_async(f"@{target_uname}")
+            if is_admin(user.id) or not _is_group:
+                await database.unban_target_async(target_uid)
+                if target_uname:
+                    await database.unban_target_async(f"@{target_uname}")
             target_name = target_user.first_name or (f"@{target_uname}" if target_uname else "") or f"user {target_uid}"
             if ulang == "fa" and not target_user.first_name and not target_uname:
                 target_name = f"کاربر {target_uid}"
@@ -3481,6 +3504,9 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # 3d. Direct Reply Quota (admin sets/shows/adjusts/clears the replied user's daily limit)
         elif (clean_cmd == "سهمیه" or clean_cmd.startswith("سهمیه ") or clean_cmd == "quota" or clean_cmd.startswith("quota ")) and target_user:
+            if not is_admin(user.id):
+                await reply_safely(message, "❌ مشاهده و تغییر سهمیه کاربران منحصراً در اختیار مالک اصلی ربات است.")
+                return
             from src.tools.admin.intent_router import fa_digits_to_latin as _fa2lat
             _qlat = _fa2lat(clean_cmd)
             _tgt_name = target_user.first_name or (f"@{target_user.username}" if target_user.username else "") or f"user {target_user.id}"
@@ -3509,6 +3535,9 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # 4. Direct Reply Remember ("یادت باشه", "به خاطر بسپار", "ثبت کن")
         elif any(clean_cmd.startswith(p) for p in ["یادت باشه", "به خاطر بسپار", "ثبت کن", "یادت نره"]):
+            if not is_admin(user.id):
+                await reply_safely(message, "❌ ثبت فرامین حاکمیتی در حافظه پایدار ربات منحصراً در اختیار مالک اصلی ربات است.")
+                return
             replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
             directive_content = clean_cmd
             for p in ["یادت باشه", "به خاطر بسپار", "ثبت کن", "یادت نره"]:
@@ -4180,14 +4209,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception:
             pass
 
-    # Persist assistant turn first (never lose it), then deliver media/text and
-    # backfill the real Telegram message_id once the reply is actually sent.
-    await database.save_message_async(
-        chat.id, context.bot.id, "assistant", ai_response,
-        user_name="Prometheus", chat_title=chat_title, message_id=0,
-        chat_type=_save_ctype, thread_id=_th_id, detected_lang="fa",
-        char_count=len(ai_response or "")
-    )
+
 
     # Global safety net: NO addressed message may ever end without an answer.
     # Any unexpected exception below becomes a Persian apology, never silence.
@@ -4468,10 +4490,10 @@ async def post_init_callback(application):
             logger.info("First financial sync done — prices fresh at startup.")
         except Exception as e:
             logger.warning(f"First financial sync skipped: {e}")
-    asyncio.create_task(first_financial_sync())
+    safe_create_task(first_financial_sync())
     try:
         from src.tools import financial as _fin_bg
-        asyncio.create_task(_fin_bg.background_sync_financial_cache())
+        safe_create_task(_fin_bg.background_sync_financial_cache())
     except Exception as e:
         logger.warning(f"Financial background sync disabled: {e}")
 
@@ -4495,7 +4517,7 @@ async def post_init_callback(application):
             except Exception:
                 pass
             await asyncio.sleep(300.0)
-    asyncio.create_task(self_health_daemon())
+    safe_create_task(self_health_daemon())
 
     # Liveness heartbeat for /healthz: proves the event loop itself is alive
     # (a wedged loop stops beating -> probe 503 -> orchestrator restarts us).
@@ -4512,7 +4534,7 @@ async def post_init_callback(application):
             pass
         except Exception:
             pass
-    asyncio.create_task(_liveness_beater())
+    safe_create_task(_liveness_beater())
 
     # Keep-Alive warmer: ONLY when a router key exists, and every 120s
     # (not 20s) so Railway free tiers don't burn quota/traffic.
@@ -4538,7 +4560,7 @@ async def post_init_callback(application):
                 pass
             await asyncio.sleep(120.0)
 
-    asyncio.create_task(keep_ai_router_warm())
+    safe_create_task(keep_ai_router_warm())
 
 async def post_shutdown_callback(application):
     logger.info("Prometheus Bot shutting down: flushing all pending D1 write queues and dirty buffers...")
@@ -4546,6 +4568,16 @@ async def post_shutdown_callback(application):
         await database.flush_write_queue_async()
     except Exception as e:
         logger.warning(f"Error flushing write queue on shutdown: {e}")
+    try:
+        from src.core import http as _core_http
+        await _core_http.aclose_all()
+    except Exception as e:
+        logger.debug(f"Error closing HTTP connection pools on shutdown: {e}")
+    try:
+        from src.core import ai_service as _ai_svc
+        await _ai_svc.close_shared_client()
+    except Exception:
+        pass
 
 def build_application():
     # Strict typed validation FIRST (Pydantic schema): malformed env fails here
@@ -4599,7 +4631,7 @@ def build_application():
         .request(extended_request)
         .post_init(post_init_callback)
         .post_shutdown(post_shutdown_callback)
-        .concurrent_updates(True)
+        .concurrent_updates(32)
         .build()
     )
 

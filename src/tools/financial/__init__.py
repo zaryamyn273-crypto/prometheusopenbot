@@ -595,15 +595,31 @@ async def _get_nobitex_price(symbol: str, global_usd: float = 0.0) -> Optional[D
 
     if stats and pair_key in stats:
         d = stats[pair_key]
-        latest_rls = float(d.get("latest", 0))
-        if latest_rls > 0:
-            return {
-                "toman": int(latest_rls / 10),
-                "change": float(d.get("dayChange", 0)),
-                "best_buy": int(float(d.get("bestBuy", 0)) / 10),
-                "best_sell": int(float(d.get("bestSell", 0)) / 10),
-                "src": "نوبیتکس"
-            }
+        if isinstance(d, dict):
+            try:
+                latest_rls = float(d.get("latest") or 0)
+            except (ValueError, TypeError):
+                latest_rls = 0.0
+            if latest_rls > 0:
+                try:
+                    c_val = float(d.get("dayChange") or 0)
+                except (ValueError, TypeError):
+                    c_val = 0.0
+                try:
+                    bb_val = int(float(d.get("bestBuy") or 0) / 10)
+                except (ValueError, TypeError):
+                    bb_val = 0
+                try:
+                    bs_val = int(float(d.get("bestSell") or 0) / 10)
+                except (ValueError, TypeError):
+                    bs_val = 0
+                return {
+                    "toman": int(latest_rls / 10),
+                    "change": c_val,
+                    "best_buy": bb_val,
+                    "best_sell": bs_val,
+                    "src": "نوبیتکس"
+                }
 
     # Tier 2: Instant calculation from Global USD x Free USD Toman (Zero-wait!)
     if global_usd > 0:
@@ -618,6 +634,8 @@ async def _get_nobitex_price(symbol: str, global_usd: float = 0.0) -> Optional[D
                 "src": "تخمین بازار آزاد"
             }
     return None
+
+get_nobitex_crypto_prices = _get_nobitex_price
 
 @register_tool(
     name="get_price",

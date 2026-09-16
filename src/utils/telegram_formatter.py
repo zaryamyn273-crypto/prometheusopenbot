@@ -251,7 +251,7 @@ def markdown_to_telegram_html(markdown_text: str, wrap_expandable_if_long: bool 
     def _flush_quote():
         nonlocal in_quote_block, quote_accumulator, formatted_lines
         if quote_accumulator:
-            q_text = "<br/>".join(quote_accumulator)
+            q_text = "\n".join(quote_accumulator)
             if len(q_text) > 350:
                 formatted_lines.append(f'<blockquote expandable>{q_text}</blockquote>')
             else:
@@ -348,21 +348,20 @@ def split_telegram_html(html_text: str, max_chunk_len: int = 3800) -> List[str]:
                 chunks.append(closed_chunk)
 
                 # Determine which tags were open so we can reopen them
-                # Calculate active tags in current_chunk
-                open_stack = []
+                open_stack: List[Tuple[str, str]] = []
                 for m in tag_regex.finditer(current_chunk):
                     tag_str = m.group(0)
                     t_name = m.group(1).lower()
                     if t_name not in VALID_TELEGRAM_TAGS:
                         continue
                     if tag_str.startswith("</"):
-                        if open_stack and open_stack[-1] == t_name:
+                        if open_stack and open_stack[-1][0] == t_name:
                             open_stack.pop()
                     else:
-                        open_stack.append(t_name)
+                        open_stack.append((t_name, tag_str))
 
-                # Re-open in the next chunk
-                reopen_prefix = "".join(f"<{t}>" for t in open_stack)
+                # Re-open with full tag attributes in the next chunk
+                reopen_prefix = "".join(full_tag for _, full_tag in open_stack)
                 current_chunk = reopen_prefix + line if reopen_prefix else line
             else:
                 # Single line is huge (e.g. huge data blob)

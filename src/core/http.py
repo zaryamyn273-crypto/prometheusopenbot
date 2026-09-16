@@ -406,6 +406,8 @@ async def aclose_all() -> None:
     tasks = [_safe_aclose(client) for client in clients if not client.is_closed]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    with _LOCK:
         all_clients = list(_PER_LOOP_CLIENTS.values()) + list(_CLIENTS.values())
         _PER_LOOP_CLIENTS.clear()
         _CLIENTS.clear()

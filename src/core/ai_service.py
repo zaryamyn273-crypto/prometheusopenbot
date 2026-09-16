@@ -171,6 +171,10 @@ def optimize_image_for_vision(raw_bytes: bytes) -> Tuple[str, str]:
     - Returns (base64_encoded_str, mime_type).
     """
     try:
+        try:
+            Image.MAX_IMAGE_PIXELS = 35_000_000
+        except Exception:
+            pass
         with Image.open(io.BytesIO(raw_bytes)) as img:
             # 1. Correct EXIF orientation (crucial for phone photos taken vertically/horizontally)
             try:
@@ -882,9 +886,32 @@ async def generate_response(
         SYSTEM_PROMPT
         + "\n\n[دستور جستجوی زنده]: برای وقایع، اشخاص و اخبار روز، فقط از ابزار `web_search` استفاده کن. برای سوالات علمی، کدنویسی، رفع باگ و تعاریف مفهومی، مطلقاً هیچ ابزاری فراخوانی نکن و فوراً پاسخ بده."
         + "\n[قانون سهمیه]: سهمیه شخصی کاربر در ربات فقط با دستور /limit نمایش داده می‌شود — خودت هرگز عدد سهمیه شخصی اعلام نکن. سؤال درباره سهمیه موضوعات دیگر (بنزین، اینترنت و ...) سؤال عادی است: عادی جواب بده و اسمی از سهمیه کاربر در ربات نبر."
-        + "\n\n[قانون ضربه مستقیم و صفر حاشیه]:"
+        + "\n\n[قانون ضربه مستقیم، ایجاز مطلق و ارائه نکات کلیدی]:"
         + "\n۱. اولین کلمه پاسخ باید دقیقاً پاسخ مستقیم، رقم، نام فکت یا بلوک کد باشد. هرگونه سلام، درود، احوال‌پرسی، مقدمه‌چینی («بر اساس بررسی‌ها»، «طبق اطلاعات دریافتی»)، موخره («امیدوارم مفید باشد»)، نصیحت اخلاقی یا هشدار ریسک تکراری اکیداً ممنوع است."
-        + "\n۲. پاسخ‌ها باید فوق‌العاده فشرده، مسلط، فنی و نیش‌دار (Witty & Sarcastic) باشند. اصل فکت‌ها و ارقام با کلمات کلیدی بولد (*متن*) ارائه شود."
+        + "\n۲. اصل ایجاز و نکات کلیدی (Concise Key-Points Only): پاسخ پیش‌فرض در نوبت اول باید فوق‌العاده کوتاه، فشرده، تلگرافی، منحصراً شامل نکات کلیدی، مهم‌ترین ارقام یا بولت‌پوینت‌های چکیده (حداکثر ۲ الی ۴ مورد) باشد. از تشریح عمیق، مبانی تئوریک، تاریخچه و پرگویی در گام اول اکیداً خودداری کنید."
+        + "\n۳. قاعده بسط مشروط (Elaboration by Request Only): تشریح تفصیلی و گام‌به‌گام منحصراً زمانی مجاز است که کاربر صراحتاً در پیام خود تقاضای بسط و توضیحات بیشتر کرده باشد."
+    )
+
+    prompt_lower = (user_prompt or "").lower()
+    summary_triggers = [
+        "خلاصه", "خلاصه‌سازی", "خلاصه سازی", "جمع‌بندی", "جمع بندی",
+        "خلاصه چت", "خلاصه گروه", "خلاصه گفتگو", "پیام های اخیر", "پیام‌های اخیر",
+        "پیام های قبلی", "پیام‌های قبلی", "summary", "summarize", "توی گروه چی گذشت",
+        "تو گروه چی گذشت", "در گروه چی گفتن", "چخبر بوده", "چه خبر بوده", "بحث سر چی بود"
+    ]
+    is_summary_request = any(st in prompt_lower for st in summary_triggers)
+
+    elaboration_triggers = [
+        "بیشتر", "جزییات", "کامل تر", "کامل‌تر", "چرا", "توضیح بده", "توضیح دهید", "بسط", "باز کن", "عمیق",
+        "قدم به قدم", "گام به گام", "واضح تر", "واضح‌تر", "تحلیل کن", "مفصل", "تشریح", "شرح بده",
+        "elaborate", "explain more", "details", "step by step", "deep dive", "in depth"
+    ]
+    is_elaboration_request = any(et in prompt_lower for et in elaboration_triggers)
+
+    mode_rule = (
+        "\n[مود پاسخ: تشریح کامل، تفصیلی و گام‌به‌گام به درخواست صریح کاربر]"
+        if is_elaboration_request
+        else "\n[مود پاسخ: پیش‌فرض فوق‌العاده فشرده و تلگرافی؛ فقط نکات کلیدی، ارقام و کد بدون هیچ حاشیه، تئوری یا تاریخچه]"
     )
 
     # Ephemeral Context (Dynamic per session/caller/turn):
@@ -894,6 +921,7 @@ async def generate_response(
         + memory_section
         + caller_info
         + _lang_rule
+        + mode_rule
     )
 
     # On-Demand Memory & History Architecture:
@@ -906,15 +934,6 @@ async def generate_response(
         {"role": "system", "content": f"{static_system_prompt}\n\n{ephemeral_context}"}
     ]
 
-    # Detect Group History Summary Intent (50 or 100 messages)
-    prompt_lower = (user_prompt or "").lower()
-    summary_triggers = [
-        "خلاصه", "خلاصه‌سازی", "خلاصه سازی", "جمع‌بندی", "جمع بندی",
-        "خلاصه چت", "خلاصه گروه", "خلاصه گفتگو", "پیام های اخیر", "پیام‌های اخیر",
-        "پیام های قبلی", "پیام‌های قبلی", "summary", "summarize", "توی گروه چی گذشت",
-        "تو گروه چی گذشت", "در گروه چی گفتن", "چخبر بوده", "چه خبر بوده", "بحث سر چی بود"
-    ]
-    is_summary_request = any(st in prompt_lower for st in summary_triggers)
 
     explicit_memory_triggers = [
         "یادت", "قبلا", "قبلاً", "پیام قبلی", "پیام های قبلی", "پیام‌های قبلی", "چی گفتم", "چی گفتی",
@@ -997,7 +1016,7 @@ async def generate_response(
         for msg in history[-_window:]:
             role = msg.get("role", "user")
             content = str(msg.get("content", ""))[:2500]
-            if role in ("user", "assistant", "tool", "system") and content.strip():
+            if role in ("user", "assistant", "system") and content.strip():
                 messages.append({"role": role, "content": content})
     elif not needs_memory:
         # Direct Q&A scoping: the current question is asked WITHOUT history,
@@ -1184,10 +1203,15 @@ async def generate_response(
                 except Exception:
                     pass
             active_schemas = _defs
-        # Modern reasoning models (Gemini 2.5/3, DeepSeek, GPT-4o-mini) consume 200-350 internal
-        # thinking tokens before emitting tool calls or content. 1400 for tool turns and 3000 for
-        # final synthesis turns completely prevents finish_reason='length' truncation.
-        _tok_cap = 1400 if active_schemas else 3000
+        # Dynamic Token Allocation:
+        # Tool execution turns get 1400 tokens; explicit elaboration or summary turns get 3000 tokens;
+        # default Q&A turns are capped tightly to 900 tokens to enforce conciseness and sub-second speed.
+        if active_schemas:
+            _tok_cap = 1400
+        elif is_elaboration_request or is_summary_request:
+            _tok_cap = 3000
+        else:
+            _tok_cap = 900
         payload: Dict[str, Any] = {
             "model": _live_model,
             "stream": False,
@@ -1392,10 +1416,8 @@ async def generate_response(
             # zero-fluff 1-2 sentence verdict rather than dumping raw snippets or rambling.
             _search_called = any(fn in ("web_search", "deep_search_and_read", "fetch_webpage_content", "live_news", "tavily_search") for fn in called_names if fn)
             if _search_called and last_tool_outputs and loop_idx == 0:
-                messages.append({
-                    "role": "user",
-                    "content": "بر اساس نتایج زنده فوق، پاسخ دقیق و نهایی را در ۱ الی ۲ جمله بسیار کوتاه، صریح، بدون مقدمه و بدون تکرار لینک‌های خام تحویل بده."
-                })
+                if messages and messages[-1].get("role") == "tool":
+                    messages[-1]["content"] = str(messages[-1].get("content", "")) + "\n\n[دستور سنتز نهایی: بر اساس نتایج زنده فوق، پاسخ دقیق، تلگرافی، حداکثر ۲ الی ۳ بولت‌پوینت، بدون مقدمه و بدون تکرار لینک‌های خام تحویل بده.]"
                 tools_schema = []
                 consecutive_empty_loops = 0
                 continue

@@ -796,7 +796,12 @@ async def _flush_dirty_daily_usage_async():
             "ON CONFLICT(user_id, day) DO UPDATE SET used = excluded.used, updated_at = CURRENT_TIMESTAMP"
         )
         try:
-            await execute_d1_query(sql, params)
+            res = await execute_d1_query(sql, params)
+            if not (res and res.get("success")):
+                logger.debug("D1 daily usage batch flush unsuccessful; retaining dirty counters in RAM.")
+                for k, val in chunk:
+                    if k not in _DIRTY_DAILY_USAGE:
+                        _DIRTY_DAILY_USAGE[k] = val
         except Exception as e:
             logger.debug(f"Failed to flush dirty daily usage batch to D1: {e}")
             for k, val in chunk:
@@ -848,9 +853,15 @@ async def _d1_batch_writer_loop():
 
         except asyncio.CancelledError:
             if batch:
-                await _flush_batch_to_d1(batch)
+                try:
+                    await asyncio.shield(_flush_batch_to_d1(batch))
+                except Exception:
+                    pass
             if _DIRTY_DAILY_USAGE:
-                await _flush_dirty_daily_usage_async()
+                try:
+                    await asyncio.shield(_flush_dirty_daily_usage_async())
+                except Exception:
+                    pass
             break
         except Exception as e:
             logger.error(f"D1 batch write loop exception: {e}")
@@ -1078,7 +1089,7 @@ def init_db():
         INSERT INTO messages_fts(rowid, content, user_name, username) VALUES (new.id, new.content, new.user_name, new.username);
     END;""")
     execute_d1_query_sync("""CREATE TRIGGER IF NOT EXISTS trg_messages_ad AFTER DELETE ON messages BEGIN
-        INSERT INTO messages_fts(messages_fts, rowid, content, user_name, username) VALUES ('delete', old.id, old.content, old.user_name, old.username);
+        DELETE FROM messages_fts WHERE rowid = old.id;
     END;""")
 
     # A D1 hiccup must NEVER prevent boot: RAM works standalone.
@@ -1141,6 +1152,23 @@ def sync_memory_from_d1_sync():
                     _PENDING_GROUPS.add(int(_cid))
             except Exception:
                 continue
+
+    # Synchronize group whitelisted virtual admins from D1 to RAM
+    try:
+        _gw_res = execute_d1_query_sync("SELECT chat_id, user_id, username, first_name, added_by, created_at FROM group_whitelisted_admins")
+        if _gw_res.get("success"):
+            for _r in (_gw_res.get("results") or []):
+                _cid = int(_r.get("chat_id") or 0)
+                _uid = int(_r.get("user_id") or 0)
+                if _cid and _uid:
+                    if _cid not in _GROUP_WHITELIST:
+                        _GROUP_WHITELIST[_cid] = set()
+                    _GROUP_WHITELIST[_cid].add(_uid)
+                    if _cid not in _GROUP_WHITELIST_DETAILS:
+                        _GROUP_WHITELIST_DETAILS[_cid] = {}
+                    _GROUP_WHITELIST_DETAILS[_cid][_uid] = _r
+    except Exception:
+        pass
 
     # Daily quota backfill: today's counters survive restarts (no free quota).
     try:
@@ -1209,6 +1237,22 @@ async def sync_memory_from_d1_async():
                     _PENDING_GROUPS.add(int(_cid))
             except Exception:
                 continue
+
+    try:
+        _gw_res = await execute_d1_query("SELECT chat_id, user_id, username, first_name, added_by, created_at FROM group_whitelisted_admins")
+        if _gw_res.get("success"):
+            for _r in (_gw_res.get("results") or []):
+                _cid = int(_r.get("chat_id") or 0)
+                _uid = int(_r.get("user_id") or 0)
+                if _cid and _uid:
+                    if _cid not in _GROUP_WHITELIST:
+                        _GROUP_WHITELIST[_cid] = set()
+                    _GROUP_WHITELIST[_cid].add(_uid)
+                    if _cid not in _GROUP_WHITELIST_DETAILS:
+                        _GROUP_WHITELIST_DETAILS[_cid] = {}
+                    _GROUP_WHITELIST_DETAILS[_cid][_uid] = _r
+    except Exception:
+        pass
 
 # --- Tracked Groups Management ---
 
@@ -1772,8 +1816,12 @@ async def get_chat_context_async(chat_id: int, max_tokens: int = 20000, thread_i
         selected = []
         token_count = 0
         for m in reversed(_CHAT_HISTORIES[clean_chat_id]):
-            if clean_tid is not None and m.get("thread_id") not in (clean_tid, None, 0):
-                continue
+            if clean_tid is not None and clean_tid > 0:
+                if int(m.get("thread_id") or 0) != clean_tid:
+                    continue
+            elif clean_tid == 0:
+                if int(m.get("thread_id") or 0) != 0:
+                    continue
             t_len = len(m.get("content", "")) // 3
             if token_count + t_len > max_tokens:
                 break
@@ -1789,9 +1837,11 @@ async def get_chat_context_async(chat_id: int, max_tokens: int = 20000, thread_i
 
     query = f"SELECT {_MESSAGE_COLS} FROM messages WHERE chat_id = ?"
     params: List[Any] = [clean_chat_id]
-    if clean_tid is not None:
-        query += " AND (thread_id = ? OR thread_id IS NULL OR thread_id = 0)"
+    if clean_tid is not None and clean_tid > 0:
+        query += " AND thread_id = ?"
         params.append(clean_tid)
+    elif clean_tid == 0:
+        query += " AND (thread_id = 0 OR thread_id IS NULL)"
     query += " ORDER BY id DESC LIMIT ?"
     params.append(_MAX_TURNS)
 
@@ -2651,6 +2701,9 @@ async def ban_target_async(
 
     # Persist complete identity in D1
     primary_id = int(user_id) if user_id else (_USERNAME_TO_ID_MAP.get(clean_uname, 0) if clean_uname else 0)
+    if not primary_id and clean_uname:
+        import zlib
+        primary_id = -(zlib.crc32(clean_uname.encode("utf-8")) + 1000000)
     sql = "INSERT OR REPLACE INTO banned_users (user_id, username, first_name, reason, banned_by, source_chat_id, source_chat_title, banned_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
     res = await execute_d1_query(sql, [primary_id, clean_uname, clean_first, reason, clean_by, clean_src, clean_src_title])
 
@@ -2695,11 +2748,11 @@ async def unban_target_async(target: Union[str, int]) -> bool:
         delete_queries.append(("DELETE FROM banned_users WHERE user_id = ?", [user_id]))
     if username:
         clean_u = username.lower().lstrip("@")
-        delete_queries.append(("DELETE FROM banned_users WHERE username = ? OR username = ? OR first_name = ? OR first_name LIKE ?", [clean_u, f"@{clean_u}", clean_u, f"%{clean_u}%"]))
+        delete_queries.append(("DELETE FROM banned_users WHERE username = ? OR username = ? OR LOWER(first_name) = ?", [clean_u, f"@{clean_u}", clean_u]))
     
     clean_u_val = username.lower().lstrip("@") if username else ""
     if not clean_u_val or clean_target_str != clean_u_val:
-        delete_queries.append(("DELETE FROM banned_users WHERE username = ? OR username = ? OR first_name = ? OR first_name LIKE ?", [clean_target_str, f"@{clean_target_str}", clean_target_str, f"%{clean_target_str}%"]))
+        delete_queries.append(("DELETE FROM banned_users WHERE username = ? OR username = ? OR LOWER(first_name) = ?", [clean_target_str, f"@{clean_target_str}", clean_target_str]))
 
     for sql, params in delete_queries:
         try:
@@ -2792,9 +2845,13 @@ async def mute_target_async(target, duration_sec: int = 1800, reason: str = "Ø³Ú
         if _mapped:
             _MUTED_UNTIL[int(_mapped)] = _until
     try:
+        clean_target_uid = int(user_id or 0)
+        if not clean_target_uid and username:
+            import zlib
+            clean_target_uid = -(zlib.crc32(str(username).lower().lstrip("@").encode("utf-8")) + 1000000)
         await execute_d1_query(
             "INSERT OR REPLACE INTO muted_users (user_id, username, first_name, reason, muted_by, source_chat_id, source_chat_title, until_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [int(user_id or 0), (username or ""), str(first_name or "")[:120], str(reason or "")[:200], int(muted_by or 0), int(source_chat_id or 0), str(source_chat_title or "")[:150], _until]
+            [clean_target_uid, (username or ""), str(first_name or "")[:120], str(reason or "")[:200], int(muted_by or 0), int(source_chat_id or 0), str(source_chat_title or "")[:150], _until]
         )
     except Exception:
         pass

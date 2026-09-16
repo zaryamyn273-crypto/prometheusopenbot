@@ -226,7 +226,7 @@ def get_next_cron_run(cron_expr: str, from_dt: Optional[datetime.datetime] = Non
     base_dt = from_dt or get_tehran_now()
     cur = base_dt.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
 
-    for _ in range(60 * 24 * 366):
+    for _ in range(10_000):
         if not _cron_match_field(cur.month, mon_exp, 1, 12):
             cur = (cur.replace(day=1, hour=0, minute=0) + datetime.timedelta(days=32)).replace(day=1)
             continue

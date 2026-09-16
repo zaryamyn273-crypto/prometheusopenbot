@@ -25,7 +25,7 @@ def test_code_blocks_and_inline():
 def test_markdown_quotes():
     raw = "مقدمه:\n> این یک نقل‌قول تست است\n> ادامه نقل‌قول\nپایان"
     html = markdown_to_telegram_html(raw)
-    assert "<blockquote>این یک نقل‌قول تست است<br/>ادامه نقل‌قول</blockquote>" in html
+    assert "<blockquote>این یک نقل‌قول تست است\nادامه نقل‌قول</blockquote>" in html
     assert "مقدمه:" in html
     assert "پایان" in html
 

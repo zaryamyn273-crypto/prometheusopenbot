@@ -221,10 +221,10 @@ async def e2b_run_code(
     try:
         out = await _run_e2b_code(clean, language=language, timeout=timeout_sec)
     except RuntimeError as e:
-        return str(e)
+        out = str(e)
     except Exception as e:
         logger.error(f"E2B run_code error: {e}")
-        return f"❌ خطای سندباکس E2B: {e}"
+        out = f"❌ خطای سندباکس E2B: {e}"
     try:
         from src.core.security import sanitize_output as _san
         out = _san(out)
@@ -277,21 +277,25 @@ async def e2b_run_command(
         tmo, template = 30, None
 
     sandbox = None
+    out = ""
     try:
         try:
             sandbox = await AsyncSandbox.create(template=template) if template else await AsyncSandbox.create()
         except TypeError:
             sandbox = await AsyncSandbox.create()
         except Exception as e:
-            return f"❌ اتصال به E2B برقرار نشد: {e}"
+            out = f"❌ اتصال به E2B برقرار نشد: {e}"
+            return out
         try:
             proc = await asyncio.wait_for(
                 sandbox.commands.run(cmd, timeout=float(tmo)), timeout=float(tmo + 15)
             )
         except asyncio.TimeoutError:
-            return f"⏱ زمان اجرای دستور E2B ({tmo}s) تمام شد."
+            out = f"⏱ زمان اجرای دستور E2B ({tmo}s) تمام شد."
+            return out
         except Exception as e:
-            return f"❌ خطای اجرای دستور در E2B: {e}"
+            out = f"❌ خطای اجرای دستور در E2B: {e}"
+            return out
         try:
             stdout = (getattr(proc, "stdout", "") or "").strip()
             stderr = (getattr(proc, "stderr", "") or "").strip()
@@ -312,11 +316,11 @@ async def e2b_run_command(
                 await sandbox.close()
             except Exception:
                 pass
-    try:
-        from src.core.security import sanitize_output as _san2
-        out = _san2(out)
-    except Exception:
-        pass
+        try:
+            from src.core.security import sanitize_output as _san2
+            out = _san2(out)
+        except Exception:
+            pass
     return out
 
 

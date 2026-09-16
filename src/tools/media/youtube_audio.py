@@ -243,8 +243,12 @@ def _download_mp3_sync(video_id: str, workdir: str, title: str = "", artist: str
         "-metadata", "genre=Music",
         mp3_path
     ]
-    sub_res = subprocess.run(cmd, capture_output=True)
-    if sub_res.returncode == 0 and os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 50_000:
+    try:
+        sub_res = subprocess.run(cmd, capture_output=True, timeout=60.0)
+    except Exception as e:
+        logger.debug(f"ffmpeg transcode timed out or failed: {e}")
+        sub_res = None
+    if sub_res is not None and sub_res.returncode == 0 and os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 50_000:
         if os.path.getsize(mp3_path) <= _MAX_MP3_BYTES:
             return mp3_path
 

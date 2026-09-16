@@ -86,8 +86,8 @@ def calculate_math_expression(expression: str) -> str:
         expr = (expression or "")[:200].strip().replace("^", "**").replace("×", "*").replace("÷", "/")
         if not expr:
             return "عبارت ریاضی خالی است."
-        # Guard against nested exponentiation attack (e.g. 9**9**9**9)
-        if expr.count("**") > 2 or any(len(part) > 6 for part in re.findall(r"\*\*(\d+)", expr)):
+        # Guard against nested exponentiation attack (e.g. 9**9**9**9) and giant exponents
+        if expr.count("**") > 1 or any(int(part) > 1000 for part in re.findall(r"\*\*(\d+)", expr) if part.isdigit()):
             return "⚠️ توان درخواستی فراتر از سقف مجاز ایمنی محاسباتی است."
         # AST whitelist: only pure math, no Attribute/Subscript/calls outside SAFE env
         try:
