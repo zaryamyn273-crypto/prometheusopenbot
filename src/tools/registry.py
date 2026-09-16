@@ -258,7 +258,7 @@ CATEGORY_KEYWORDS = {
         "بیتکوین", "بیت کوین", "کریپتو", "اتریوم", "btc", "eth", "usdt", "nobitex", "binance", "رمزارز", "تون", "داج", "سولانا"
     ],
     "weather": [
-        "هوا", "آب و هوا", "آب‌وهوا", "دما", "باران", "برف", "ابری", "weather", "forecast", "پیش بینی", "درجه"
+        "هوا", "هوای", "آب و هوا", "آب‌وهوا", "آب وهوا", "دما", "دمای", "باران", "بارون", "برف", "ابری", "weather", "forecast", "پیش بینی", "پیش‌بینی", "درجه"
     ],
     "search": [
         "سرچ", "جستجو", "گوگل", "خبر", "اخبار", "search", "news", "پیدا کن", "مقاله", "تحقیق",
@@ -280,7 +280,7 @@ CATEGORY_KEYWORDS = {
         "بارکد", "qr", "lyrics", "متن ترانه", "صوت", "پادکست", "کیوآر", "متن آهنگ",
         "لیریکس", "تایم دار", "lrc", "synced lyrics", "بارکد میله‌ای", "qrcode", "barcode",
         "خط خورده", "آسیب دیده", "مخدوش", "پاره شده", "بازسازی بارکد", "ساخت بارکد", "تولید بارکد", "ean13", "code128",
-        "تولید عکس", "ساخت عکس", "ساخت تصویر", "تولید تصویر", "عکس بکش", "تصویر بکش", "نقاشی بکش", "generate image", "draw", "paint", "dall-e", "flux", "طراحی عکس"
+        "تولید عکس", "ساخت عکس", "ساخت تصویر", "تولید تصویر", "عکس بکش", "تصویر بکش", "نقاشی بکش", "generate image", "draw", "paint", "dall-e", "flux", "طراحی عکس", "عکس", "تصویر"
     ],
     "security": [
         "هش", "hash", "رمزنگاری", "base64", "uuid",
@@ -391,17 +391,21 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
             return cached
     prompt_lower = (prompt or "").lower()
 
-    # 1. Pure casual conversation / greeting detector: zero tool overhead = ultra fast sub-second turn
+    # 1. Pure casual conversation / greeting detector: zero tool overhead when prompt is ONLY greeting/chatter
     pure_conversational = [
         "سلام", "درود", "خوبی", "چطوری", "چه خبر", "خسته نباشی", "ممنون", "مرسی",
         "تشکر", "دمت گرم", "فدات", "قربانت", "سلامت باشی", "صبح بخیر", "شب بخیر",
         "hi", "hello", "hey", "thanks", "thank you"
     ]
-    is_pure_chat = any(w in prompt_lower for w in pure_conversational) and len(prompt_lower) < 60
+    cleaned_greeting = prompt_lower
+    for w in pure_conversational:
+        cleaned_greeting = cleaned_greeting.replace(w, "")
+    cleaned_greeting = re.sub(r"[\s\.,!؟\?،]+", "", cleaned_greeting)
+    is_pure_chat = len(cleaned_greeting) <= 2
     if is_pure_chat:
         return _cache_smart_tools(cache_key, [])
 
-    # 2. Pure knowledge / conceptual definition detector: zero tool overhead = instant sub-second AI response
+    # Definition phrases
     _def_phrases = [
         "چیست", "چیه", "تعریف", "توضیح بده", "توضیح بدید", "توضیح دهید", "توضیح بفرمایید",
         "معنی", "مفهوم", "یعنی چه", "یعنی چی", "منظور از",
@@ -413,6 +417,19 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     _has_def = any(w in prompt_lower for w in _def_phrases) or (
         re.search(r"\b(?:فرق|تفاوت)\b", prompt_lower) is not None and any(w in prompt_lower for w in ("با", "و", "between", "and"))
     )
+
+    # Code generation and programming queries
+    _code_request_markers = [
+        "کد بنویس", "تابع بنویس", "اسکریپت بنویس", "برنامه بنویس", "کد پایتون", "کد جاوا",
+        "الگوریتم", "مرتب سازی", "مرتب‌سازی", "سورت", "چطوری بنویسم", "چطور بنویسم",
+        "چگونه بنویسم", "نحوه نوشتن", "روش نوشتن", "پیاده سازی", "پیاده‌سازی", "کدشو بده", "کدش رو بده",
+        "write code", "write a python", "write a function", "write script", "implement ", "how to write"
+    ]
+    _prog_lang_tokens = ["پایتون", "python", "جاوااسکریپت", "javascript", "ts", "typescript", "c++", "cpp", "c#", "golang", "php", "sql", "css", "html", "bash"]
+    _prog_concepts = ["چطور", "چگونه", "چطوری", "نحوه", "روش", "how to", "how do", "کد", "تابع", "لیست", "دیکشنری", "آرایه", "حلقه", "فانکشن", "ارور", "خطا", "بنویس", "تایپ", "کلاس"]
+    _is_programming_query = any(lang in prompt_lower for lang in _prog_lang_tokens) and any(w in prompt_lower for w in _prog_concepts)
+    _has_code_intent = any(w in prompt_lower for w in _code_request_markers) or _is_programming_query
+
     _is_concept_definition = (
         _has_def
         and not any(w in prompt_lower for w in [
@@ -427,23 +444,12 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     if _is_concept_definition:
         return _cache_smart_tools(cache_key, [])
 
-    # 3. Pure code generation, algorithm, or programming syntax detector: zero tool overhead = instant sub-second AI response
-    _code_request_markers = [
-        "کد بنویس", "تابع بنویس", "اسکریپت بنویس", "برنامه بنویس", "کد پایتون", "کد جاوا",
-        "الگوریتم", "مرتب سازی", "مرتب‌سازی", "سورت", "چطوری بنویسم", "چطور بنویسم",
-        "چگونه بنویسم", "نحوه نوشتن", "روش نوشتن", "پیاده سازی", "پیاده‌سازی", "کدشو بده", "کدش رو بده",
-        "write code", "write a python", "write a function", "write script", "implement ", "how to write"
-    ]
-    _prog_lang_tokens = ["پایتون", "python", "جاوااسکریپت", "javascript", "ts", "typescript", "c++", "cpp", "c#", "golang", "php", "sql", "css", "html", "bash"]
-    _prog_concepts = ["چطور", "چگونه", "چطوری", "نحوه", "روش", "how to", "how do", "کد", "تابع", "لیست", "دیکشنری", "آرایه", "حلقه", "فانکشن", "ارور", "خطا", "بنویس", "تایپ", "کلاس"]
-    _is_programming_query = any(lang in prompt_lower for lang in _prog_lang_tokens) and any(w in prompt_lower for w in _prog_concepts)
-    _has_code_intent = any(w in prompt_lower for w in _code_request_markers) or _is_programming_query
-
     _is_explicit_exec_or_search = any(w in prompt_lower for w in [
         "اجرا کن", "اجرای کد", "تست کن", "run code", "run python", "execute", "سندباکس", "sandbox", "e2b",
         "استک اورفلو", "stackoverflow", "ردیت", "reddit", "گیت هاب", "github",
         "امروز", "الان", "زنده", "قیمت", "چنده", "اخبار", "سرچ کن", "جستجو کن", "لینک", "سایت", "دانلود موزیک", "دانلود آهنگ", "عکس بکش", "تصویر بکش", "بن "
     ])
+
     if _has_code_intent and not _is_explicit_exec_or_search and len(prompt_lower) < 600:
         return _cache_smart_tools(cache_key, [])
 
@@ -457,31 +463,22 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     relevant_categories.discard("internal")
 
     # --- Claim-verify auto-attach: factual statements with recency/version
-    # signals are VERIFY-BEFORE-ANSWER prompts. A bare statement like
-    # "X is the latest model" must trigger web_search just like a question,
-    # otherwise the model confirms stale facts from memory. Runs BEFORE the
-    # question-marker gate so statements without ?/question words still match.
     _recency_signals = [
         "latest", "newest", "recent", "update", "version", "release",
         "pro", "flash", "ultra", "plus", "max",
     ]
     _fa_recency = [
-        "\u0622\u062e\u0631\u06cc\u0646", "\u062c\u062f\u06cc\u062f\u062a\u0631\u06cc\u0646",
-        "\u062c\u062f\u06cc\u062f", "\u062a\u0627\u0632\u0647", "\u0646\u0633\u0644",
-        "\u0645\u062f\u0644", "\u0646\u0633\u062e\u0647", "\u067e\u0631\u0686\u0645\u062f\u0627\u0631",
-        "\u067e\u06cc\u0634\u0631\u0641\u062a\u0647", "\u0645\u0639\u0631\u0641\u06cc",
+        "آخرین", "جدیدترین", "جدید", "تازه", "نسل", "مدل", "نسخه", "پرچمدار",
+        "پیشرفته", "معرفی",
     ]
-    _pl = prompt_lower
     _has_version_token = (
-        any(_m in _pl for _m in _recency_signals)
-        or any(_w in _pl for _w in _fa_recency)
+        any(_m in prompt_lower for _m in _recency_signals)
+        or any(_w in prompt_lower for _w in _fa_recency)
     )
     if _has_version_token and "search" not in relevant_categories:
         relevant_categories.add("search")
 
-    # --- Search auto-attach: question-shaped prompts ALWAYS get web_search ---
-    # (who/what/when/where/why/how, ؟/?, کی/کجا/چرا/چطور/آیا/کدوم/چند …).
-    # The model then answers from live results instead of guessing.
+    # --- Search auto-attach: question-shaped prompts get search category
     _question_markers = [
         "؟", "?", "کیه", "کجاست", "کجاست؟", "چرا", "چطور", "چگونه",
         "کجا", "کی", "آیا", "کدوم", "کدام", "چند", "چه", "who", "what",
@@ -489,7 +486,6 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     ]
     _looks_question = any(_qm in prompt_lower for _qm in _question_markers)
     if _looks_question and "search" not in relevant_categories and not _has_def and not _has_code_intent:
-        # …unless it's pure chatter or a deterministic fast-path query.
         _no_search_words = ["سلام", "خوبی", "چطوری", "ممنون", "مرسی", "باشه", "اوکی"]
         if not any(_w in prompt_lower for _w in _no_search_words):
             relevant_categories.add("search")
@@ -514,7 +510,6 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         if has_fin:
             relevant_categories.add("financial")
         if has_commodity or not has_fin:
-            # Query is asking for commodity/car/phone/goods/services price -> web_search is required!
             relevant_categories.add("search")
 
     # --- Implicit intent detectors (no exact keyword needed) ---
@@ -526,15 +521,12 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         "files": ["بساز", "درست کن", "آماده کن", "اکسل", "جدول", "لیست", "گزارش"],
         "admin": ["چطوره", "خوبه", "سالمه", "وضعیت"],
         "time": ["امروز", "فردا", "دیروز", "الان", "فعلا", "کی"],
-        "database": ["یادداشت", "یادم", "ذخیره", "بنویس", "ثبت"],
+        "database": ["یادداشت کن", "توی دیتابیس", "در دیتابیس", "ذخیره در دیتابیس", "ثبت در دیتابیس"],
         "scheduler": ["یادآوری", "یادم", "کرون", "تسک", "زمانبندی", "زمان‌بندی", "remind", "schedule", "cron", "تنظیم کن"],
     }
     for cat, hints in _implicit.items():
         if any(h in prompt_lower for h in hints):
-            # media/file/admin hints are noisy alone: need a second signal
             if cat in ("media", "files", "admin", "time", "search"):
-                # Latin song/music requests ("play hello adele") carry no Persian anchor —
-                # the bare verbs play/پلی + send-verbs are themselves music intent.
                 _bare_music_verbs = ("play", "پلی")
                 if cat == "media" and any(v in prompt_lower for v in _bare_music_verbs):
                     relevant_categories.add(cat)
@@ -553,7 +545,7 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
 
     # --- Co-activation: tools that answer together ---
     _coactivate = {
-        "financial": {"time"},        # prices pair with official clock/date
+        "financial": {"time"},
         "weather": {"time"},
         "search": {"time"},
         "admin": {"time"},
@@ -565,27 +557,26 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     for cat in list(relevant_categories):
         relevant_categories.update(_coactivate.get(cat, set()))
 
-    # --- Multi-request bundle: several intents at once -> send the full set ---
-    _intent_hits = len(relevant_categories - {"time"})
-    _complex = _intent_hits >= 4
+    # If no functional category matched, provide baseline tools
+    if not relevant_categories:
+        ensure_categories({"search", "scientific", "media", "files"})
+        core_names = {
+            "web_search", "fetch_webpage_content",
+            "get_current_datetime_info", "calculate_math_expression",
+            "download_music_track", "generate_ai_image",
+            "create_and_upload_file"
+        }
+        out = [t["schema"] for name, t in REGISTRY.items() if name in core_names]
+        return _cache_smart_tools(cache_key, out)
 
-    # Core bundle that are fast & frequently used (live in scientific).
+    # Core bundle that are fast & frequently used
     core_names = {
         "get_current_datetime_info", "calculate_math_expression"
     }
-    # The schemas below are read from REGISTRY, so their owner modules must be
-    # loaded first — but ONLY those modules (this is what keeps lazy loading lazy).
-    # scientific is near-free (stdlib + pytz/jdatetime, already pulled by database).
+
+    # Ensure all matched modules are loaded
     ensure_categories(relevant_categories)
     ensure_category("scientific")
-
-    # If no specific category matched:
-    if not relevant_categories:
-        # For generic questions, provide only web_search & clock without clutter
-        ensure_categories({"search"})
-        core_names.update({"tavily_search", "web_search", "get_current_datetime_info"})
-        out = [t["schema"] for name, t in REGISTRY.items() if name in core_names]
-        return _cache_smart_tools(cache_key, out)
 
     selected_schemas = []
     selected_names = set()
@@ -595,7 +586,6 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     is_unban_intent = any(uk in prompt_lower for uk in unban_keywords)
 
     ban_keywords = ["بنش کن", "مسدودش کن", "مسدود", "اخراج", "ban", "بن "]
-    # Note: avoid matching "بن" inside "آنبن"
     is_ban_intent = not is_unban_intent and (
         any(bk in prompt_lower for bk in ban_keywords) or
         (re.search(r"(?<![آا])بن\b", prompt_lower) is not None)
@@ -604,18 +594,34 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
     wants_id_explicitly = any(ik in prompt_lower for ik in ["آیدی چنده", "شناسه چنده", "آیدی عددی", "آیدیش چنده", "استعلام آیدی", "getid", "آیدیش رو بده"])
     exclude_extract_id = is_ban_intent and not wants_id_explicitly
 
-    # Guaranteed inclusion and highest priority (#1 position) for AI image generation:
+    # Guaranteed priority inclusion for AI image generation:
     _img_intent_hints = (
         "بکش", "draw", "paint", "تولید عکس", "تولید تصویر", "ساخت عکس", "ساخت تصویر",
         "عکس بساز", "تصویر بساز", "عکس بکش", "تصویر بکش", "نقاشی بکش",
         "generate image", "create image", "dall-e", "flux", "text-to-image", "text to image"
     )
     _non_img_intent = ("کد", "اسکریپت", "پایتون", "الگوریتم", "چیست", "چیه", "کیست", "قیمت", "چنده", "دانلود")
-    if any(_ih in prompt_lower for _ih in _img_intent_hints) and not any(_nw in prompt_lower for _nw in _non_img_intent):
+    _has_img_req = (
+        any(_ih in prompt_lower for _ih in _img_intent_hints)
+        or (("عکس" in prompt_lower or "تصویر" in prompt_lower or "نقاشی" in prompt_lower) and any(_vb in prompt_lower for _vb in ("بساز", "طراحی", "ایجاد", "بکش", "make", "create")))
+    )
+    if _has_img_req and not any(_nw in prompt_lower for _nw in _non_img_intent):
         ensure_module("src.tools.media")
         if "generate_ai_image" in REGISTRY and "generate_ai_image" not in selected_names:
             selected_schemas.append(REGISTRY["generate_ai_image"]["schema"])
             selected_names.add("generate_ai_image")
+
+    # Guaranteed priority inclusion for music download & lyrics:
+    _music_intent_hints = (
+        "آهنگ", "اهنگ", "موزیک", "ترانه", "خواننده", "دانلود آهنگ", "دانلود موزیک",
+        "لیریکس", "متن ترانه", "متن آهنگ", "song", "music", "track", "پلی", "play"
+    )
+    if any(_mh in prompt_lower for _mh in _music_intent_hints):
+        ensure_module("src.tools.media")
+        for _mt in ("download_music_track", "get_song_lyrics"):
+            if _mt in REGISTRY and _mt not in selected_names:
+                selected_schemas.append(REGISTRY[_mt]["schema"])
+                selected_names.add(_mt)
 
     # Guaranteed priority inclusion for admin moderation (ban, unban, mute)
     if is_admin:
@@ -645,69 +651,6 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
         if exclude_extract_id and name == "extract_user_id_tool":
             continue
 
-        # Slim Search Cabinet: keep prompt lean and eliminate LLM hesitation.
-        # web_search and fetch_webpage_content handle 99% of queries.
-        if cat == "search":
-            if name in ("deep_search_and_read",) and not any(k in prompt_lower for k in ("تحقیق عمیق", "مطالعه صفحات", "deep search", "deep research")):
-                continue
-            if name in ("twitter_search",) and not any(k in prompt_lower for k in ("توییتر", "توییت", "twitter", "x.com", "پست توییتر")):
-                continue
-            if name in ("tavily_search", "live_news"):
-                # web_search already handles live news and multi-engine/Tavily search natively
-                continue
-
-        # Slim GitHub Cabinet: attach only relevant GitHub sub-tools instead of the full suite
-        if cat == "github":
-            is_create_repo = any(k in prompt_lower for k in ("ساخت مخزن", "مخزن جدید", "ریپو جدید", "create repo", "create repository", "ریپوزیتوری بساز"))
-            is_pkg_build = any(k in prompt_lower for k in ("pkgbuild", "arch", "aur", "پکیج آرچ", "cmake", "cmakelists"))
-            is_code_read = any(k in prompt_lower for k in ("کد", "فایل", "file", "tree", "پوشه", "شاخه", "برنچ", "read_file", "سورس"))
-            if is_create_repo:
-                if name not in ("github_create_repository", "github_create_or_update_file"):
-                    continue
-            elif is_pkg_build:
-                if name not in ("github_generate_pkgbuild", "github_generate_cmake", "github_create_or_update_file"):
-                    continue
-            elif is_code_read:
-                if name not in ("github_read_file", "github_list_tree", "github_search_code"):
-                    continue
-            else:
-                if name not in ("github_search_repositories", "github_repo_info", "github_read_readme"):
-                    continue
-
-        # Slim Media Cabinet: attach only relevant media sub-tools based on intent
-        if cat == "media":
-            _is_music = any(k in prompt_lower for k in ("آهنگ", "اهنگ", "موزیک", "ترانه", "خواننده", "دانلود آهنگ", "دانلود موزیک", "لیریکس", "متن ترانه", "متن آهنگ", "song", "music", "track", "پلی", "play"))
-            _is_barcode = any(k in prompt_lower for k in ("بارکد", "qr", "کیوآر", "barcode", "qrcode", "ean13", "code128", "مخدوش"))
-            _is_voice = any(k in prompt_lower for k in ("ویس", "وویس", "صوت", "تبدیل ویس", "transcribe", "صدا"))
-            _is_telegraph = any(k in prompt_lower for k in ("تلگراف", "telegraph", "مقاله"))
-            if _is_music:
-                if name not in ("download_music_track", "get_song_lyrics"):
-                    continue
-            elif _is_barcode:
-                if name not in ("generate_barcode_tool", "generate_qr_code_tool", "reconstruct_damaged_barcode_tool"):
-                    continue
-            elif _is_voice:
-                if name not in ("transcribe_audio_tool",):
-                    continue
-            elif _is_telegraph:
-                if name not in ("publish_telegraph_article",):
-                    continue
-            else:
-                if name not in ("download_music_track", "generate_qr_code_tool"):
-                    continue
-
-        # Slim Admin Cabinet: prevent code execution or railway redeploy tools from polluting general moderation requests
-        if cat == "admin":
-            if name in ("e2b_run_code", "e2b_run_command", "e2b_status", "execute_python_code"):
-                if not any(k in prompt_lower for k in ("اجرا", "run", "سندباکس", "sandbox", "e2b", "execute", "کد")):
-                    continue
-            if name in ("railway_status_tool", "railway_redeploy_tool"):
-                if not any(k in prompt_lower for k in ("ریلوی", "railway", "ری‌دیپلوی", "redeploy")):
-                    continue
-            if name in ("purge_chat_messages_tool",):
-                if not any(k in prompt_lower for k in ("پاک", "حذف پیام", "purge", "clean")):
-                    continue
-
         if cat in relevant_categories or name in core_names:
             if name not in selected_names:
                 selected_schemas.append(t["schema"])
@@ -730,24 +673,17 @@ def get_smart_tools_for_prompt(prompt: str, is_admin: bool = False) -> List[Dict
                 selected_schemas.append(REGISTRY["extract_user_id_tool"]["schema"])
                 selected_names.add("extract_user_id_tool")
 
-    # Strict Ecommerce Isolation: never attach heavy ecommerce shopping tools (digikala, amazon, ebay)
-    # unless prompt explicitly mentions buying, shopping, or specific store names.
-    _ecommerce_stores = {"digikala_search", "amazon_search", "ebay_search"}
-    _has_ecom_intent = any(w in prompt_lower for w in [
-        "خرید", "فروشگاه", "دیجیکالا", "دیجی کالا", "آمازون", "ای بی", "ای‌بی", "ebay", "amazon", "digikala", "چند میفروشن", "از کجا بخرم", "قیمت محصول"
-    ])
-    if not _has_ecom_intent:
-        selected_schemas = [s for s in selected_schemas if (s.get("function", {}) or {}).get("name") not in _ecommerce_stores]
-    else:
-        ensure_category("web_network")
+    # Ecommerce tools inclusion:
+    if "ecommerce" in relevant_categories:
+        ensure_module("src.tools.web_network")
         for store_t in ("digikala_search", "amazon_search", "ebay_search"):
             if store_t in REGISTRY and store_t not in selected_names:
                 selected_schemas.append(REGISTRY[store_t]["schema"])
                 selected_names.add(store_t)
 
-    # Dynamic Tool Budget (Prefill TTFT Latency Optimization):
-    # Cap total tools passed to LLM to 8 (or 10 for complex multi-intent) to keep prompt prefill under 1,200 tokens
-    max_tool_cap = 10 if _complex else 8
+    # Dynamic Tool Budget:
+    # Generous cap (35 for normal users, 45 for admin) so capabilities are never clipped
+    max_tool_cap = 45 if is_admin else 35
     if len(selected_schemas) > max_tool_cap:
         selected_schemas = selected_schemas[:max_tool_cap]
 

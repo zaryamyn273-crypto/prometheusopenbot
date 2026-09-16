@@ -127,9 +127,14 @@ def deduplicate_repeated_text(text: str) -> str:
 
 
 def sanitize_output(text: str) -> str:
-    """Scrub all sensitive keys, tokens, credentials, and stutter loops from outgoing text."""
+    """Scrub all sensitive keys, tokens, credentials, stutter loops, and reasoning traces from outgoing text."""
     if not text:
         return text
+    try:
+        from src.utils.telegram_formatter import strip_thinking_and_reasoning
+        text = strip_thinking_and_reasoning(text)
+    except Exception:
+        pass
     sanitized = deduplicate_repeated_text(text)
 
     # Exact match from active configuration

@@ -14,6 +14,40 @@ RE_LINK = re.compile(r'\[([^\]]+)\]\((https?://[^\s\)]+|tg://[^\s\)]+)\)')
 # Telegram supported HTML tags (case-insensitive for safety)
 VALID_TELEGRAM_TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "tg-spoiler", "a", "code", "pre", "blockquote"}
 
+RE_THINKING_BLOCKS = [
+    re.compile(r'<(?:think(?:ing)?|thought|reasoning|reflection)[^>]*>.*?</(?:think(?:ing)?|thought|reasoning|reflection)>', re.DOTALL | re.IGNORECASE),
+    re.compile(r'(?i)^\s*\*{0,2}(?:Thinking Process|Thought Process|Reasoning):?\*{0,2}\s*\n.*?(?=\n\n|\Z)', re.DOTALL),
+    re.compile(r'(?i)^\s*#+\s*(?:Thinking|Reasoning):?.*?(?=\n\n|\Z)', re.DOTALL),
+]
+
+def strip_thinking_and_reasoning(text: str) -> str:
+    """Removes internal model reasoning/thinking tags (<think>, <thought>, etc.)
+    Prevents raw reasoning traces (often in English) from leaking into user messages.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    cleaned = text
+    for pat in RE_THINKING_BLOCKS:
+        cleaned = pat.sub("", cleaned)
+
+    # Handle unclosed <think> or <thought> tag at the beginning
+    low = cleaned.lower()
+    for tag in ("<think", "<thought", "<reasoning", "<reflection"):
+        if tag in low and f"</{tag[1:]}" not in low:
+            # Check if there is a paragraph break separating thought from answer
+            parts = re.split(r'\n\s*\n', cleaned, maxsplit=1)
+            if len(parts) > 1 and tag in parts[0].lower():
+                cleaned = parts[1]
+            else:
+                cleaned = re.sub(rf'{tag}[^>]*>', '', cleaned, flags=re.IGNORECASE)
+            low = cleaned.lower()
+
+    # If the entire message was inside <think>, strip only tag markers so text is not dropped
+    cleaned = cleaned.strip()
+    if not cleaned and text.strip():
+        cleaned = re.sub(r'</?(?:think(?:ing)?|thought|reasoning|reflection)[^>]*>', '', text, flags=re.IGNORECASE).strip()
+    return cleaned
+
 def escape_html_chars(text: str) -> str:
     """Safely escapes raw HTML characters (&, <, >)."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -161,12 +195,18 @@ def markdown_to_telegram_html(markdown_text: str, wrap_expandable_if_long: bool 
     if not markdown_text:
         return ""
 
-    text = markdown_text
+    # Strip model internal reasoning traces (e.g. <think>...</think>)
+    text = strip_thinking_and_reasoning(markdown_text)
+
+    # Clean raw pseudo-HTML layout tags before escaping
+    text = re.sub(r'<\s*br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<\s*/?\s*(?:p|div)\s*>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<\s*hr\s*/?>', '\n---\n', text, flags=re.IGNORECASE)
 
     # 1. Protect code blocks (```lang ... ```)
     code_blocks: List[str] = []
     def _code_block_sub(match):
-        lang = match.group(1).strip()
+        lang = re.sub(r'[^a-zA-Z0-9_-]', '', match.group(1).strip())
         code = match.group(2)
         escaped_code = escape_html_chars(code)
         idx = len(code_blocks)
@@ -182,7 +222,7 @@ def markdown_to_telegram_html(markdown_text: str, wrap_expandable_if_long: bool 
     if "```" in text:
         unclosed_match = re.search(r'```([a-zA-Z0-9_-]*)\n?(.*)$', text, re.DOTALL)
         if unclosed_match:
-            lang = unclosed_match.group(1).strip()
+            lang = re.sub(r'[^a-zA-Z0-9_-]', '', unclosed_match.group(1).strip())
             code = unclosed_match.group(2)
             escaped_code = escape_html_chars(code)
             idx = len(code_blocks)
@@ -194,6 +234,17 @@ def markdown_to_telegram_html(markdown_text: str, wrap_expandable_if_long: bool 
 
     # 2. Format markdown tables before escaping
     text = _format_markdown_tables(text)
+
+    # Pre-normalize bullet list items to bullet points so single asterisk does not collide with RE_BOLD_SINGLE
+    lines_pre = text.split("\n")
+    norm_lines = []
+    for l in lines_pre:
+        m_bullet = re.match(r'^(\s*)[-*+]\s+(.*)$', l)
+        if m_bullet:
+            norm_lines.append(f"{m_bullet.group(1)}• {m_bullet.group(2)}")
+        else:
+            norm_lines.append(l)
+    text = "\n".join(norm_lines)
 
     # 3. Protect inline code (`code`)
     inline_codes: List[str] = []
@@ -236,8 +287,8 @@ def markdown_to_telegram_html(markdown_text: str, wrap_expandable_if_long: bool 
     def _link_sub(m):
         link_text = m.group(1)
         link_url = m.group(2)
-        # unescape HTML entities in url so Telegram parser accepts it
-        clean_url = html.unescape(link_url).replace('"', '&quot;')
+        # unescape HTML entities then strictly re-escape reserved characters (&, ", <, >) for Telegram HTML href
+        clean_url = html.unescape(link_url).replace("&", "&amp;").replace('"', '&quot;').replace("<", "&lt;").replace(">", "&gt;")
         return f'<a href="{clean_url}">{link_text}</a>'
 
     text = RE_LINK.sub(_link_sub, text)

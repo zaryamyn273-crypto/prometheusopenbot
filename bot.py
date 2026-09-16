@@ -149,6 +149,10 @@ _FA_LANG_INFO: Tuple[str, str] = ("fa", lang_name("fa"))
 def _ulang_of(update) -> tuple:
     """(lang, lang_name) for a Telegram update: 'fa' for Persian clients, else 'en' chrome + full LLM language."""
     try:
+        msg = getattr(update, "effective_message", None)
+        msg_text = getattr(msg, "text", "") or getattr(msg, "caption", "") or ""
+        if msg_text and re.search(r"[\u0600-\u06FF]", msg_text):
+            return _FA_LANG_INFO
         user = getattr(update, "effective_user", None)
         code = getattr(user, "language_code", None) or "fa"
     except Exception:
@@ -169,6 +173,10 @@ async def _maybe_translate(update, text: str) -> str:
             return text
         ulang, ulang_name = _ulang_of(update)
         if ulang == "fa":
+            return text
+        msg = getattr(update, "effective_message", None)
+        msg_text = getattr(msg, "text", "") or getattr(msg, "caption", "") or ""
+        if msg_text and re.search(r"[\u0600-\u06FF]", msg_text):
             return text
         from src.core import ai_service
         return await ai_service.translate_text(text, ulang_name)
@@ -941,6 +949,21 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if isinstance(res, dict) and res.get("caption"):
             res["caption"] = await _maybe_translate(update, res["caption"])
         if isinstance(res, dict):
+            # 0. Sub-second cached Telegram file_id delivery
+            if res.get("type") == "audio_file_id" and res.get("file_id"):
+                try:
+                    sent = await message.reply_audio(
+                        audio=res["file_id"],
+                        title=res.get("title", query),
+                        performer=res.get("performer", "Prometheus Audio"),
+                        caption=telegram_formatter.markdown_to_telegram_html(res.get("caption", "")),
+                        parse_mode=ParseMode.HTML
+                    )
+                    if sent:
+                        return
+                except Exception as e_fid:
+                    logger.debug(f"Cached audio file_id failed, falling back: {e_fid}")
+
             # 1. Native MP3 bytes upload
             if res.get("type") == "audio_bytes" and res.get("bytes"):
                 try:
@@ -977,13 +1000,13 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e2:
                     logger.debug(f"Direct URL send in music_command failed, trying stream: {e2}")
 
-                # Stream buffer fallback
+                # Stream buffer fallback with follow_redirects
                 try:
                     from src.core.http import get_http_client as _dl_client_f
                     audio_url = res["url"]
                     audio_buf = io.BytesIO()
                     dl_client = _dl_client_f("stream")
-                    async with dl_client.stream("GET", audio_url, timeout=15.0) as r_stream:
+                    async with dl_client.stream("GET", audio_url, timeout=25.0, follow_redirects=True) as r_stream:
                         if r_stream.status_code == 200:
                             _total = 0
                             async for chunk in r_stream.aiter_bytes(65536):
@@ -992,7 +1015,7 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     break
                                 audio_buf.write(chunk)
                     raw_bytes = audio_buf.getvalue()
-                    if len(raw_bytes) >= 1200000:
+                    if len(raw_bytes) >= 500000:
                         sent = await _reply_audio_bytes(
                             message, chat, context,
                             title=res.get("title", query),
@@ -3059,17 +3082,18 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 if chat.id not in database._ACTIVE_GROUPS:
                     await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="active")
 
-    ulang, ulang_name = _ulang_of(update)
     user_text = message.text or message.caption or ""
+    _has_fa = bool(re.search(r"[\u0600-\u06FF]", user_text))
+    ulang, ulang_name = _FA_LANG_INFO if _has_fa else _ulang_of(update)
     # World users: detect THIS message's language (script + keywords), so the
     # AI answers in whatever language the user actually used — even when the
     # Telegram client setting says otherwise. fa/en chrome keeps the client.
     try:
-        detected_lang = detect_lang(user_text)
+        detected_lang = "fa" if _has_fa else detect_lang(user_text)
     except Exception:
-        detected_lang = "und"
-    tri_lang = detected_lang if detected_lang in ("fa", "en") else ulang
-    ai_lang_code = detected_lang if (detected_lang and detected_lang != "und") else (getattr(user, "language_code", "") or "fa")
+        detected_lang = "fa" if _has_fa else "und"
+    tri_lang = "fa" if _has_fa else (detected_lang if detected_lang in ("fa", "en") else ulang)
+    ai_lang_code = "fa" if _has_fa else (detected_lang if (detected_lang and detected_lang != "und") else (getattr(user, "language_code", "") or "fa"))
     user_uname = user.username or ""
     fa_from_uname = username_to_persian_name(user_uname) if (user_uname and ulang == "fa") else ""
     user_display = fa_from_uname or user.first_name or ("کاربر" if ulang == "fa" else "user")
@@ -4239,12 +4263,14 @@ async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, ch
     # Translate once up-front for non-Persian recipients (skip when already
     # translated or caption-free). extra_action dicts are per-turn fresh.
     try:
+        _u_text = getattr(message, "text", "") or getattr(message, "caption", "") or ""
+        _u_is_fa = bool(re.search(r"[\u0600-\u06FF]", _u_text))
         _code = ""
         try:
             _code = (getattr(getattr(message, "from_user", None), "language_code", "") or "")
         except Exception:
             pass
-        if normalize_lang(_code) != "fa" and isinstance(extra_action, dict):
+        if not _u_is_fa and normalize_lang(_code) != "fa" and isinstance(extra_action, dict):
             _cap = extra_action.get("caption")
             if isinstance(_cap, str) and _cap.strip() and re.search(r"[\u0600-\u06FF]", _cap):
                 from src.core import ai_service as _ai_tr
@@ -4364,7 +4390,7 @@ async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, ch
             from src.core.http import get_http_client as _dl_client_s
             audio_buf = io.BytesIO()
             dl_client = _dl_client_s("stream")
-            async with dl_client.stream("GET", audio_url) as r_stream:
+            async with dl_client.stream("GET", audio_url, timeout=25.0, follow_redirects=True) as r_stream:
                 if r_stream.status_code == 200:
                     _tot2 = 0
                     async for chunk in r_stream.aiter_bytes(65536):
@@ -4374,8 +4400,8 @@ async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, ch
                         audio_buf.write(chunk)
             
             raw_audio_bytes = audio_buf.getvalue()
-            # Verify full track size: genuine songs are at least 1.5MB (1,500,000 bytes)
-            if len(raw_audio_bytes) >= 1500000:
+            # Verify full track size: genuine songs are at least 500KB
+            if len(raw_audio_bytes) >= 500000:
                 sent_audio = await _reply_audio_bytes(
                     message, chat, context,
                     title=audio_title,

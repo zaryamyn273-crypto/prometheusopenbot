@@ -250,26 +250,21 @@ async def _search_persian_music_parallel(clean_q: str) -> List[Dict[str, Any]]:
     return all_candidates
 
 async def _stream_candidate_mp3(url: str, max_bytes: int = _MAX_MP3_BYTES) -> Optional[bytes]:
-    """Streams MP3 bytes with speed guard (max 10s or fallback to direct Telegram URL streaming)."""
+    """Streams MP3 bytes with high-speed download and complete buffering (up to 25MB)."""
     if not url or not url.startswith("http"):
         return None
     try:
         async with shared_client_ctx("stream") as dl_client:
             cdn_buf = io.BytesIO()
-            to = httpx.Timeout(12.0, connect=2.8)
-            t_start = time.perf_counter()
-            async with dl_client.stream("GET", url, timeout=to) as r_cdn:
+            to = httpx.Timeout(25.0, connect=5.0)
+            async with dl_client.stream("GET", url, timeout=to, follow_redirects=True) as r_cdn:
                 if r_cdn.status_code == 200:
                     async for chunk in r_cdn.aiter_bytes(chunk_size=65536):
                         cdn_buf.write(chunk)
-                        # Speed check: if CDN is throttled (<200KB/s after 4.5s), abort and fallback to URL
-                        if time.perf_counter() - t_start > 4.5 and cdn_buf.tell() < 800_000:
-                            logger.debug(f"CDN {url[:50]} throttled, falling back to direct URL mode")
-                            return None
                         if cdn_buf.tell() > max_bytes:
                             break
                     raw = cdn_buf.getvalue()
-                    if 1_200_000 <= len(raw) <= max_bytes:
+                    if 500_000 <= len(raw) <= max_bytes:
                         return raw
     except Exception as e:
         logger.debug(f"Direct stream download of candidate failed: {e}")

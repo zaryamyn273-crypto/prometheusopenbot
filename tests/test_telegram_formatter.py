@@ -64,3 +64,28 @@ def test_split_telegram_html():
     for ch in chunks:
         # Every chunk must have properly balanced tags
         assert ch.count("<b>") == ch.count("</b>")
+
+def test_strip_thinking_and_reasoning():
+    from src.utils.telegram_formatter import strip_thinking_and_reasoning
+    raw = "<think>\nThinking in English about the user's question...\n</think>\nسلام کاربر گرامی"
+    cleaned = strip_thinking_and_reasoning(raw)
+    assert cleaned == "سلام کاربر گرامی"
+    assert "<think>" not in cleaned
+    assert "Thinking in English" not in cleaned
+
+    raw_thought = "<thought>Internal reasoning</thought>پاسخ نهایی"
+    assert strip_thinking_and_reasoning(raw_thought) == "پاسخ نهایی"
+
+def test_markdown_link_ampersand_escaping():
+    md = "[دانلود موزیک](https://example.com/music?id=123&quality=320&format=mp3)"
+    res = markdown_to_telegram_html(md)
+    assert "&amp;quality=320&amp;format=mp3" in res
+    assert "<a href=\"https://example.com/music?id=123&amp;quality=320&amp;format=mp3\">دانلود موزیک</a>" in res
+
+def test_raw_html_cleanup():
+    md = "خط اول<br>خط دوم<p>پاراگراف</p><hr>"
+    res = markdown_to_telegram_html(md)
+    assert "<br>" not in res
+    assert "&lt;br&gt;" not in res
+    assert "---" in res
+

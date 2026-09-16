@@ -254,17 +254,20 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
             if not choices:
                 return "", []
             msg = choices[0].get("message") or choices[0].get("delta") or {}
-            raw_content = (
-                msg.get("content")
-                or msg.get("reasoning_content")
-                or msg.get("reasoning")
-                or msg.get("thinking")
-                or ""
-            )
+            raw_content = msg.get("content")
+            if not raw_content:
+                raw_content = (
+                    msg.get("reasoning_content")
+                    or msg.get("reasoning")
+                    or msg.get("thinking")
+                    or ""
+                )
             if isinstance(raw_content, list):
                 content = "".join(str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in raw_content)
             else:
                 content = str(raw_content) if raw_content else ""
+            from src.utils.telegram_formatter import strip_thinking_and_reasoning
+            content = strip_thinking_and_reasoning(content)
             tool_calls = msg.get("tool_calls") or []
             for tc in tool_calls:
                 fn = tc.get("function")
@@ -365,6 +368,8 @@ def _parse_router_response(resp_text: str) -> Tuple[str, List[Dict[str, Any]]]:
         final_content = "".join(reasoning_chunks).strip()
     else:
         final_content = ""
+    from src.utils.telegram_formatter import strip_thinking_and_reasoning
+    final_content = strip_thinking_and_reasoning(final_content)
 
     final_tool_calls: List[Dict[str, Any]] = []
     for idx in sorted(tool_calls_map.keys()):
@@ -858,13 +863,18 @@ async def generate_response(
     # Tool outputs are often Persian: translate their human-readable content, keep
     # numbers/code/links/@usernames byte-identical.
     from src.core.i18n import normalize_lang as _norm_lang, lang_name as _lang_name, t as _t
-    _ulang = _norm_lang(user_lang_code)
-    _ulang_name = _lang_name(user_lang_code)
+    _has_fa_script = bool(re.search(r"[\u0600-\u06FF]", user_prompt or ""))
+    if _has_fa_script:
+        _ulang = "fa"
+        _ulang_name = "Persian"
+    else:
+        _ulang = _norm_lang(user_lang_code)
+        _ulang_name = _lang_name(user_lang_code)
     if _ulang == "fa":
         _lang_rule = (
             "\n[زبان پاسخ — اکیداً فارسی]: کاربر به زبان فارسی سخن می‌گوید. "
             "پاسخ شما باید ۱۰۰٪ به زبان فارسیِ روان، طبیعی، امروزی و شیوا باشد. "
-            "مطلقاً و تحت هیچ شرایطی به زبان عربی پاسخ نده!"
+            "مطلقاً و تحت هیچ شرایطی به زبان عربی یا انگلیسی پاسخ نده!"
         )
     else:
         _lang_rule = (
@@ -884,7 +894,7 @@ async def generate_response(
     # Keeping the core persona and instructions byte-for-byte identical in Message 0 enables provider prompt caching.
     static_system_prompt = (
         SYSTEM_PROMPT
-        + "\n\n[دستور جستجوی زنده]: برای وقایع، اشخاص و اخبار روز، فقط از ابزار `web_search` استفاده کن. برای سوالات علمی، کدنویسی، رفع باگ و تعاریف مفهومی، مطلقاً هیچ ابزاری فراخوانی نکن و فوراً پاسخ بده."
+        + "\n\n[استفاده فعال و قدرتمند از ابزارها]: در صورت نیاز کاربر به دانلود موزیک، تصویرسازی، اطلاعات زنده بازار و ارز، وضعیت هوا، جستجوی وب، مدیریت اسناد و فایل، گیت‌هاب، محاسبات یا دستورات مدیریتی، فوراً و بدون اتلاف وقت از ابزار متناظر و دقیق موجود در جعبه‌ابزار استفاده کن."
         + "\n[قانون سهمیه]: سهمیه شخصی کاربر در ربات فقط با دستور /limit نمایش داده می‌شود — خودت هرگز عدد سهمیه شخصی اعلام نکن. سؤال درباره سهمیه موضوعات دیگر (بنزین، اینترنت و ...) سؤال عادی است: عادی جواب بده و اسمی از سهمیه کاربر در ربات نبر."
         + "\n\n[قانون ضربه مستقیم، ایجاز مطلق و ارائه نکات کلیدی]:"
         + "\n۱. اولین کلمه پاسخ باید دقیقاً پاسخ مستقیم، رقم، نام فکت یا بلوک کد باشد. هرگونه سلام، درود، احوال‌پرسی، مقدمه‌چینی («بر اساس بررسی‌ها»، «طبق اطلاعات دریافتی»)، موخره («امیدوارم مفید باشد»)، نصیحت اخلاقی یا هشدار ریسک تکراری اکیداً ممنوع است."
@@ -1132,25 +1142,19 @@ async def generate_response(
     # Mixing in clock/admin/DB tools lets the model answer from stale memory
     # instead of the live results (observed: datetime dump, wiki-based 3 Pro).
     # NOTE: Never apply web-only restriction to internal admin commands (groups, bans, server stats).
+    # Claim-verify lane: prioritize search tools without wiping specialized capabilities (media, finance, files, etc.)
     _cv_pl = (user_prompt or "").lower()
     _admin_query_markers = ["گروه", "group", "بن", "ban", "سرور", "server", "تله متری", "سکوت", "mute", "شناسه", "آیدی", "کانفیگ", "دیتابیس"]
     _is_internal_admin_query = is_caller_admin and any(m in _cv_pl for m in _admin_query_markers)
     _claim_verify_q = (not _is_internal_admin_query) and any(_w in _cv_pl for _w in ["آخرین", "جدیدترین", "تازه", "نسل", "مدل", "نسخه", "پرچمدار", "پیشرفته", "معرفی", "latest", "newest", "version", "release", "pro", "flash", "ultra"])
-    if _claim_verify_q:
-        _web_only = {"tavily_search", "web_search", "deep_search_and_read", "live_news", "fetch_webpage_content"}
-        _filtered = [t for t in tools_schema if t.get("function", {}).get("name") in _web_only]
-        if _filtered:
-            # Tavily first ONLY when a key exists; otherwise web_search is free and reliable.
-            try:
-                from src.core.config import has_tavily as _has_tv
-                _tv_ok = bool(_has_tv())
-            except Exception:
-                _tv_ok = False
-            if _tv_ok:
-                _filtered.sort(key=lambda t: 0 if t.get("function", {}).get("name") == "tavily_search" else 1)
-            else:
-                _filtered.sort(key=lambda t: 0 if t.get("function", {}).get("name") == "web_search" else 1)
-            tools_schema = _filtered
+    if _claim_verify_q and tools_schema:
+        try:
+            from src.core.config import has_tavily as _has_tv
+            _tv_ok = bool(_has_tv())
+        except Exception:
+            _tv_ok = False
+        pref = "tavily_search" if _tv_ok else "web_search"
+        tools_schema.sort(key=lambda t: 0 if t.get("function", {}).get("name") == pref else (1 if "search" in t.get("function", {}).get("name", "") else 2))
 
     # Read model/base-url fresh per-turn so Railway variable changes apply without restart.
     # Locked to low-latency single model (3.8-low) with zero dynamic model switching/hopping
