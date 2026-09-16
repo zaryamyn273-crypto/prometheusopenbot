@@ -702,7 +702,7 @@ async def group_command_gatekeeper(update: Update, context: ContextTypes.DEFAULT
             _ruser = (_rfu.first_name if _rfu else "") or ""
             _rtext = (message.reply_to_message.text or message.reply_to_message.caption or "")[:200]
 
-        await database.save_message_async(
+        safe_create_task(database.save_message_async(
             chat.id,
             user.id,
             "user",
@@ -716,7 +716,7 @@ async def group_command_gatekeeper(update: Update, context: ContextTypes.DEFAULT
             reply_to_msg_id=_rmid,
             reply_to_user=_ruser,
             reply_to_text=_rtext,
-        )
+        ))
 
         # Stop propagation: zero command execution, zero AI trigger
         raise ApplicationHandlerStop()
@@ -3813,7 +3813,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 pass
             if msg_text:
                 msg_text = f"{msg_text}{_reply_link}" if _reply_link else msg_text
-                await database.save_message_async(
+                safe_create_task(database.save_message_async(
                     chat.id,
                     user.id,
                     "user",
@@ -3827,7 +3827,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     reply_to_msg_id=_bg_rmid,
                     reply_to_user=_bg_ruser,
                     reply_to_text=_bg_rtext,
-                )
+                ))
             return
 
         # Strip bot trigger name if at the beginning as a whole word/token
@@ -3979,11 +3979,11 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             _q_uid = _r_from.id if _r_from else 0
             _q_uname = _r_from.username if (_r_from and _r_from.username) else ""
             _q_name = _r_from.first_name if (_r_from and _r_from.first_name) else replied_user
-            await database.save_message_async(
+            safe_create_task(database.save_message_async(
                 chat.id, _q_uid or user.id, "user", f"[نقل‌شده] {_q_text}",
                 user_name=_q_name, username=_q_uname or "",
                 chat_title=chat_title or "", message_id=replied_msg.message_id or 0,
-            )
+            ))
         except Exception:
             pass
 
@@ -4161,7 +4161,7 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         pass
 
-    # Speculative Search Prefetch: Fire web_search concurrently with Turn 1 LLM!
+    # Speculative Search Prefetch: Fire web_search concurrently only for genuine live search requests
     try:
         _search_intent = False
         _t_hint = _prefetch_hints.get("tool_hint") or ""
@@ -4170,9 +4170,10 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             _low_txt = (rewritten or user_text).lower()
             if any(k in _low_txt for k in (
-                "سرچ کن", "جستجو کن", "کیست", "چیست", "کجاست", "قیمت روز", "قیمت لحظه",
-                "آخرین اخبار", "اخبار امروز", "وضعیت هوا", "چه خبر", "نتایج زنده",
-                "کی اومد", "ویژگی های", "مشخصات", "who is", "what is", "latest news"
+                "سرچ کن", "جستجو کن", "آخرین اخبار", "اخبار امروز", "نتایج زنده",
+                "latest news", "search web"
+            )) and not any(k in _low_txt for k in (
+                "آهنگ", "موزیک", "ترانه", "music", "song", "قیمت", "دلار", "طلا", "سکه", "ارز", "کد", "پایتون", "تابع", "برنامه"
             )):
                 _search_intent = True
 
@@ -4468,7 +4469,7 @@ async def _deliver_ai_turn(message, chat, context, ai_response, extra_action, ch
         ai_response = "⚠️ پاسخ این مرحله خالی برگشت؛ لطفاً پیام خود را شفاف‌تر بفرستید یا یک بار دیگر تلاش کنید."
     sent_final = await reply_safely(message, ai_response)
     if sent_final and getattr(sent_final, "message_id", 0):
-        await database.save_message_async(chat.id, context.bot.id, "assistant", ai_response, user_name="Prometheus", chat_title=chat_title, message_id=sent_final.message_id)
+        safe_create_task(database.save_message_async(chat.id, context.bot.id, "assistant", ai_response, user_name="Prometheus", chat_title=chat_title, message_id=sent_final.message_id))
         return True
     return False
 

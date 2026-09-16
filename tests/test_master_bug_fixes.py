@@ -52,20 +52,53 @@ def test_concise_mode_intent_detection():
 
 
 def test_dynamic_token_budget():
-    """Verify dynamic token caps: 900 for concise turns, 3000 for elaboration, 1400 for tools."""
+    """Verify dynamic token caps: 500 for concise turns, 3000 for elaboration, 1200 for tools."""
     def get_tok_cap(has_tools: bool, is_elaboration: bool, is_summary: bool) -> int:
         if has_tools:
-            return 1400
+            return 1200
         elif is_elaboration or is_summary:
             return 3000
         else:
-            return 900
+            return 500
 
-    assert get_tok_cap(False, False, False) == 900
+    assert get_tok_cap(False, False, False) == 500
     assert get_tok_cap(False, True, False) == 3000
     assert get_tok_cap(False, False, True) == 3000
-    assert get_tok_cap(True, False, False) == 1400
-    assert get_tok_cap(True, True, False) == 1400
+    assert get_tok_cap(True, False, False) == 1200
+    assert get_tok_cap(True, True, False) == 1200
+
+
+def test_zero_db_memory_isolation_on_reply():
+    """Verify that reply threads without explicit memory keywords do NOT trigger DB/RAM history queries."""
+    explicit_memory_triggers = [
+        "یادت", "قبلا", "قبلاً", "پیام قبلی", "پیام های قبلی", "پیام‌های قبلی", "چی گفتم", "چی گفتی",
+        "ادامه بده", "یادآوری", "تاریخچه", "سوابق", "گفتگوی قبل", "چت های قبلی",
+        "همون که گفتی", "دوباره بگو", "یادت رفت", "یادت نره", "کانتکست", "حافظه", "درباره چی حرف زدیم",
+        "پیام بالایی", "همونی که بالاتر", "remember", "history", "earlier", "previous", "recall", "what did i say",
+        "چی گفتیم", "درباره چی صحبت کردیم", "صحبت های قبلی", "پیام قبل", "سوابق گفتگو"
+    ]
+    summary_triggers = [
+        "خلاصه", "خلاصه‌سازی", "خلاصه سازی", "جمع‌بندی", "جمع بندی",
+        "خلاصه چت", "خلاصه گروه", "خلاصه گفتگو", "پیام های اخیر", "پیام‌های اخیر",
+        "پیام های قبلی", "پیام‌های قبلی", "summary", "summarize"
+    ]
+
+    def compute_needs_memory(prompt: str) -> bool:
+        p = prompt.lower()
+        is_summary = any(st in p for st in summary_triggers)
+        return is_summary or any(k in p for k in explicit_memory_triggers)
+
+    # Regular reply turn with ordinary questions MUST have needs_memory = False
+    assert not compute_needs_memory("پایتون چیه؟")
+    assert not compute_needs_memory("آهنگ گوگوش غریب آشنا")
+    assert not compute_needs_memory("قیمت بیت کوین چنده؟")
+    assert not compute_needs_memory("هوا چطوره امروز؟")
+
+    # Explicit memory questions MUST have needs_memory = True
+    assert compute_needs_memory("یادت هست پیام قبلی چی بود؟")
+    assert compute_needs_memory("چی گفتم بالاتر؟")
+    assert compute_needs_memory("خلاصه ۵۰ پیام اخیر رو بگو")
+    assert compute_needs_memory("ادامه بده لطفاً")
 
 
 # =========================================================================

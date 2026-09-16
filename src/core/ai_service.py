@@ -949,9 +949,12 @@ async def generate_response(
         "یادت", "قبلا", "قبلاً", "پیام قبلی", "پیام های قبلی", "پیام‌های قبلی", "چی گفتم", "چی گفتی",
         "ادامه بده", "یادآوری", "تاریخچه", "سوابق", "گفتگوی قبل", "چت های قبلی",
         "همون که گفتی", "دوباره بگو", "یادت رفت", "یادت نره", "کانتکست", "حافظه", "درباره چی حرف زدیم",
-        "پیام بالایی", "همونی که بالاتر", "remember", "history", "earlier", "previous", "recall", "what did i say"
+        "پیام بالایی", "همونی که بالاتر", "remember", "history", "earlier", "previous", "recall", "what did i say",
+        "چی گفتیم", "درباره چی صحبت کردیم", "صحبت های قبلی", "پیام قبل", "سوابق گفتگو"
     ]
-    needs_memory = has_reply_context or is_summary_request or any(k in prompt_lower for k in explicit_memory_triggers)
+    # Zero-Database / Zero-RAM Rule: Memory and database history are strictly isolated and NEVER
+    # queried on normal turns or reply threads, unless the user explicitly asks for memory or a summary.
+    needs_memory = is_summary_request or any(k in prompt_lower for k in explicit_memory_triggers)
     _needs_deep_memory = not is_summary_request and any(k in prompt_lower for k in explicit_memory_triggers)
 
     # 1. High-Performance Group Summarization Pipeline (50 or 100 messages)
@@ -999,7 +1002,7 @@ async def generate_response(
 
     # Deep recall: the user explicitly asked about OLD/past content
     # Pull a few ranked D1 hits so the model can answer from permanent storage.
-    elif _needs_deep_memory and not has_reply_context:
+    elif _needs_deep_memory:
         try:
             _d1_hits = await database.search_group_memory(
                 chat_id, user_prompt, limit=5,
@@ -1019,9 +1022,8 @@ async def generate_response(
             pass
 
     if needs_memory and not is_summary_request:
-        # Reply threads need BOTH sides: last 30 turns hold the fused quote,
-        # capped by the 20k temp budget. Follow-ups get 12 turns for speed.
-        _window = 30 if has_reply_context else 12
+        # User explicitly requested past conversation context; fetch concise rolling window
+        _window = 12
         history = await database.get_chat_context_async(chat_id, max_tokens=MAX_SHORT_TERM_TOKENS)
         for msg in history[-_window:]:
             role = msg.get("role", "user")
@@ -1208,14 +1210,14 @@ async def generate_response(
                     pass
             active_schemas = _defs
         # Dynamic Token Allocation:
-        # Tool execution turns get 1400 tokens; explicit elaboration or summary turns get 3000 tokens;
-        # default Q&A turns are capped tightly to 900 tokens to enforce conciseness and sub-second speed.
+        # Tool execution turns get 1200 tokens; explicit elaboration or summary turns get 3000 tokens;
+        # default Q&A turns are capped tightly to 500 tokens to enforce brevity, key points only, and sub-second TTFT.
         if active_schemas:
-            _tok_cap = 1400
+            _tok_cap = 1200
         elif is_elaboration_request or is_summary_request:
             _tok_cap = 3000
         else:
-            _tok_cap = 900
+            _tok_cap = 500
         payload: Dict[str, Any] = {
             "model": _live_model,
             "stream": False,
@@ -1252,7 +1254,9 @@ async def generate_response(
                         mark_endpoint_success(endpoint)
                         break
                     logger.debug(f"Endpoint {endpoint} returned status {resp.status_code}")
-                    if resp.status_code in (500, 502, 503, 504):
+                    if resp.status_code == 400 and "reasoning_effort" in payload:
+                        payload.pop("reasoning_effort", None)
+                    elif resp.status_code in (500, 502, 503, 504):
                         mark_endpoint_failure(endpoint, cooldown_sec=120.0)
                     elif resp.status_code == 429:
                         mark_endpoint_failure(endpoint, cooldown_sec=60.0)
