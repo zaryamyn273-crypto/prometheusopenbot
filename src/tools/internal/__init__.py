@@ -234,11 +234,19 @@ def bot_tool_picker(query: str = "") -> str:
             _tool = _FLAGSHIP.get(_cat)
             if _tool and _tool not in picks:
                 picks.append(_tool)
-        # Same implicit-verb boost as the registry: bare send/play verbs +
-        # any Latin music token mean music even without Persian anchors.
-        if any(v in q for v in ("play", "پلی")) or any(
-            tok in q for tok in ("hello", "song", "music", "audio", "mp3")
-        ):
+        # Comprehensive music detection (singers, song titles, and media keywords)
+        _MUSIC_HINTS = (
+            "آهنگ", "اهنگ", "موزیک", "ترانه", "خواننده", "دانلود آهنگ", "دانلود موزیک",
+            "لیریکس", "متن ترانه", "متن آهنگ", "song", "music", "track", "پلی", "play",
+            "گوگوش", "ابی", "داریوش", "هایده", "مهستی", "معین", "شادمهر", "چاوشی", "قمیشی",
+            "حبیب", "یاس", "تتلو", "شجریان", "همایون", "زدبازی", "پیشرو", "پوتک", "سوگند",
+            "اندی", "شهره", "ستار", "لیلا فروهر", "شماعی زاده", "شماعی‌زاده", "طلیسچی",
+            "یگانه", "ابراهیم زاده", "ابراهیم‌زاده", "بانی", "ماکان بند", "پازل بند",
+            "سیروان", "زانیار", "احمدوند", "رضوی", "یاسینی", "شایع", "حصین", "سورنا",
+            "بهرام", "فدائی", "تی ام بکس", "تی‌ام بکس", "رادیو جوان", "ریمیکس", "remix",
+            "غریب آشنا", "کویر", "مرداب", "همسفر", "پل", "audio", "mp3"
+        )
+        if any(w in q for w in _MUSIC_HINTS):
             if "download_music_track" not in picks:
                 picks.insert(0, "download_music_track")
         if not picks:

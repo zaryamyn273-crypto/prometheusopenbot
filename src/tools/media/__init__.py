@@ -271,41 +271,48 @@ async def _stream_candidate_mp3(url: str, max_bytes: int = _MAX_MP3_BYTES) -> Op
     return None
 
 async def _search_global_mp3_via_web(clean_q: str, query_tokens: List[str]) -> Optional[Dict[str, Any]]:
-    """Universal MP3 link discovery via web search (covers international, English & rare songs)."""
+    """Universal MP3 link discovery via web search (covers exile artists, pop, international & rare tracks)."""
     try:
         from src.tools import web_network as _web
         search_query = f"دانلود آهنگ {clean_q} 320 mp3"
-        searched = await _web.web_search(search_query, max_results=6)
-        page_urls = re.findall(r'https?://[^\s\)\"\']+', searched)
+        searched = await _web.web_search(search_query, max_results=8)
+        raw_urls = re.findall(r'🔗\s*(\S+)', searched) or re.findall(r'https?://[^\s\)\"\']+', searched)
+        if not raw_urls:
+            return None
+
+        # Filter out non-music domains
+        bad_domains = ("wikipedia.org", "youtube.com", "instagram.com", "twitter.com", "facebook.com", "t.me", "google.com")
+        page_urls = [u for u in raw_urls if not any(bd in u.lower() for bd in bad_domains)]
         if not page_urls:
             return None
 
         client = get_async_client()
-        for u in page_urls[:5]:
+        for u in page_urls[:6]:
             try:
-                r = await client.get(u, timeout=3.5, follow_redirects=True)
+                r = await client.get(
+                    u,
+                    timeout=7.0,
+                    follow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                )
                 if r.status_code == 200:
-                    mp3s = re.findall(r'href=[\"\'](https?://[^\"\']+\.mp3)[\"\']', r.text, re.I)
-                    valid = [m for m in mp3s if not any(b in m.lower() for b in ['voice', 'advert', 'ads', 'intro', 'teaser', 'demo', '64.mp3'])]
+                    mp3s = re.findall(r'(?:href|src|data-src|data-url)=[\"\']?(https?://[^\s\"\'><]+\.mp3[^\s\"\'><]*)', r.text, re.I)
+                    valid = [
+                        m for m in mp3s
+                        if not any(b in m.lower() for b in ['voice', 'advert', 'ads', 'intro', 'teaser', 'demo', '64.mp3'])
+                    ]
                     if valid:
                         mp3_320 = [m for m in valid if "320" in m]
                         chosen = mp3_320[0] if mp3_320 else valid[0]
-                        # Quick head check to verify reachability
-                        try:
-                            to = httpx.Timeout(3.5, connect=2.0)
-                            rh = await client.head(chosen, timeout=to)
-                            if rh.status_code in (200, 301, 302):
-                                clen = int(rh.headers.get("content-length") or 0)
-                                if clen >= 1_500_000:
-                                    return {
-                                        "title": clean_q.title(),
-                                        "performer": "Prometheus Music",
-                                        "url": chosen,
-                                        "quality": "320kbps HQ" if "320" in chosen else "128kbps",
-                                        "match_score": 0.85,
-                                    }
-                        except Exception:
-                            continue
+                        # Clean any trailing query parameters or quotes
+                        clean_chosen = chosen.split("&amp;")[0].split('"')[0].split("'")[0]
+                        return {
+                            "title": clean_q.title(),
+                            "performer": "هنرمند",
+                            "url": clean_chosen,
+                            "quality": "320kbps Original Full Track" if "320" in chosen else "128kbps HQ",
+                            "match_score": 0.95,
+                        }
             except Exception:
                 continue
     except Exception as e:

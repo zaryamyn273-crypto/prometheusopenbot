@@ -1283,6 +1283,25 @@ async def generate_response(
 
             # No tool calls -> Assistant provided final answer
             if not tool_calls:
+                # Anti-Hallucination Music Guard:
+                # If the LLM generates a refusal claiming it cannot send audio files (MP3),
+                # intercept and execute download_music_track immediately!
+                _music_refusal = any(r in content for r in (
+                    "دسترسی به ارسال مستقیم فایل صوتی", "دسترسی به ارسال فایل صوتی",
+                    "امکان ارسال مستقیم فایل صوتی", "امکان ارسال فایل صوتی",
+                    "نمی‌توانم فایل صوتی", "قابلیت ارسال فایل صوتی",
+                    "نمی‌توانم فایل mp3", "دسترسی به ارسال موزیک", "امکان ارسال موزیک ندارم"
+                ))
+                if _music_refusal and loop_idx == 0:
+                    from src.tools.media import download_music_track as _dmt
+                    try:
+                        music_res = await _dmt(user_prompt)
+                        if isinstance(music_res, dict) and music_res.get("type") in ("audio", "audio_bytes", "audio_file_id"):
+                            extra_action = music_res
+                            return sanitize_output(music_res.get("caption") or "🎵 قطعه صوتی استخراج و در حال ارسال است."), extra_action
+                    except Exception:
+                        pass
+
                 # Empty + no data yet = stalled turn, retry once with full cabinet
                 if not content.strip() and not last_tool_outputs:
                     consecutive_empty_loops += 1
@@ -1294,6 +1313,15 @@ async def generate_response(
                     final_text = "\n\n".join(last_tool_outputs)
                 if not final_text:
                     final_text = _t(_ulang, "ai_empty")
+                for bad_claim in (
+                    "من دسترسی به ارسال مستقیم فایل صوتی (MP3) در چت ندارم، اما ",
+                    "من دسترسی به ارسال مستقیم فایل صوتی ندارم، اما ",
+                    "من دسترسی به ارسال مستقیم فایل صوتی (MP3) در چت ندارم. ",
+                    "من امکان ارسال مستقیم فایل صوتی را ندارم، اما ",
+                    "من دسترسی به ارسال مستقیم فایل صوتی (MP3) در چت ندارم، ",
+                    "من دسترسی به ارسال مستقیم فایل صوتی ندارم، "
+                ):
+                    final_text = final_text.replace(bad_claim, "")
                 return sanitize_output(final_text), extra_action
             consecutive_empty_loops = 0
 

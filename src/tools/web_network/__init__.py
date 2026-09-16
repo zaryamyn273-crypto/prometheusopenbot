@@ -351,7 +351,7 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
                     "Referer": "https://html.duckduckgo.com/",
                 },
                 follow_redirects=True,
-                timeout=2.5
+                timeout=7.0
             )
             if r.status_code in (200, 202):
                 soup = BeautifulSoup(r.text, "html.parser")
@@ -384,7 +384,7 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
                 "https://lite.duckduckgo.com/lite/",
                 data={"q": clean_q},
                 follow_redirects=True,
-                timeout=2.0
+                timeout=6.0
             )
             if r.status_code in (200, 202):
                 soup = BeautifulSoup(r.text, "html.parser")
@@ -627,9 +627,9 @@ async def web_search(query: str, max_results: int = 5, force_refresh: bool = Fal
     has_direct_ans = False
 
     try:
-        # Active Collector Loop: Process results as each engine finishes (deadline 1.6s)
-        race_deadline = time.time() + 1.6
-        for fut in asyncio.as_completed(all_spec_tasks, timeout=1.6):
+        # Active Collector Loop: Process results as each engine finishes (deadline 5.5s)
+        race_deadline = time.time() + 5.5
+        for fut in asyncio.as_completed(all_spec_tasks, timeout=5.5):
             try:
                 res = await fut
                 if isinstance(res, tuple):
@@ -877,11 +877,12 @@ async def fetch_webpage_content(url: str, max_chars: int = 4000) -> str:
     description="بررسی وضعیت در دسترس بودن، پینگ و زمان پاسخگویی یک وب‌سایت یا سرور",
     category="network"
 )
-async def check_website_status(target: str) -> str:
+async def check_website_status(target: Optional[str] = None, url: Optional[str] = None, domain: Optional[str] = None) -> str:
     """
     :param target: آدرس دامنه یا سایت (مانند google.com یا https://example.com)
     """
-    clean_t = target.strip()
+    raw_target = str(target or url or domain or "google.com").strip()
+    clean_t = raw_target
     if not clean_t.startswith("http"):
         clean_t = f"https://{clean_t}"
     try:
@@ -912,12 +913,13 @@ async def check_website_status(target: str) -> str:
     description="استعلام رکوردهای DNS دامنه (A, AAAA, MX, NS, TXT) با DNS-over-HTTPS از سرورهای جهانی Cloudflare",
     category="network"
 )
-async def resolve_dns(domain: str, record_type: str = "A") -> str:
+async def resolve_dns(domain: Optional[str] = None, record_type: str = "A", host: Optional[str] = None, url: Optional[str] = None) -> str:
     """
     :param domain: نام دامنه مورد نظر (مانند google.com)
     :param record_type: نوع رکورد (A, AAAA, MX, NS, TXT, CNAME)
     """
-    clean_d = clean_target_host(domain)
+    raw_d = str(domain or host or url or "google.com").strip()
+    clean_d = clean_target_host(raw_d)
     clean_type = record_type.upper().strip()
     if clean_type not in ("A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA", "SRV"):
         return f"نوع رکورد `{record_type}` نامعتبر است. مقادیر مجاز: A, AAAA, MX, NS, TXT, CNAME, SOA, SRV"
