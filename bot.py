@@ -137,51 +137,17 @@ def safe_create_task(coro) -> asyncio.Task:
     return task
 
 
-@functools.lru_cache(maxsize=64)
-def _cached_lang_info(code: str) -> Tuple[str, str]:
-    """Microsecond cached language normalization and display name resolution."""
-    return normalize_lang(code), lang_name(code)
+_FA_LANG_INFO: Tuple[str, str] = ("fa", "Persian")
 
 
-_FA_LANG_INFO: Tuple[str, str] = ("fa", lang_name("fa"))
-
-
-def _ulang_of(update) -> tuple:
-    """(lang, lang_name) for a Telegram update: 'fa' for Persian clients, else 'en' chrome + full LLM language."""
-    try:
-        msg = getattr(update, "effective_message", None)
-        msg_text = getattr(msg, "text", "") or getattr(msg, "caption", "") or ""
-        if msg_text and re.search(r"[\u0600-\u06FF]", msg_text):
-            return _FA_LANG_INFO
-        user = getattr(update, "effective_user", None)
-        code = getattr(user, "language_code", None) or "fa"
-    except Exception:
-        code = "fa"
-    if not isinstance(code, str) or code == "fa":
-        return _FA_LANG_INFO
-    return _cached_lang_info(code)
+def _ulang_of(update=None) -> tuple:
+    """100% Persian operation: always returns ('fa', 'Persian')."""
+    return _FA_LANG_INFO
 
 
 async def _maybe_translate(update, text: str) -> str:
-    """Translate a Persian tool output for non-Persian clients.
-
-    fa clients (and any failure) get the original text untouched, so the
-    fast direct-command path stays zero-cost for the home audience.
-    """
-    try:
-        if not isinstance(text, str) or not text or text.isspace():
-            return text
-        ulang, ulang_name = _ulang_of(update)
-        if ulang == "fa":
-            return text
-        msg = getattr(update, "effective_message", None)
-        msg_text = getattr(msg, "text", "") or getattr(msg, "caption", "") or ""
-        if msg_text and re.search(r"[\u0600-\u06FF]", msg_text):
-            return text
-        from src.core import ai_service
-        return await ai_service.translate_text(text, ulang_name)
-    except Exception:
-        return text
+    """100% Persian native: returns original text directly with zero translation overhead."""
+    return text
 
 
 # Fast-path precompiled regex and lookup sets for deterministic social routing
@@ -285,99 +251,89 @@ def _format_fast_date(ulang: str = "fa") -> str:
         j_str = f"{j_now.year:04d}/{j_now.month:02d}/{j_now.day:02d}"
         iso_str = f"{now.year:04d}-{now.month:02d}-{now.day:02d}"
         time_str = f"{now.hour:02d}:{now.minute:02d}:{now.second:02d}"
-        if ulang == "fa":
-            w_name = _PERSIAN_WEEKDAYS[w_idx]
-            m_name = _PERSIAN_MONTHS[j_now.month]
-            return (
-                f"📅 *امروز (خورشیدی):* {w_name}، {j_now.day} {m_name} {j_now.year} (`{j_str}`)\n"
-                f"🌐 *میلادی:* `{iso_str}`\n"
-                f"⏰ *ساعت رسمی تهران:* `{time_str}`"
-            )
-        else:
-            w_name = _ENGLISH_WEEKDAYS[w_idx]
-            m_name = _ENGLISH_MONTHS[j_now.month]
-            return (
-                f"📅 *Today (Jalali):* {w_name}, {j_now.day} {m_name} {j_now.year} (`{j_str}`)\n"
-                f"🌐 *Gregorian:* `{iso_str}`\n"
-                f"⏰ *Official Tehran time:* `{time_str}`"
-            )
+        w_name = _PERSIAN_WEEKDAYS[w_idx]
+        m_name = _PERSIAN_MONTHS[j_now.month]
+        return (
+            f"📅 *امروز (خورشیدی):* {w_name}، {j_now.day} {m_name} {j_now.year} (`{j_str}`)\n"
+            f"🌐 *میلادی:* `{iso_str}`\n"
+            f"⏰ *ساعت رسمی تهران:* `{time_str}`"
+        )
     except Exception:
         _iso, _, _j = database.get_tehran_timestamps()
-        return t(ulang, "date_today", jalali=_j, iso=_iso)
+        return t("fa", "date_today", jalali=_j, iso=_iso)
 
 _SOCIAL_DISPATCH: Dict[str, Tuple[str, str]] = {}
 for _w in _STATUS_WORDS:
     _SOCIAL_DISPATCH[_w] = (
         "سلام، ممنون! من عالی و کاملاً آماده‌ام. شما چطورید؟ چه کمکی از دستم برمی‌آید؟",
-        "I'm doing great and fully operational! How are you doing? How can I assist?"
+        "سلام، ممنون! من عالی و کاملاً آماده‌ام. شما چطورید؟ چه کمکی از دستم برمی‌آید؟"
     )
 for _w in _THANKS_WORDS:
     _SOCIAL_DISPATCH[_w] = (
         "خواهش می‌کنم، انجام وظیفه است! اگر کار دیگری هست در خدمتم.",
-        "You're welcome! Happy to help. Let me know if you need anything else."
+        "خواهش می‌کنم، انجام وظیفه است! اگر کار دیگری هست در خدمتم."
     )
 for _w in _ACK_WORDS:
     _SOCIAL_DISPATCH[_w] = (
         "حله، در خدمتم. هر وقت فرمایشی داشتید مطرح فرمایید.",
-        "Noted. Less talk, faster execution."
+        "حله، در خدمتم. هر وقت فرمایشی داشتید مطرح فرمایید."
     )
 for _w in _NO_WORDS:
     _SOCIAL_DISPATCH[_w] = (
         "بسیار عالی، در صورت نیاز به هر موضوعی در خدمتم.",
-        "Fine. Less bandwidth wasted."
+        "بسیار عالی، در صورت نیاز به هر موضوعی در خدمتم."
     )
 
 def _pingpong_reply(norm_text: str, user_display: str, user_id: int, lang: str = "fa") -> str:
-    """Instant deterministic reply for pure social chatter (no LLM, no tools, <1ms)."""
-    is_fa = (lang == "fa")
+    """Instant deterministic reply for pure social chatter (no LLM, no tools, <1ms). 100% Persian."""
     if not norm_text:
-        return "بفرمایید، سریع و مشخص در خدمتم." if is_fa else "Yes? Keep it brief, at your service."
+        return "بفرمایید، سریع و مشخص در خدمتم."
 
     norm_raw, norm_stripped = _normalize_fastpath_text(norm_text)
     t_val = norm_stripped or norm_raw
     if not t_val:
-        return "بفرمایید، سریع و مشخص در خدمتم." if is_fa else "Yes? Keep it brief, at your service."
+        return "بفرمایید، سریع و مشخص در خدمتم."
 
     # Priority 1: Time of day greetings
     if t_val in _MORNING_WORDS or norm_raw in _MORNING_WORDS:
-        return "سلام، صبح شما بخیر و شادی! روز بسیار خوبی داشته باشید. در خدمتم، بفرمایید." if is_fa else "Good morning! Have a wonderful day. How can I help you?"
+        return "سلام، صبح شما بخیر و شادی! روز بسیار خوبی داشته باشید. در خدمتم، بفرمایید."
 
     if t_val in _EVENING_WORDS or norm_raw in _EVENING_WORDS:
         target_w = t_val if t_val in _EVENING_WORDS else norm_raw
         if "شب" in target_w or "night" in target_w:
-            return "شب شما بخیر و سرشار از آرامش! هر زمان امری بود در خدمتم." if is_fa else "Good night! Wishing you a peaceful rest."
-        return "سلام، عصر شما بخیر! در خدمتم، بفرمایید چه کمکی از دستم برمی‌آید." if is_fa else "Good evening! How can I assist you today?"
+            return "شب شما بخیر و سرشار از آرامش! هر زمان امری بود در خدمتم."
+        return "سلام، عصر شما بخیر! در خدمتم، بفرمایید چه کمکی از دستم برمی‌آید."
 
     # Priority 2: General Greetings
     if t_val in _GREETING_WORDS or norm_raw in _GREETING_WORDS:
         if is_admin(user_id):
-            return "👑 درود فرمانده! بفرمایید، در خدمتم." if is_fa else "👑 Hello commander! At your command."
+            return "👑 درود فرمانده! بفرمایید، در خدمتم."
         disp = (f" {user_display}" if (user_display and user_display not in ("کاربر", "User")) else "")
-        return f"سلام{disp}! در خدمتم، چطور می‌توانم کمکتان کنم؟" if is_fa else f"Hello{disp}! How can I help you today?"
+        return f"سلام{disp}! در خدمتم، چطور می‌توانم کمکتان کنم؟"
 
     # Priority 3: Wellness & status questions ("خوبی", "چطوری", "خسته نباشی")
     if t_val in _STATUS_WORDS or norm_raw in _STATUS_WORDS:
         target_s = t_val if t_val in _STATUS_WORDS else norm_raw
         if "خسته" in target_s:
-            return "سلامت باشید و پرتوان! خستگی‌ناپذیر در خدمت شما هستم. بفرمایید." if is_fa else "Thank you! Always active and ready to help."
-        return "سلام، ممنون! من عالی و کاملاً آماده‌ام. شما چطورید؟ چه کمکی از دستم برمی‌آید؟" if is_fa else "I'm doing great and fully operational! How are you doing? How can I assist?"
+            return "سلامت باشید و پرتوان! خستگی‌ناپذیر در خدمت شما هستم. بفرمایید."
+        return "سلام، ممنون! من عالی و کاملاً آماده‌ام. شما چطورید؟ چه کمکی از دستم برمی‌آید؟"
 
     # Priority 4: Gratitude / Thanks
     if t_val in _THANKS_WORDS or norm_raw in _THANKS_WORDS:
-        return "خواهش می‌کنم، انجام وظیفه است! اگر کار دیگری هست در خدمتم." if is_fa else "You're welcome! Happy to help. Let me know if you need anything else."
+        return "خواهش می‌کنم، انجام وظیفه است! اگر کار دیگری هست در خدمتم."
 
     # Priority 5: Acknowledgements
     if t_val in _ACK_WORDS or norm_raw in _ACK_WORDS:
-        return "حله، در خدمتم. هر وقت فرمایشی داشتید مطرح فرمایید." if is_fa else "Noted. Less talk, faster execution."
+        return "حله، در خدمتم. هر وقت فرمایشی داشتید مطرح فرمایید."
 
     if t_val in _NO_WORDS or norm_raw in _NO_WORDS:
-        return "بسیار عالی، در صورت نیاز به هر موضوعی در خدمتم." if is_fa else "Fine. Less bandwidth wasted."
+        return "بسیار عالی، در صورت نیاز به هر موضوعی در خدمتم."
 
     dispatch_res = _SOCIAL_DISPATCH.get(t_val)
     if dispatch_res is not None:
-        return dispatch_res[0] if is_fa else dispatch_res[1]
+        return dispatch_res[0]
 
-    return "بفرمایید، سریع و مشخص در خدمتم." if is_fa else "Yes? Keep it brief."
+    return "بفرمایید، سریع و مشخص در خدمتم."
 
 _DEDUP_FUNC: Any = None
 
@@ -1333,21 +1289,15 @@ async def limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if not user or not message:
         return
-    ulang, _ = _ulang_of(update)
-    try:
-        _d = detect_lang(message.text or message.caption or "")
-    except Exception:
-        _d = "und"
-    nlang = _d if _d in ("fa", "en") else ulang
     if is_admin(user.id):
-        await reply_safely(message, t(nlang, "limit_admin"))
+        await reply_safely(message, t("fa", "limit_admin"))
         return
     try:
         _used, _qlim = await database.get_daily_usage_async(user.id)
         _rs = database.seconds_until_daily_reset()
     except Exception:
         _used, _qlim, _rs = 0, 0, 3600
-    await reply_safely(message, t(nlang, "limit_status", used=_used, limit=_qlim, left=max(0, _qlim - _used), h=_rs // 3600, m=(_rs % 3600) // 60))
+    await reply_safely(message, t("fa", "limit_status", used=_used, limit=_qlim, left=max(0, _qlim - _used), h=_rs // 3600, m=(_rs % 3600) // 60))
 
 async def setquota_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin sets/adjusts a user's daily quota: /setquota [@user|id] <N|+N|-N> (or reply + number)."""
@@ -3083,20 +3033,14 @@ async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     await database.track_group_presence_async(chat.id, chat.title or "گروه", chat_type=str(chat.type), added_by=user.id, status="active")
 
     user_text = message.text or message.caption or ""
-    _has_fa = bool(re.search(r"[\u0600-\u06FF]", user_text))
-    ulang, ulang_name = _FA_LANG_INFO if _has_fa else _ulang_of(update)
-    # World users: detect THIS message's language (script + keywords), so the
-    # AI answers in whatever language the user actually used — even when the
-    # Telegram client setting says otherwise. fa/en chrome keeps the client.
-    try:
-        detected_lang = "fa" if _has_fa else detect_lang(user_text)
-    except Exception:
-        detected_lang = "fa" if _has_fa else "und"
-    tri_lang = "fa" if _has_fa else (detected_lang if detected_lang in ("fa", "en") else ulang)
-    ai_lang_code = "fa" if _has_fa else (detected_lang if (detected_lang and detected_lang != "und") else (getattr(user, "language_code", "") or "fa"))
+    ulang = "fa"
+    ulang_name = "Persian"
+    detected_lang = "fa"
+    tri_lang = "fa"
+    ai_lang_code = "fa"
     user_uname = user.username or ""
-    fa_from_uname = username_to_persian_name(user_uname) if (user_uname and ulang == "fa") else ""
-    user_display = fa_from_uname or user.first_name or ("کاربر" if ulang == "fa" else "user")
+    fa_from_uname = username_to_persian_name(user_uname) if user_uname else ""
+    user_display = fa_from_uname or user.first_name or "کاربر"
 
     # Check fast natural language administrative actions from Master Admin (self-silence works even WITHOUT reply)
     # NOTE: non-admin replies fall THROUGH to the normal group gate below —

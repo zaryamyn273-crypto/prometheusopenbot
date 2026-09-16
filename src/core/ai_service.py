@@ -858,32 +858,14 @@ async def generate_response(
     except Exception:
         pass
 
-    # --- Language layer: the bot serves the whole world, not just Persian users.
-    # Bot chrome stays fa/en, but the model MUST answer in the user's own language.
-    # Tool outputs are often Persian: translate their human-readable content, keep
-    # numbers/code/links/@usernames byte-identical.
-    from src.core.i18n import normalize_lang as _norm_lang, lang_name as _lang_name, t as _t
-    _has_fa_script = bool(re.search(r"[\u0600-\u06FF]", user_prompt or ""))
-    if _has_fa_script:
-        _ulang = "fa"
-        _ulang_name = "Persian"
-    else:
-        _ulang = _norm_lang(user_lang_code)
-        _ulang_name = _lang_name(user_lang_code)
-    if _ulang == "fa":
-        _lang_rule = (
-            "\n[زبان پاسخ — اکیداً فارسی]: کاربر به زبان فارسی سخن می‌گوید. "
-            "پاسخ شما باید ۱۰۰٪ به زبان فارسیِ روان، طبیعی، امروزی و شیوا باشد. "
-            "مطلقاً و تحت هیچ شرایطی به زبان عربی یا انگلیسی پاسخ نده!"
-        )
-    else:
-        _lang_rule = (
-            f"\n[REPLY LANGUAGE — STRICT]: The user speaks {_ulang_name} (Telegram code '{user_lang_code}'). "
-            f"ALWAYS write your final answer in {_ulang_name}, no Persian sentences. "
-            "Tool outputs below may be in Persian: faithfully translate their human-readable content into "
-            f"{_ulang_name}, but keep ALL numbers, dates, code, links, @usernames and symbols EXACTLY unchanged. "
-            "Keep the same concise style."
-        )
+    # 100% Native Persian Engine: The bot is dedicated purely to Persian language.
+    _ulang = "fa"
+    _ulang_name = "Persian"
+    _lang_rule = (
+        "\n[زبان پاسخ — ۱۰۰٪ فارسیِ روان]: این ربات منحصراً فارسی‌زبان است. "
+        "پاسخ شما باید تماماً و ۱۰۰٪ به زبان فارسی روان، طبیعی، دقیق و شیوا باشد. "
+        "تحت هیچ شرایطی به زبان انگلیسی، عربی یا هر زبان دیگری پاسخ نده!"
+    )
 
     try:
         _today_iso, _today_hm, _today_j = database.get_tehran_timestamps()
@@ -1048,11 +1030,6 @@ async def generate_response(
     if not image_bytes and not needs_memory:
         fast_price = await _try_fast_market_match(user_prompt)
         if fast_price:
-            if _ulang != "fa":
-                try:
-                    fast_price = await translate_text(fast_price, _ulang_name)
-                except Exception:
-                    pass
             return fast_price, None
 
     # Multimodal Vision Analysis (Offloaded to thread pool to eliminate event loop blocking)

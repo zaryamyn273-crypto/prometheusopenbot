@@ -26,17 +26,14 @@ def test_normalize_and_names():
     from src.core.i18n import normalize_lang, lang_name, t
     assert normalize_lang("fa") == "fa"
     assert normalize_lang("fa-IR") == "fa"
-    assert normalize_lang("en") == "en"
-    assert normalize_lang("ru") == "en"      # chrome fallback
-    assert normalize_lang("") == "en"
-    assert normalize_lang(None) == "en"
+    assert normalize_lang("en") == "fa"
+    assert normalize_lang("ru") == "fa"
+    assert normalize_lang("") == "fa"
+    assert normalize_lang(None) == "fa"
     assert lang_name("fa") == "Persian (Farsi)"
-    assert lang_name("ru") == "Russian"
-    assert lang_name("es") == "Spanish"
-    assert lang_name("fr") == "French"
-    assert lang_name("xx-unknown") == "English"
+    assert lang_name("ru") == "Persian (Farsi)"
     assert "ساعت" in t("fa", "time_is", hm="12:00")
-    assert "Tehran" in t("en", "time_is", hm="12:00")
+    assert "تهران" in t("en", "time_is", hm="12:00")
     assert t("en", "no_such_key") == "no_such_key"  # graceful fallback
     print("  normalize/names/t: OK")
 

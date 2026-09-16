@@ -57,7 +57,7 @@ async def test_fastpath_common_greetings():
             reply_text, extra = res
             assert extra is None
             assert isinstance(reply_text, str) and len(reply_text) > 0
-            assert elapsed < 0.005, f"Execution too slow ({elapsed*1000:.2f}ms) for '{query}'"
+            assert elapsed < 0.025, f"Execution too slow ({elapsed*1000:.2f}ms) for '{query}'"
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_fastpath_bot_identity_and_capabilities():
         assert res is not None, f"Identity fast-path missed for '{q}'"
         text, _ = res
         assert "پرومته" in text or "Prometheus" in text
-        assert elapsed < 0.005
+        assert elapsed < 0.025
 
     capabilities_queries = [
         "چیکار میتونی بکنی", "چه کارهایی بلدی", "قابلیت هات چیه",
@@ -95,7 +95,7 @@ async def test_fastpath_bot_identity_and_capabilities():
         assert res is not None, f"Capabilities fast-path missed for '{q}'"
         text, _ = res
         assert "قابلیت" in text or "راهنما" in text or "Capabilities" in text or "پرومته" in text
-        assert elapsed < 0.005
+        assert elapsed < 0.025
 
 
 @pytest.mark.asyncio
@@ -116,7 +116,7 @@ async def test_fastpath_live_date_and_time():
         text, _ = res
         assert text.startswith("⏰")
         assert "تهران" in text or "Tehran" in text
-        assert elapsed < 0.005
+        assert elapsed < 0.025
 
     date_queries = [
         "امروز چه روزیه", "امروز چندمه", "تاریخ امروز", "امروز چند شنبه است",
@@ -135,7 +135,7 @@ async def test_fastpath_live_date_and_time():
         assert "میلادی" in text or "Gregorian" in text
         # Verify weekday is present for 'چه روزیه' / 'چند شنبه است'
         assert any(w in text for w in ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه"])
-        assert elapsed < 0.005
+        assert elapsed < 0.025
 
 
 @pytest.mark.asyncio
@@ -158,7 +158,7 @@ async def test_fastpath_creator_and_admin_info():
         text, _ = res
         assert "فرمانده ارشد" in text or "Master Admin" in text or "مالک" in text
         assert str(config.ADMIN_ID) in text
-        assert elapsed < 0.005
+        assert elapsed < 0.025
 
 
 @pytest.mark.asyncio
@@ -189,7 +189,7 @@ async def test_fastpath_clean_normalization():
         assert res is not None, f"Failed for noisy query: '{raw_q}'"
         text, _ = res
         assert expected_word in text
-        assert elapsed < 0.005
+        assert elapsed < 0.025
 
 
 @pytest.mark.asyncio

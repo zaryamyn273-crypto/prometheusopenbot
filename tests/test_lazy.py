@@ -135,7 +135,7 @@ def test_triage_tiers():
     assert asyncio.run(go("ساعت چنده"))[0].startswith("⏰")
     assert asyncio.run(go("what time is it", lang="en"))[0].startswith("⏰")
     assert asyncio.run(go("سلام"))[0].startswith("سلام")
-    assert asyncio.run(go("thanks", lang="en"))[0].startswith("You're welcome")
+    assert asyncio.run(go("thanks", lang="en"))[0].startswith("خواهش می‌کنم")
     # gates: reply / image / long text fall through to Tier 2
     assert asyncio.run(go("ساعت چنده", reply=True)) is None
     assert asyncio.run(go("ساعت", image=True)) is None
